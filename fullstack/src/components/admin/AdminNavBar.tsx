@@ -49,7 +49,7 @@ export default function AdminNavBar() {
               </Avatar>
               <div className="hidden sm:flex flex-col items-start leading-none text-left">
                 <span className="text-xs font-bold text-white/90 group-hover:text-white transition-colors">{user.name}</span>
-                <span className="text-[10px] text-muted-foreground group-hover:text-muted-foreground/80 transition-colors">Admin Portal</span>
+                <span className="text-[10px] text-muted-foreground group-hover:text-muted-foreground/80 transition-colors">Admin Portal · v{process.env.NEXT_PUBLIC_APP_VERSION}</span>
               </div>
             </button>
             <UserProfileDialog 

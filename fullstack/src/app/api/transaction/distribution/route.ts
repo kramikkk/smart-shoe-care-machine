@@ -17,13 +17,18 @@ export async function GET(req: NextRequest) {
     })
     const userDeviceIds = userDevices.map(d => d.deviceId)
 
-    // Get device filter and distribution type from query params
+    // Get device filter, distribution type, and optional date range from query params
     const { searchParams } = new URL(req.url)
     const deviceId = searchParams.get('deviceId')
-    const type = searchParams.get('type') || 'service' // Default to service
+    const type = searchParams.get('type') || 'service'
+    const startDate = searchParams.get('startDate')
+    const endDate = searchParams.get('endDate')
 
     // Build where clause with device ownership enforcement
     const whereClause: any = {}
+    if (startDate && endDate) {
+      whereClause.dateTime = { gte: new Date(startDate), lte: new Date(endDate) }
+    }
     if (deviceId) {
       if (!userDeviceIds.includes(deviceId)) {
         return NextResponse.json(

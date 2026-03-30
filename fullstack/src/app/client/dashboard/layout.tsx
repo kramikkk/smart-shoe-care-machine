@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import SideBar from "@/components/dashboard/SideBar";
 import NavBar from "@/components/dashboard/NavBar";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
@@ -5,6 +6,12 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { cookies } from "next/dist/server/request/cookies";
 import { Toaster } from "@/components/ui/sonner";
 import { DeviceFilterProvider } from "@/contexts/DeviceFilterContext";
+import { SensorDataProvider } from "@/contexts/SensorDataContext";
+
+export const metadata: Metadata = {
+  title: "SSCM Client Dashboard",
+  description: "Client dashboard for Smart Shoe Care Machine.",
+}
 
 export default async function AdminLayout({
     children,
@@ -33,7 +40,9 @@ export default async function AdminLayout({
                                     enableSystem={false}
                                     disableTransitionOnChange
                                 />
-                                {children}
+                                <SensorDataProvider>
+                                    {children}
+                                </SensorDataProvider>
                             </div>
                         </main>
                     </div>

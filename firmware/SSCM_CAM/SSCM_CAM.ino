@@ -1,6 +1,9 @@
 // Set to 0 to disable Serial logging in production builds
 #define SSCM_DEBUG 1
 
+#define FIRMWARE_VERSION "1.0.0"
+#define BOARD_NAME "SSCM-CAM"
+
 /*
  * SSCM CAM Firmware — Gemini HTTP Classification Edition
  *
@@ -788,8 +791,8 @@ void setup() {
 
 #if SSCM_DEBUG
   Serial.println("\n=================================");
-  Serial.println("  ESP32-S3 CAM Shoe Classifier");
-  Serial.println("  Gemini HTTP Edition");
+  Serial.printf("  %s\n", BOARD_NAME);
+  Serial.printf("  Firmware v%s\n", FIRMWARE_VERSION);
   Serial.println("=================================\n");
 #endif
 

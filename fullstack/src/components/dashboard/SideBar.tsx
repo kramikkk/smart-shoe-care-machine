@@ -116,6 +116,10 @@ const SideBar = () => {
 
         <SidebarFooter className="p-4 mt-auto">
             <div className="pt-4 border-t border-white/10">
+              <div className="flex items-center justify-between mb-3 px-1">
+                <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-muted-foreground/30">Portal</span>
+                <span className="text-[10px] font-mono text-muted-foreground/30">v{process.env.NEXT_PUBLIC_APP_VERSION}</span>
+              </div>
               {user && <SideBarUser user={user} />}
             </div>
         </SidebarFooter>

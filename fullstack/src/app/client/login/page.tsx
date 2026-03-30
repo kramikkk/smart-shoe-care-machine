@@ -1,4 +1,10 @@
+import type { Metadata } from "next"
 import { LoginForm } from "@/components/auth/LoginForm"
+
+export const metadata: Metadata = {
+  title: "SSCM Login",
+  description: "Sign in to Smart Shoe Care Machine.",
+}
 import { LoginVisualSide } from "@/components/auth/LoginVisualSide"
 import { headers } from "next/headers"
 import { auth } from "@/lib/auth"

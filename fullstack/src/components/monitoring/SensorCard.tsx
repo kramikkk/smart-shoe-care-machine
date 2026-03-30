@@ -10,10 +10,9 @@ import { useSensorData } from "@/contexts/SensorDataContext"
 const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
   const sensor = SensorData[id]
 
-  const { sensorData, isConnected } = useSensorData()
+  const { sensorData, isConnected, isLoadingData } = useSensorData()
 
   const Icon = sensor.icon
-  const isLoading = sensorData.lastUpdate === null
 
   // Calculate real-time values based on sensor type
   let displayValue: string = "0"
@@ -21,7 +20,12 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
   let displayStatus: string = sensor.status
   let displayRange: string = sensor.range
 
-  if (id === 'temperature' && sensorData.temperature > 0) {
+  if (!isConnected) {
+    displayValue = '—'
+    displayStatus = 'Offline'
+  }
+
+  if (id === 'temperature' && isConnected && sensorData.temperature > 0) {
     displayValue = `${sensorData.temperature.toFixed(1)}°C`
     // Calculate percentage (0-50°C range)
     displayPercentage = Math.min(100, (sensorData.temperature / 50) * 100)
@@ -35,7 +39,7 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
     }
   }
 
-  if (id === 'humidity' && sensorData.humidity > 0) {
+  if (id === 'humidity' && isConnected && sensorData.humidity > 0) {
     displayValue = `${sensorData.humidity.toFixed(1)}%`
     displayPercentage = Math.min(100, sensorData.humidity)
     // Status: Low (<60%), Normal (60-70%), High (>70%)
@@ -48,7 +52,7 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
     }
   }
 
-  if (id === 'atomizerLevel') {
+  if (id === 'atomizerLevel' && isConnected) {
     if (sensorData.atomizerDistance === -1 || sensorData.atomizerDistance > 21) {
       displayValue = 'Invalid'
       displayStatus = 'Invalid'
@@ -70,7 +74,7 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
     }
   }
 
-  if (id === 'foamLevel') {
+  if (id === 'foamLevel' && isConnected) {
     if (sensorData.foamDistance === -1 || sensorData.foamDistance > 21) {
       displayValue = 'Invalid'
       displayStatus = 'Invalid'
@@ -94,8 +98,8 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
 
   if (id === 'systemStatus') {
     if (!isConnected) {
-      displayValue = 'Offline'
-      displayStatus = 'Critical'
+      displayValue = 'Device Offline'
+      displayStatus = 'Offline'
       displayPercentage = 0
     } else if (sensorData.serviceActive) {
       // Format time remaining as MM:SS
@@ -129,6 +133,8 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
         return "bg-red-100 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-800"
       case "invalid":
         return "bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-800/40 dark:text-gray-400 dark:border-gray-700"
+      case "offline":
+        return "bg-gray-100 text-gray-400 border-gray-200 dark:bg-gray-800/40 dark:text-gray-500 dark:border-gray-700"
       default:
         return ""
     }
@@ -141,17 +147,14 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
           <Icon className={`h-5 w-5 ${sensor.color}`} />
           <CardTitle className="text-sm">{sensor.name}</CardTitle>
         </div>
-        {!isLoading && (
+        {!isLoadingData && (
           <div className="flex items-center gap-2">
-            {!isConnected && id !== 'systemStatus' && (
-              <span className="text-xs text-muted-foreground">Offline</span>
-            )}
             <Badge variant="outline" className={getBadgeClass(displayStatus)}>{displayStatus}</Badge>
           </div>
         )}
       </CardHeader>
       <CardContent className="space-y-4">
-        {isLoading ? (
+        {isLoadingData ? (
           <div className="flex items-center justify-center py-4 gap-2 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />
             <span className="text-sm">Loading...</span>

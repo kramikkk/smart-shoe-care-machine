@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useDeviceFilter } from '@/contexts/DeviceFilterContext'
+import { useSensorData } from '@/contexts/SensorDataContext'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -57,10 +58,7 @@ const RELAY_COLOR_MAP: Record<string, { icon: string; glow: string; ring: string
 export default function CommandsPage() {
   const { selectedDevice } = useDeviceFilter()
 
-  // WebSocket
-  const wsRef = useRef<WebSocket | null>(null)
-  const reconnectRef = useRef<NodeJS.Timeout | null>(null)
-  const [isConnected, setIsConnected] = useState(false)
+  const { isConnected, sendMessage, addMessageHandler } = useSensorData()
   const [isDeviceReady, setIsDeviceReady] = useState(false)
 
   // Log
@@ -104,83 +102,61 @@ export default function CommandsPage() {
   const [rgbB, setRgbB] = useState(0)
   const [activeColorCmd, setActiveColorCmd] = useState<string | null>(null)
 
-  // ── WebSocket connection (mirrors SensorDataContext.tsx pattern) ──────────
-
+  // Reset local state when device changes
   useEffect(() => {
-    if (!selectedDevice) return
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/api/ws?deviceId=${encodeURIComponent(selectedDevice)}`
-    let ws: WebSocket
-
-    const connect = () => {
-      ws = new WebSocket(wsUrl)
-      wsRef.current = ws
-
-      ws.onopen = () => {
-        setIsConnected(true)
-        ws.send(JSON.stringify({ type: 'subscribe', deviceId: selectedDevice }))
-        addLog('system', 'Connected to device')
-      }
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'serial-command') return // filter echo-back
-          // Any live message from the device signals it's ready
-          if (['device-online', 'firmware-log', 'sensor-data', 'distance-data'].includes(msg.type)) {
-            setIsDeviceReady(true)
-          }
-          if (msg.type === 'firmware-log') {
-            const text: string = msg.message || ''
-            // Parse stepper position from INFO wsLog: "S1 pos=4800 spd=400 IDLE"
-            const s1Steps = text.match(/\bS1\s+pos=(-?\d+)/)
-            if (s1Steps) setS1Pos(parseInt(s1Steps[1]))
-            const s2Steps = text.match(/\bS2\s+pos=(-?\d+)/)
-            if (s2Steps) setS2Pos(parseInt(s2Steps[1]))
-            addLog(msg.level || 'info', text || JSON.stringify(msg))
-          } else if (msg.type === 'service-status') {
-            addLog('service', `Progress: ${msg.progress}% — ${msg.timeRemaining}s remaining`)
-          } else if (msg.type === 'service-complete') {
-            addLog('service', `Complete: ${msg.serviceType}`)
-          } else if (msg.type === 'classification-result') {
-            addLog('classify', `Result: ${msg.result} (${(msg.confidence * 100).toFixed(1)}%)`)
-          } else if (msg.type === 'classification-error') {
-            addLog('error', `Classification error: ${msg.error}`)
-          }
-        } catch { /* ignore */ }
-      }
-
-      ws.onerror = () => { setIsConnected(false); setIsDeviceReady(false) }
-      ws.onclose = () => {
-        setIsConnected(false)
-        setIsDeviceReady(false)
-        reconnectRef.current = setTimeout(() => connect(), 5000)
-      }
-    }
-
     setS1Pos(null)
     setS2Pos(null)
     setMotorSpeed({ left: 0, right: 0, both: 0 })
     setMotorDir({ left: 'fwd', right: 'fwd', both: 'fwd' })
     setIsDeviceReady(false)
-    connect()
-    return () => {
-      if (reconnectRef.current) clearTimeout(reconnectRef.current)
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) ws.close()
+  }, [selectedDevice])
+
+  // Log connection events and handle incoming WS messages
+  useEffect(() => {
+    if (isConnected) {
+      addLog('system', 'Connected to device')
+    } else {
+      setIsDeviceReady(false)
     }
-  }, [selectedDevice, addLog])
+  }, [isConnected, addLog])
+
+  // Subscribe to WS messages for commands-specific handling
+  useEffect(() => {
+    const cleanup = addMessageHandler((msg) => {
+      if (msg.type === 'serial-command') return // filter echo-back
+      if (['device-online', 'firmware-log', 'sensor-data', 'distance-data'].includes(msg.type as string)) {
+        setIsDeviceReady(true)
+      }
+      if (msg.type === 'firmware-log') {
+        const text = (msg.message as string) || ''
+        const s1Steps = text.match(/\bS1\s+pos=(-?\d+)/)
+        if (s1Steps) setS1Pos(parseInt(s1Steps[1]))
+        const s2Steps = text.match(/\bS2\s+pos=(-?\d+)/)
+        if (s2Steps) setS2Pos(parseInt(s2Steps[1]))
+        addLog((msg.level as string) || 'info', text || JSON.stringify(msg))
+      } else if (msg.type === 'service-status') {
+        addLog('service', `Progress: ${msg.progress}% — ${msg.timeRemaining}s remaining`)
+      } else if (msg.type === 'service-complete') {
+        addLog('service', `Complete: ${msg.serviceType}`)
+      } else if (msg.type === 'classification-result') {
+        addLog('classify', `Result: ${msg.result} (${((msg.confidence as number) * 100).toFixed(1)}%)`)
+      } else if (msg.type === 'classification-error') {
+        addLog('error', `Classification error: ${msg.error}`)
+      }
+    })
+    return cleanup
+  }, [addMessageHandler, addLog])
 
   // ── Send helper ───────────────────────────────────────────────────────────
 
   const send = useCallback((command: string) => {
-    if (!isConnected || !selectedDevice || !wsRef.current) {
+    if (!isConnected || !selectedDevice) {
       toast.error('Not connected to device')
       return
     }
-    wsRef.current.send(JSON.stringify({ type: 'serial-command', deviceId: selectedDevice, command }))
+    sendMessage({ type: 'serial-command', deviceId: selectedDevice, command })
     addLog('sent', `→ ${command}`)
-  }, [isConnected, selectedDevice, addLog])
+  }, [isConnected, selectedDevice, sendMessage, addLog])
 
   // ── Servo helper ──────────────────────────────────────────────────────────
   const sendServo = useCallback((angle: number) => {

@@ -5,6 +5,7 @@ import { Label, Pie, PieChart, Sector } from "recharts"
 import { Loader2 } from "lucide-react"
 import { PieSectorDataItem } from "recharts/types/polar/Pie"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
+import { useTimeRange } from "@/contexts/TimeRangeContext"
 
 import {
   Card,
@@ -89,8 +90,33 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
+const PHT_OFFSET_MS = 8 * 60 * 60 * 1000
+
+function getPHTCurrentPeriodStart(timeRange: string): Date {
+  const now = new Date()
+  const nowPHT = new Date(now.getTime() + PHT_OFFSET_MS)
+  const todayMidnightUTC = new Date(
+    Date.UTC(nowPHT.getUTCFullYear(), nowPHT.getUTCMonth(), nowPHT.getUTCDate()) - PHT_OFFSET_MS
+  )
+  switch (timeRange) {
+    case 'week': {
+      const dow = nowPHT.getUTCDay()
+      const daysFromMonday = dow === 0 ? 6 : dow - 1
+      return new Date(todayMidnightUTC.getTime() - daysFromMonday * 24 * 60 * 60 * 1000)
+    }
+    case 'month':
+      return new Date(Date.UTC(nowPHT.getUTCFullYear(), nowPHT.getUTCMonth(), 1) - PHT_OFFSET_MS)
+    case 'year':
+      return new Date(Date.UTC(nowPHT.getUTCFullYear(), 0, 1) - PHT_OFFSET_MS)
+    case 'today':
+    default:
+      return todayMidnightUTC
+  }
+}
+
 export function PieChartCard() {
   const { selectedDevice } = useDeviceFilter()
+  const { timeRange } = useTimeRange()
   const id = "pie-interactive"
   const [serviceData, setServiceData] = React.useState<ServiceData[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
@@ -102,7 +128,11 @@ export function PieChartCard() {
     const fetchDistribution = async () => {
       setIsLoading(true)
       try {
-        const response = await fetch(`/api/transaction/distribution?deviceId=${selectedDevice}&type=${distributionType}`)
+        const startDate = getPHTCurrentPeriodStart(timeRange).toISOString()
+        const endDate = new Date().toISOString()
+        const response = await fetch(
+          `/api/transaction/distribution?deviceId=${selectedDevice}&type=${distributionType}&startDate=${startDate}&endDate=${endDate}`
+        )
         if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
         const data = await response.json()
 
@@ -125,7 +155,7 @@ export function PieChartCard() {
     }
 
     fetchDistribution()
-  }, [selectedDevice, distributionType])
+  }, [selectedDevice, distributionType, timeRange])
 
   const activeIndex = React.useMemo(
     () => serviceData.findIndex((item: ServiceData) => item.type === activeService),

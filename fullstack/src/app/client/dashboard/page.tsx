@@ -8,8 +8,15 @@ import RecentTransactionTable from "@/components/dashboard/RecentTransactionTabl
 import SystemAlertCard from "@/components/monitoring/SystemAlertCard"
 import SensorCard from "@/components/monitoring/SensorCard"
 import { SensorDataProvider } from "@/contexts/SensorDataContext"
-
+import { TimeRangeProvider, useTimeRange, type TimeRange } from "@/contexts/TimeRangeContext"
 import { useSession } from "@/lib/auth-client"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 
 const containerVariants = {
     hidden: { opacity: 0, y: 20 },
@@ -28,24 +35,43 @@ const itemVariants = {
     visible: { opacity: 1, y: 0 }
 }
 
-export default function DashboardPage() {
+const TIME_RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
+    { value: 'today', label: 'Today vs Yesterday' },
+    { value: 'week', label: 'This Week vs Last Week' },
+    { value: 'month', label: 'This Month vs Last Month' },
+    { value: 'year', label: 'This Year vs Last Year' },
+]
+
+function DashboardInner() {
     const { data: session } = useSession()
     const userName = session?.user?.name || "User"
+    const { timeRange, setTimeRange } = useTimeRange()
 
     return (
-        <SensorDataProvider>
-        <motion.div 
+        <motion.div
             initial="hidden"
             animate="visible"
             variants={containerVariants}
             className="flex flex-col gap-6 w-full overflow-x-hidden overflow-y-auto pb-8"
         >
-            {/* Header / Welcome Area (Optional, but adds premium feel) */}
-            <motion.div variants={itemVariants} className="mb-2">
-                <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-                    Welcome Back, <span className="text-primary">{userName}!</span>
-                </h1>
-                <p className="text-sm sm:text-base text-muted-foreground">Monitor your shoe care systems in real-time.</p>
+            {/* Header */}
+            <motion.div variants={itemVariants} className="flex items-start justify-between gap-4 mb-2">
+                <div>
+                    <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
+                        Welcome Back, <span className="text-primary">{userName}!</span>
+                    </h1>
+                    <p className="text-sm sm:text-base text-muted-foreground">Monitor your shoe care systems in real-time.</p>
+                </div>
+                <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
+                    <SelectTrigger className="h-9 w-fit rounded-lg shrink-0 text-xs sm:text-sm">
+                        <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                        {TIME_RANGE_OPTIONS.map((opt) => (
+                            <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
             </motion.div>
 
             {/* Stats and Sensor Cards */}
@@ -56,7 +82,7 @@ export default function DashboardPage() {
                     <SensorCard id="systemStatus"/>
                 </div>
             </motion.div>
-            
+
             {/* Charts Section */}
             <motion.div variants={itemVariants} className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-stretch">
                 <div className="lg:col-span-1 xl:col-span-2 h-full">
@@ -77,6 +103,15 @@ export default function DashboardPage() {
                 </div>
             </motion.div>
         </motion.div>
+    )
+}
+
+export default function DashboardPage() {
+    return (
+        <SensorDataProvider>
+            <TimeRangeProvider>
+                <DashboardInner />
+            </TimeRangeProvider>
         </SensorDataProvider>
     )
 }

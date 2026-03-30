@@ -1,6 +1,6 @@
 'use client'
 
-import { TrendingDown, TrendingUp, ShoppingCart, Coins, Loader2 } from "lucide-react"
+import { TrendingDown, TrendingUp, Minus, ShoppingCart, Coins, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
   Card,
@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card"
 import { useEffect, useState } from "react"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
+import { useTimeRange } from "@/contexts/TimeRangeContext"
 
 type StatsType = 'totalRevenue' | 'totalTransactions'
 
@@ -31,15 +32,26 @@ interface Stats {
   }
 }
 
+const PERIOD_LABEL: Record<string, string> = {
+  today: 'today',
+  week: 'this week',
+  month: 'this month',
+  year: 'this year',
+}
+
 const StatsCard = ({ id }: { id: StatsType }) => {
   const { selectedDevice } = useDeviceFilter()
+  const { timeRange } = useTimeRange()
   const [stats, setStats] = useState<Stats | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
     const fetchStats = async () => {
+      setIsLoading(true)
       try {
-        const response = await fetch(`/api/transaction/stats?deviceId=${selectedDevice}`)
+        const response = await fetch(
+          `/api/transaction/stats?deviceId=${selectedDevice}&timeRange=${timeRange}`
+        )
         if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
         const data = await response.json()
 
@@ -56,7 +68,7 @@ const StatsCard = ({ id }: { id: StatsType }) => {
     }
 
     fetchStats()
-  }, [selectedDevice])
+  }, [selectedDevice, timeRange])
 
   if (isLoading || !stats) {
     return (
@@ -70,7 +82,9 @@ const StatsCard = ({ id }: { id: StatsType }) => {
 
   const stat = stats[id]
   const isPositive = stat.isPositive
-  const TrendIcon = isPositive ? TrendingUp : TrendingDown
+  const isNeutral = stat.trend === 0
+  const TrendIcon = isNeutral ? Minus : isPositive ? TrendingUp : TrendingDown
+  const periodLabel = PERIOD_LABEL[timeRange] ?? 'today'
 
   const config = {
     totalRevenue: {
@@ -78,14 +92,14 @@ const StatsCard = ({ id }: { id: StatsType }) => {
       icon: Coins,
       iconColor: 'text-yellow-500',
       value: stats.totalRevenue.formatted,
-      footerDescription: `+${stats.totalRevenue.diffFormatted} added today`,
+      footerDescription: `+${stats.totalRevenue.diffFormatted} added ${periodLabel}`,
     },
     totalTransactions: {
       title: 'Total Transactions',
       icon: ShoppingCart,
       iconColor: 'text-blue-500',
       value: stats.totalTransactions.value.toString(),
-      footerDescription: `+${stats.totalTransactions.diff} added today`,
+      footerDescription: `+${stats.totalTransactions.diff} added ${periodLabel}`,
     },
   }
 
@@ -103,11 +117,11 @@ const StatsCard = ({ id }: { id: StatsType }) => {
           <Badge
             variant="outline"
             className={`flex items-center gap-1 ${
-              isPositive ? "text-green-400" : "text-red-400"
+              isNeutral ? "text-muted-foreground" : isPositive ? "text-green-400" : "text-red-400"
             }`}
           >
             <TrendIcon className="size-4" />
-            {isPositive ? "+" : ""}
+            {isPositive && !isNeutral ? "+" : ""}
             {stat.trend}%
           </Badge>
         </CardAction>
@@ -118,7 +132,7 @@ const StatsCard = ({ id }: { id: StatsType }) => {
         </CardTitle>
         <div
           className={`text-sm font-medium ${
-            isPositive ? "text-green-400" : "text-red-400"
+            stat.diff === 0 ? "text-muted-foreground" : isPositive ? "text-green-400" : "text-red-400"
           }`}
         >
           {currentConfig.footerDescription}

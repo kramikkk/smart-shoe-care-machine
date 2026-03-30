@@ -1,0 +1,50 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read versions
+        id: versions
+        run: |
+          WEB_VERSION=$(node -p "require('./fullstack/package.json').version")
+          MAIN_VERSION=$(grep -oP '(?<=#define FIRMWARE_VERSION ")[^"]+' firmware/SSCM_MAIN/SSCM_MAIN.ino)
+          CAM_VERSION=$(grep -oP '(?<=#define FIRMWARE_VERSION ")[^"]+' firmware/SSCM_CAM/SSCM_CAM.ino)
+          echo "web=$WEB_VERSION" >> $GITHUB_OUTPUT
+          echo "main=$MAIN_VERSION" >> $GITHUB_OUTPUT
+          echo "cam=$CAM_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$WEB_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check if tag already exists
+        id: tag_check
+        run: |
+          if git ls-remote --tags origin | grep -q "refs/tags/${{ steps.versions.outputs.tag }}$"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.versions.outputs.tag }}
+          name: Release ${{ steps.versions.outputs.tag }}
+          body: |
+            ## Versions
+            | Component | Version |
+            |-----------|---------|
+            | Web App | `${{ steps.versions.outputs.web }}` |
+            | Firmware SSCM-MAIN | `${{ steps.versions.outputs.main }}` |
+            | Firmware SSCM-CAM | `${{ steps.versions.outputs.cam }}` |

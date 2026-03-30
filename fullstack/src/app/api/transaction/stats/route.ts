@@ -2,33 +2,77 @@ import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth-middleware'
 
+const PHT_OFFSET_MS = 8 * 60 * 60 * 1000
+
+function getPHTBoundaries(timeRange: string) {
+  const now = new Date()
+  const nowPHT = new Date(now.getTime() + PHT_OFFSET_MS)
+
+  // PHT midnight today, expressed as UTC
+  const todayMidnightUTC = new Date(
+    Date.UTC(nowPHT.getUTCFullYear(), nowPHT.getUTCMonth(), nowPHT.getUTCDate()) - PHT_OFFSET_MS
+  )
+
+  let currentStart: Date
+  let previousStart: Date
+  let previousEnd: Date
+
+  switch (timeRange) {
+    case 'week': {
+      const dayOfWeek = nowPHT.getUTCDay() // 0=Sun
+      const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
+      currentStart = new Date(todayMidnightUTC.getTime() - daysFromMonday * 24 * 60 * 60 * 1000)
+      previousEnd = currentStart
+      previousStart = new Date(currentStart.getTime() - 7 * 24 * 60 * 60 * 1000)
+      break
+    }
+    case 'month': {
+      currentStart = new Date(
+        Date.UTC(nowPHT.getUTCFullYear(), nowPHT.getUTCMonth(), 1) - PHT_OFFSET_MS
+      )
+      previousEnd = currentStart
+      previousStart = new Date(
+        Date.UTC(nowPHT.getUTCFullYear(), nowPHT.getUTCMonth() - 1, 1) - PHT_OFFSET_MS
+      )
+      break
+    }
+    case 'year': {
+      currentStart = new Date(
+        Date.UTC(nowPHT.getUTCFullYear(), 0, 1) - PHT_OFFSET_MS
+      )
+      previousEnd = currentStart
+      previousStart = new Date(
+        Date.UTC(nowPHT.getUTCFullYear() - 1, 0, 1) - PHT_OFFSET_MS
+      )
+      break
+    }
+    case 'today':
+    default: {
+      currentStart = todayMidnightUTC
+      previousEnd = currentStart
+      previousStart = new Date(todayMidnightUTC.getTime() - 24 * 60 * 60 * 1000)
+    }
+  }
+
+  return { currentStart, previousStart, previousEnd, now }
+}
+
 export async function GET(req: NextRequest) {
   try {
-    // Require authentication
     const authResult = await requireAuth(req)
-    if (authResult instanceof NextResponse) {
-      return authResult
-    }
+    if (authResult instanceof NextResponse) return authResult
 
-    // Get user's devices for ownership check
     const userDevices = await prisma.device.findMany({
       where: { pairedBy: authResult.user.id },
       select: { deviceId: true }
     })
     const userDeviceIds = userDevices.map(d => d.deviceId)
 
-    // Get device filter from query params
     const { searchParams } = new URL(req.url)
     const deviceId = searchParams.get('deviceId')
+    const timeRange = searchParams.get('timeRange') || 'today'
 
-    // Get current date and yesterday's date
-    const now = new Date()
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    const yesterday = new Date(today)
-    yesterday.setDate(yesterday.getDate() - 1)
-
-    // Build where clause with device ownership enforcement
-    const whereClause: any = {}
+    const deviceWhere: any = {}
     if (deviceId) {
       if (!userDeviceIds.includes(deviceId)) {
         return NextResponse.json(
@@ -36,86 +80,73 @@ export async function GET(req: NextRequest) {
           { status: 403 }
         )
       }
-      whereClause.deviceId = deviceId
+      deviceWhere.deviceId = deviceId
     } else {
-      whereClause.deviceId = { in: userDeviceIds }
+      deviceWhere.deviceId = { in: userDeviceIds }
     }
 
-    // Fetch transactions with optional device filter
-    const allTransactions = await prisma.transaction.findMany({
-      where: whereClause
-    })
+    const { currentStart, previousStart, previousEnd, now } = getPHTBoundaries(timeRange)
 
-    // Calculate total revenue and transactions (all-time)
-    const totalRevenue = allTransactions.reduce((sum, tx) => sum + tx.amount, 0)
-    const totalTransactions = allTransactions.length
+    // All-time aggregate — two DB queries, no full table scan into memory
+    const [allTimeAgg, periodTxs] = await Promise.all([
+      prisma.transaction.aggregate({
+        where: deviceWhere,
+        _sum: { amount: true },
+        _count: { id: true },
+      }),
+      // Bounded query: only fetch rows in the relevant two periods
+      prisma.transaction.findMany({
+        where: { ...deviceWhere, dateTime: { gte: previousStart, lte: now } },
+        select: { dateTime: true, amount: true },
+      }),
+    ])
 
-    // Get today's transactions
-    const todayTransactions = allTransactions.filter(
-      (tx) => new Date(tx.dateTime) >= today
+    const totalRevenue = allTimeAgg._sum.amount ?? 0
+    const totalTransactions = allTimeAgg._count.id
+
+    const currentTxs = periodTxs.filter(
+      (tx) => new Date(tx.dateTime) >= currentStart && new Date(tx.dateTime) <= now
     )
-    const todayRevenue = todayTransactions.reduce((sum, tx) => sum + tx.amount, 0)
-    const todayCount = todayTransactions.length
-
-    // Get yesterday's transactions
-    const yesterdayTransactions = allTransactions.filter(
-      (tx) => new Date(tx.dateTime) >= yesterday && new Date(tx.dateTime) < today
+    const previousTxs = periodTxs.filter(
+      (tx) => new Date(tx.dateTime) >= previousStart && new Date(tx.dateTime) < previousEnd
     )
-    const yesterdayRevenue = yesterdayTransactions.reduce(
-      (sum, tx) => sum + tx.amount,
-      0
-    )
-    const yesterdayCount = yesterdayTransactions.length
 
-    // Calculate trends (today's value as % of all historical before today)
-    const historicalRevenue = totalRevenue - todayRevenue
-    const historicalCount = totalTransactions - todayCount
 
-    const revenueTrend = historicalRevenue > 0
-      ? ((todayRevenue / historicalRevenue) * 100).toFixed(1)
-      : todayRevenue > 0 ? '100' : '0'
-    const transactionTrend = historicalCount > 0
-      ? ((todayCount / historicalCount) * 100).toFixed(1)
-      : todayCount > 0 ? '100' : '0'
+    const currentRevenue = currentTxs.reduce((sum, tx) => sum + tx.amount, 0)
+    const currentCount = currentTxs.length
+    const previousRevenue = previousTxs.reduce((sum, tx) => sum + tx.amount, 0)
+    const previousCount = previousTxs.length
 
-    // isPositive: today vs yesterday for directional signal
-    const revenueDiff = todayRevenue - yesterdayRevenue
-    const transactionDiff = todayCount - yesterdayCount
+    const revenueTrend = previousRevenue > 0
+      ? (((currentRevenue - previousRevenue) / previousRevenue) * 100).toFixed(1)
+      : currentRevenue > 0 ? '100' : '0'
+    const transactionTrend = previousCount > 0
+      ? (((currentCount - previousCount) / previousCount) * 100).toFixed(1)
+      : currentCount > 0 ? '100' : '0'
+
+    const phpFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'PHP' })
 
     return NextResponse.json({
       success: true,
       stats: {
         totalRevenue: {
           value: totalRevenue,
-          formatted: new Intl.NumberFormat('en-US', {
-            style: 'currency',
-            currency: 'PHP',
-          }).format(totalRevenue),
+          formatted: phpFormat.format(totalRevenue),
           trend: parseFloat(revenueTrend),
-          isPositive: revenueDiff >= 0,
-          diff: todayRevenue,
-          diffFormatted: new Intl.NumberFormat('en-US', {
-            style: 'currency',
-            currency: 'PHP',
-          }).format(todayRevenue),
+          isPositive: currentRevenue > previousRevenue,
+          diff: currentRevenue,
+          diffFormatted: phpFormat.format(currentRevenue),
         },
         totalTransactions: {
           value: totalTransactions,
           trend: parseFloat(transactionTrend),
-          isPositive: transactionDiff >= 0,
-          diff: todayCount,
-        },
-        todayStats: {
-          revenue: todayRevenue,
-          count: todayCount,
+          isPositive: currentCount > previousCount,
+          diff: currentCount,
         },
       },
     })
   } catch (error) {
     console.error('Error fetching transaction stats:', error)
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
-      { status: 500 }
-    )
+    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
   }
 }

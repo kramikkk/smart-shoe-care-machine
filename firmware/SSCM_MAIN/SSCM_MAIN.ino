@@ -1,6 +1,9 @@
 // Set to 0 to disable Serial logging in production builds
 #define SSCM_DEBUG 1
 
+#define FIRMWARE_VERSION "1.0.0"
+#define BOARD_NAME "SSCM-MAIN"
+
 /*
  * Smart Shoe Care Machine - WiFi & Pairing with WebSocket
  * Firmware with WiFi configuration and real-time device pairing via WebSocket
@@ -25,6 +28,7 @@
 #include <Preferences.h>
 #include <WebSocketsClient.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 
@@ -54,7 +58,7 @@ const unsigned long WS_RECONNECT_INTERVAL =
 /* ===================== STATUS UPDATE ===================== */
 unsigned long lastStatusUpdate = 0;
 const unsigned long STATUS_UPDATE_INTERVAL =
-    30000; // Update status every 30 seconds
+    5000; // Update status every 5 seconds
 
 /* ===================== ESP-NOW - ESP32-CAM COMMUNICATION =====================
  */
@@ -473,12 +477,20 @@ bool isPaired = false;
 
 /* ===================== BACKEND URL ===================== */
 // ============================================================
-// ⚠ CHANGE BEFORE FLASHING — Backend Server Configuration
+// ⚠ CHANGE BEFORE FLASHING — Set to 1 for local, 0 for production
+#define USE_LOCAL_BACKEND 0
 // ============================================================
+
+#if USE_LOCAL_BACKEND
 #define BACKEND_HOST_STR "192.168.43.147"
 #define BACKEND_PORT_NUM 3000
 #define BACKEND_URL_STR "http://192.168.43.147:3000"
-// ============================================================
+#else
+#define BACKEND_HOST_STR "smart-shoe-care-machine.onrender.com"
+#define BACKEND_PORT_NUM 443
+#define BACKEND_URL_STR "https://smart-shoe-care-machine.onrender.com"
+#endif
+
 const char *BACKEND_HOST = BACKEND_HOST_STR;
 const int BACKEND_PORT = BACKEND_PORT_NUM;
 const char *BACKEND_URL = BACKEND_URL_STR;
@@ -1020,7 +1032,16 @@ void sendDeviceRegistration() {
   HTTPClient http;
   String url = String(BACKEND_URL) + "/api/device/register";
 
+#if USE_LOCAL_BACKEND
   http.begin(url);
+#else
+  WiFiClientSecure secureClient;
+  // Note: setInsecure() skips TLS certificate verification.
+  // For higher security, replace with secureClient.setCACert(CA_CERT_PEM)
+  // where CA_CERT_PEM is the Render/hosting root CA certificate.
+  secureClient.setInsecure();
+  http.begin(secureClient, url);
+#endif
   http.addHeader("Content-Type", "application/json");
 
   String payload = "{";
@@ -1367,7 +1388,11 @@ void connectWebSocket() {
   Serial.println("[WebSocket] Connecting to " + String(BACKEND_HOST) + ":" +
                  String(BACKEND_PORT));
 #endif
+#if USE_LOCAL_BACKEND
   webSocket.begin(BACKEND_HOST, BACKEND_PORT, wsPath);
+#else
+  webSocket.beginSSL(BACKEND_HOST, BACKEND_PORT, wsPath);
+#endif
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(WS_RECONNECT_INTERVAL);
   wsInitialized = true;
@@ -2202,7 +2227,8 @@ bool readAtomizerLevel() {
 
   if (distance > 21) {
 #if SSCM_DEBUG
-    Serial.println("[Atomizer] Invalid (out of range): " + String(distance) + " cm");
+    Serial.println("[Atomizer] Invalid (out of range): " + String(distance) +
+                   " cm");
 #endif
     currentAtomizerDistance = -1;
     return true;
@@ -2233,7 +2259,8 @@ bool readFoamLevel() {
 
   if (distance > 21) {
 #if SSCM_DEBUG
-    Serial.println("[Foam] Invalid (out of range): " + String(distance) + " cm");
+    Serial.println("[Foam] Invalid (out of range): " + String(distance) +
+                   " cm");
 #endif
     currentFoamDistance = -1;
     return true;
@@ -2898,8 +2925,8 @@ void setup() {
 
 #if SSCM_DEBUG
   Serial.println("\n\n=================================");
-  Serial.println("  Smart Shoe Care Machine");
-  Serial.println("  Firmware Version 1.0");
+  Serial.printf("  %s\n", BOARD_NAME);
+  Serial.printf("  Firmware v%s\n", FIRMWARE_VERSION);
   Serial.println("=================================\n");
 #endif
 
@@ -3933,9 +3960,8 @@ void loop() {
       // Log combined reading
       if (atomizerSuccess || foamSuccess) {
 #if SSCM_DEBUG
-        Serial.println(
-            "[Level] Atomizer: " + String(currentAtomizerDistance) +
-            " cm | Foam: " + String(currentFoamDistance) + " cm");
+        Serial.println("[Level] Atomizer: " + String(currentAtomizerDistance) +
+                       " cm | Foam: " + String(currentFoamDistance) + " cm");
 #endif
       }
 

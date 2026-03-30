@@ -36,11 +36,9 @@ export function createWebSocketServer(server: Server) {
       const serverHost = request.headers.host // e.g. "192.168.43.147:3000"
       const allowedOrigins = [
         'http://localhost:3000',
-        'http://localhost:3001',
         'file://',
-        process.env.APP_URL,
-        // Extra origins from env (comma-separated)
-        ...(process.env.WS_ALLOWED_ORIGINS ? process.env.WS_ALLOWED_ORIGINS.split(',').map(s => s.trim()) : []),
+        // TRUSTED_ORIGINS env var (comma-separated) — same variable used by Better Auth
+        ...(process.env.TRUSTED_ORIGINS ? process.env.TRUSTED_ORIGINS.split(',').map(s => s.trim()) : []),
       ].filter(Boolean)
 
       // Also allow same-host connections (tablet accessing via LAN IP)
@@ -78,6 +76,12 @@ export function createWebSocketServer(server: Server) {
 
   wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
     console.log('[WebSocket] New connection')
+
+    const connUrl = new URL(request.url || '', `http://${request.headers.host}`)
+    const connToken = connUrl.searchParams.get('token') || request.headers.cookie?.match(/auth-token=([^;]+)/)?.[1] || null
+    const connDeviceId = connUrl.searchParams.get('deviceId')
+    // True if this WS connection is from an ESP32 device (no auth token, SSCM- prefix)
+    const isDeviceWsClient = !validateWebSocketToken(connToken) && !!connDeviceId && connDeviceId.startsWith('SSCM-')
 
     let deviceId: string | null = null
 
@@ -137,12 +141,12 @@ export function createWebSocketServer(server: Server) {
               }))
 
               // If device was seen recently, it's already online — tell the client immediately.
-              // Use 60s (2× the 30s heartbeat interval) so one missed/late heartbeat
-              // doesn't falsely flip the device offline.
+              // Use 15s so a stale lastSeen doesn't falsely report the device as online
+              // after it has physically disconnected.
               const secondsSinceLastSeen = device.lastSeen
                 ? (Date.now() - new Date(device.lastSeen).getTime()) / 1000
                 : Infinity
-              if (secondsSinceLastSeen < 60) {
+              if (secondsSinceLastSeen < 10) {
                 ws.send(JSON.stringify({
                   type: 'device-online',
                   deviceId: subscribeDeviceId,
@@ -306,8 +310,8 @@ export function createWebSocketServer(server: Server) {
         // Sent after CAM responds to pairing broadcast with PairingAck
         else if (message.type === 'cam-paired' && message.deviceId) {
           const mainDeviceId = message.deviceId as string
-          const camDeviceId  = message.camDeviceId as string
-          const camIp        = message.camIp as string | undefined
+          const camDeviceId = message.camDeviceId as string
+          const camIp = message.camIp as string | undefined
           console.log(`[WebSocket] CAM paired: ${camDeviceId} -> ${mainDeviceId}${camIp ? ` @ ${camIp}` : ''}`)
 
           // Update camDeviceId, camIp, and camSynced in database
@@ -316,7 +320,7 @@ export function createWebSocketServer(server: Server) {
               where: { deviceId: mainDeviceId },
               data: {
                 camDeviceId: camDeviceId,
-                camSynced:   true,
+                camSynced: true,
                 ...(camIp ? { camIp } : {}),
               }
             })
@@ -419,7 +423,7 @@ export function createWebSocketServer(server: Server) {
 
         // Handle classification started (kept for backward compat with old CAM firmware)
         else if (message.type === 'classification-started' && message.deviceId) {
-          const sourceId    = message.deviceId as string
+          const sourceId = message.deviceId as string
           const mainId = sourceId.startsWith('SSCM-CAM-')
             ? sourceId.replace('SSCM-CAM-', 'SSCM-')
             : sourceId
@@ -503,6 +507,11 @@ export function createWebSocketServer(server: Server) {
           if (connections.size === 0) {
             deviceConnections.delete(deviceId)
           }
+        }
+        // If the ESP32 device itself disconnected, notify browser subscribers
+        if (isDeviceWsClient) {
+          console.log(`[WebSocket] ESP32 device disconnected: ${deviceId} — broadcasting device-offline`)
+          broadcastToDevice(deviceId, { type: 'device-offline', deviceId })
         }
         console.log(`[WebSocket] Client unsubscribed from device: ${deviceId}`)
       }

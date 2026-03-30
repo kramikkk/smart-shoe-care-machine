@@ -1,9 +1,11 @@
 "use client"
 
 import { motion } from "motion/react"
-import { Loader2, Settings } from "lucide-react"
+import { Settings } from "lucide-react"
+import PageLoader from "@/components/ui/PageLoader"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
+import { useSensorData } from "@/contexts/SensorDataContext"
 import { DevicePairingCard } from "@/components/settings/DevicePairingCard"
 import { ServicePricingCard } from "@/components/settings/ServicePricingCard"
 import { ServiceDurationCard } from "@/components/settings/ServiceDurationCard"
@@ -30,15 +32,15 @@ const itemVariants = {
 
 export default function SettingsPage() {
   const { selectedDevice } = useDeviceFilter()
+  const { isConnected } = useSensorData()
   const pairing = useDevicePairing()
   const pricing = useServicePricing(selectedDevice)
   const duration = useServiceDuration(selectedDevice)
 
   if (pricing.isLoading || duration.isLoading) {
     return (
-      <div className="w-full h-[60vh] flex flex-col items-center justify-center space-y-4">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-muted-foreground animate-pulse">Loading settings...</p>
+      <div className="flex flex-1 flex-col w-full">
+        <PageLoader label="Loading settings" />
       </div>
     )
   }
@@ -59,7 +61,11 @@ export default function SettingsPage() {
 
       <motion.div variants={itemVariants}>
         <DevicePairingCard
-          devices={pairing.devices}
+          devices={pairing.devices.map(d =>
+            d.deviceId === selectedDevice
+              ? { ...d, status: isConnected ? 'connected' as const : 'disconnected' as const }
+              : d
+          )}
           isPairing={pairing.isPairing}
           pairingDialogOpen={pairing.pairingDialogOpen}
           pairingDeviceId={pairing.pairingDeviceId}

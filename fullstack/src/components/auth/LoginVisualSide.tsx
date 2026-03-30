@@ -64,7 +64,7 @@ export function LoginVisualSide() {
           <span className="text-[10px] font-mono tracking-widest text-white uppercase">System Status: Ready</span>
         </div>
         <div className="text-[10px] font-mono tracking-widest text-white uppercase text-right">
-          v1.0.2 / SSCM_CORE
+          v{process.env.NEXT_PUBLIC_APP_VERSION} / SSCM_CORE
         </div>
       </div>
     </div>

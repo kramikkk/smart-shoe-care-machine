@@ -35,28 +35,130 @@ export async function POST(req: NextRequest) {
     const safeEmail   = escapeHtml(email)
     const safeMessage = escapeHtml(message)
 
+    const timestamp = new Date().toLocaleString('en-PH', {
+        timeZone: 'Asia/Manila',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZoneName: 'short',
+    })
+
     const { error } = await resend.emails.send({
         from: 'onboarding@resend.dev',
         to: contactEmail,
         replyTo: email,
-        subject: `New Inquiry from ${safeName}`,
+        subject: `New Inquiry from ${safeName} — Smart Shoe Care Machine`,
         html: `
-            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2 style="color: #1a1a1a;">New Inquiry — Smart Shoe Care Machine</h2>
-                <table style="width: 100%; border-collapse: collapse;">
-                    <tr>
-                        <td style="padding: 8px 0; color: #555; width: 120px;">Name</td>
-                        <td style="padding: 8px 0; font-weight: 600;">${safeName}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 8px 0; color: #555;">Email</td>
-                        <td style="padding: 8px 0;"><a href="mailto:${safeEmail}">${safeEmail}</a></td>
-                    </tr>
-                </table>
-                <hr style="margin: 16px 0; border: none; border-top: 1px solid #eee;" />
-                <h3 style="color: #1a1a1a;">Message</h3>
-                <p style="color: #333; white-space: pre-wrap;">${safeMessage}</p>
-            </div>
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /></head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:'Helvetica Neue',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:32px 0;">
+  <tr><td align="center">
+    <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e4e4e7;">
+
+      <!-- Header -->
+      <tr>
+        <td style="background:#18181b;padding:24px 32px;">
+          <p style="margin:0;font-size:13px;font-weight:700;letter-spacing:2px;color:#a1a1aa;text-transform:uppercase;">Smart Shoe Care Machine</p>
+          <p style="margin:4px 0 0;font-size:11px;color:#52525b;letter-spacing:1px;">Customer Inquiry Notification</p>
+        </td>
+      </tr>
+
+      <!-- Title Banner -->
+      <tr>
+        <td style="background:#eff6ff;border-left:5px solid #2563eb;border-bottom:1px solid #93c5fd;padding:16px 32px;">
+          <p style="margin:0 0 2px;font-size:11px;font-weight:700;letter-spacing:2px;color:#2563eb;text-transform:uppercase;">New Inquiry Received</p>
+          <h1 style="margin:6px 0 0;font-size:20px;font-weight:700;color:#18181b;line-height:1.3;">Customer Contact Form Submission</h1>
+        </td>
+      </tr>
+
+      <!-- Body -->
+      <tr>
+        <td style="padding:32px;">
+
+          <p style="margin:0 0 24px;font-size:14px;color:#52525b;line-height:1.7;">
+            A new inquiry has been submitted through the Smart Shoe Care Machine website contact form.
+            The details of the submission are provided below for your reference.
+          </p>
+
+          <!-- Contact Details -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#fafafa;border:1px solid #e4e4e7;border-radius:6px;margin-bottom:24px;">
+            <tr>
+              <td colspan="2" style="padding:12px 16px;border-bottom:1px solid #e4e4e7;background:#f4f4f5;border-radius:6px 6px 0 0;">
+                <p style="margin:0;font-size:11px;font-weight:700;letter-spacing:1.5px;color:#71717a;text-transform:uppercase;">Sender Information</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:12px 16px;border-bottom:1px solid #f4f4f5;font-size:13px;color:#71717a;width:160px;vertical-align:top;">Full Name</td>
+              <td style="padding:12px 16px;border-bottom:1px solid #f4f4f5;font-size:13px;color:#18181b;font-weight:600;">${safeName}</td>
+            </tr>
+            <tr>
+              <td style="padding:12px 16px;border-bottom:1px solid #f4f4f5;font-size:13px;color:#71717a;vertical-align:top;">Email Address</td>
+              <td style="padding:12px 16px;border-bottom:1px solid #f4f4f5;font-size:13px;">
+                <a href="mailto:${safeEmail}" style="color:#2563eb;text-decoration:none;">${safeEmail}</a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:12px 16px;font-size:13px;color:#71717a;vertical-align:top;">Date &amp; Time</td>
+              <td style="padding:12px 16px;font-size:13px;color:#18181b;">${timestamp}</td>
+            </tr>
+          </table>
+
+          <!-- Message -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#fafafa;border:1px solid #e4e4e7;border-radius:6px;margin-bottom:28px;">
+            <tr>
+              <td style="padding:12px 16px;border-bottom:1px solid #e4e4e7;background:#f4f4f5;border-radius:6px 6px 0 0;">
+                <p style="margin:0;font-size:11px;font-weight:700;letter-spacing:1.5px;color:#71717a;text-transform:uppercase;">Message</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px;font-size:14px;color:#3f3f46;line-height:1.7;white-space:pre-wrap;">${safeMessage}</td>
+            </tr>
+          </table>
+
+          <!-- Action Note -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#eff6ff;border:1px solid #93c5fd;border-radius:6px;margin-bottom:28px;">
+            <tr>
+              <td style="padding:14px 16px;">
+                <p style="margin:0 0 4px;font-size:11px;font-weight:700;letter-spacing:1.5px;color:#2563eb;text-transform:uppercase;">Action Required</p>
+                <p style="margin:0;font-size:13px;color:#3f3f46;line-height:1.6;">
+                  Please respond to this inquiry at your earliest convenience. You may reply directly
+                  to the sender by writing to <a href="mailto:${safeEmail}" style="color:#2563eb;">${safeEmail}</a>,
+                  or use the reply-to address set in this email.
+                </p>
+              </td>
+            </tr>
+          </table>
+
+          <p style="margin:0 0 4px;font-size:14px;color:#3f3f46;">Regards,</p>
+          <p style="margin:0;font-size:14px;font-weight:600;color:#18181b;">Smart Shoe Care Machine</p>
+          <p style="margin:0;font-size:13px;color:#71717a;">Customer Inquiry System</p>
+
+        </td>
+      </tr>
+
+      <!-- Footer -->
+      <tr>
+        <td style="background:#fafafa;border-top:1px solid #e4e4e7;padding:20px 32px;">
+          <p style="margin:0 0 6px;font-size:12px;color:#a1a1aa;line-height:1.6;">
+            This message was automatically generated upon submission of the contact form on the
+            Smart Shoe Care Machine website. Please do not reply directly to this notification email.
+          </p>
+          <p style="margin:0;font-size:12px;color:#a1a1aa;">
+            To respond to the sender, use the reply-to address: <strong style="color:#71717a;">${safeEmail}</strong>
+          </p>
+        </td>
+      </tr>
+
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>
         `,
     })
 

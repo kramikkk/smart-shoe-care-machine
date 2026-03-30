@@ -140,8 +140,26 @@ model Device {
   durations    ServiceDuration[]
   pricing      ServicePricing[]
   transactions Transaction[]
+  alerts       DeviceAlert[]
 
   @@map("device")
+}
+
+model DeviceAlert {
+  id          String    @id @default(cuid())
+  deviceId    String
+  alertKey    String
+  severity    String
+  title       String
+  description String
+  createdAt   DateTime  @default(now())
+  readAt      DateTime?
+  resolvedAt  DateTime?
+  device      Device    @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
+
+  @@index([deviceId, resolvedAt])
+  @@index([deviceId, alertKey, resolvedAt])
+  @@map("device_alert")
 }
 
 enum UserRole {
