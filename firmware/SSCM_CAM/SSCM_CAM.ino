@@ -1,7 +1,7 @@
 // Set to 0 to disable Serial logging in production builds
 #define SSCM_DEBUG 1
 
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.0.1"
 #define BOARD_NAME "SSCM-CAM"
 
 /*
@@ -161,10 +161,12 @@ static camera_config_t camera_config = {
     .ledc_channel = LEDC_CHANNEL_0,
 
     .pixel_format = PIXFORMAT_JPEG,
-    .frame_size = FRAMESIZE_XGA, // 1024x768 — stable, 3x more detail than SVGA,
-                                 // no overflow
+    .frame_size = FRAMESIZE_VGA, // 640x480 — fits in one Gemini image tile (258
+                                 // tokens); XGA used 2 tiles; sufficient for
+                                 // material classification
 
-    .jpeg_quality = 6, // 0=best quality; 6 is sharp without bloating file size
+    .jpeg_quality =
+        8, // slightly lower quality than 6 to offset VGA's smaller canvas;
     .fb_count = 1,
     .fb_location = CAMERA_FB_IN_PSRAM,
     .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
@@ -693,7 +695,7 @@ bool camera_init(void) {
     // Auto exposure — slight compensation for bright LED strip
     s->set_exposure_ctrl(s, 1); // Auto exposure ON
     s->set_aec2(s, 0);          // Disable night-mode AEC
-    s->set_ae_level(s, -1);     // Slight underexposure to avoid LED blowout
+    s->set_ae_level(s, 0);      // Neutral AEC target (0 = no compensation)
     s->set_gain_ctrl(s, 1);     // Auto gain ON
     s->set_gainceiling(s, GAINCEILING_4X);
 

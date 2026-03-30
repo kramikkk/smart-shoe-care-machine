@@ -11,8 +11,8 @@ function createPrismaClient() {
 
 const prisma = globalForPrisma.prisma ?? createPrismaClient();
 
-if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.prisma = prisma;
-}
+// Always cache on global so module re-evaluation (Next.js HMR in dev, worker restarts
+// in prod) reuses the existing client instead of opening a new connection.
+globalForPrisma.prisma = prisma;
 
 export default prisma;

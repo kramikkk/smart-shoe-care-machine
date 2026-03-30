@@ -26,6 +26,22 @@ export function createWebSocketServer(server: Server) {
     path: '/api/ws'
   })
 
+  // Heartbeat: ping every 30s, terminate connections that don't pong back.
+  // This cleans up dead TCP connections (e.g. network drop without FIN) that
+  // would otherwise accumulate in deviceConnections with readyState === OPEN.
+  const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((ws: WebSocket & { _isAlive?: boolean }) => {
+      if (ws._isAlive === false) {
+        ws.terminate()
+        return
+      }
+      ws._isAlive = false
+      ws.ping()
+    })
+  }, 30_000)
+  heartbeatInterval.unref()
+  wss.on('close', () => clearInterval(heartbeatInterval))
+
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`)
 
@@ -74,7 +90,9 @@ export function createWebSocketServer(server: Server) {
     // Let Next.js handle its own WebSocket connections
   })
 
-  wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
+  wss.on('connection', (ws: WebSocket & { _isAlive?: boolean }, request: IncomingMessage) => {
+    ws._isAlive = true
+    ws.on('pong', () => { ws._isAlive = true })
     console.log('[WebSocket] New connection')
 
     const connUrl = new URL(request.url || '', `http://${request.headers.host}`)
@@ -532,7 +550,12 @@ function broadcastToDevice(deviceId: string, message: any) {
     const messageStr = JSON.stringify(message)
     connections.forEach((ws) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(messageStr)
+        try {
+          ws.send(messageStr)
+        } catch (err) {
+          // Socket closed between readyState check and send — safe to ignore
+          console.warn(`[WebSocket] Send failed for ${deviceId}:`, err)
+        }
       }
     })
   }
@@ -573,7 +596,8 @@ export function broadcastClassificationResult(
   result: string,
   confidence: number,
   subCategory: string = '',
-  condition: 'normal' | 'too_dirty' = 'normal'
+  condition: 'normal' | 'too_dirty' = 'normal',
+  snapshotBase64?: string
 ) {
   broadcastToDevice(deviceId, {
     type: 'classification-result',
@@ -582,6 +606,7 @@ export function broadcastClassificationResult(
     confidence,
     subCategory,
     condition,
+    ...(snapshotBase64 ? { snapshotBase64 } : {}),
   })
 }
 

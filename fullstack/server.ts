@@ -11,12 +11,21 @@ const REQUIRED_ENV_VARS = [
   'PAYMONGO_SECRET_KEY',
   'PAYMONGO_WEBHOOK_SECRET',
   'WS_AUTH_TOKEN',
+  'RESEND_API_KEY',
+  'CONTACT_EMAIL',
 ]
 
 const missing = REQUIRED_ENV_VARS.filter(key => !process.env[key])
 if (missing.length > 0) {
   console.error(`[Startup] Missing required environment variables: ${missing.join(', ')}`)
   process.exit(1)
+}
+
+// TRUSTED_ORIGINS is optional but required in production for auth and WebSocket
+// to accept requests from the real host. Without it, Better Auth falls back to
+// localhost only, silently rejecting all non-localhost logins.
+if (!process.env.TRUSTED_ORIGINS) {
+  console.warn('[Startup] TRUSTED_ORIGINS is not set — Better Auth will only trust http://localhost:3000. Set this to your production URL(s).')
 }
 
 const dev = process.env.NODE_ENV !== 'production'

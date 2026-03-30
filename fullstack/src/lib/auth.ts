@@ -22,6 +22,14 @@ export const auth = betterAuth({
     enabled: true,
     disableSignUp: true, // all accounts created by admin only
   },
+  session: {
+    expiresIn: 60 * 60 * 8,        // 8 hours
+    updateAge: 60 * 60,             // refresh session timestamp every 1 hour
+    cookieCache: {
+      enabled: true,
+      maxAge: 5 * 60,               // cache session cookie for 5 minutes
+    },
+  },
   trustedOrigins: getTrustedOrigins(),
   plugins: [nextCookies(), admin()],
 })

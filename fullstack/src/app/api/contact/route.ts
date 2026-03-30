@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { Resend } from 'resend'
+import { rateLimit } from '@/lib/rate-limit'
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
@@ -15,7 +16,16 @@ function escapeHtml(str: string): string {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export async function POST(req: NextRequest) {
-    const { firstName, lastName, email, message } = await req.json()
+    const rateLimitResult = rateLimit(req, { maxRequests: 5, windowMs: 60 * 60 * 1000 }) // 5/hour per IP
+    if (rateLimitResult) return rateLimitResult
+
+    let body: { firstName?: unknown; lastName?: unknown; email?: unknown; message?: unknown }
+    try {
+        body = await req.json()
+    } catch {
+        return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 })
+    }
+    const { firstName, lastName, email, message } = body
 
     if (!firstName || !lastName || !email || !message) {
         return NextResponse.json({ error: 'All fields are required.' }, { status: 400 })

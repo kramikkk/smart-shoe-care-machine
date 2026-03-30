@@ -21,7 +21,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
-import { Terminal, Wifi, WifiOff, AlertTriangle, ArrowUp, ArrowDown, RotateCw, Zap, Power, Activity, DollarSign, Unlink, RotateCcw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Square, RotateCcw as Home, MapPin, RefreshCw, Coins, Wind, Fan, Flame, Droplets, Waves, Sun, Sparkles, MoveHorizontal } from 'lucide-react'
+import { Terminal, Wifi, WifiOff, AlertTriangle, ArrowUp, ArrowDown, RotateCw, Zap, Power, Activity, DollarSign, Unlink, RotateCcw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Square, RotateCcw as Home, MapPin, RefreshCw, Coins, Wind, Fan, Flame, Droplets, Waves, Sun, Sparkles, MoveHorizontal, Camera, RefreshCcw, Download, VideoOff } from 'lucide-react'
 import { motion } from 'motion/react'
 
 type LogEntry = {
@@ -73,6 +73,11 @@ export default function CommandsPage() {
       message,
     }, ...prev].slice(0, 200))
   }, [])
+
+  // Camera tab state
+  const [streamKey, setStreamKey] = useState(0)
+  const [streamActive, setStreamActive] = useState(false)
+  const [streamStatus, setStreamStatus] = useState<'loading' | 'live' | 'error'>('idle')
 
   // Relay state
   const [relayStates, setRelayStates] = useState<boolean[]>(Array(8).fill(false))
@@ -245,6 +250,7 @@ export default function CommandsPage() {
             <TabsTrigger value="steppers" className="text-xs sm:text-sm">Linear Actuators</TabsTrigger>
             <TabsTrigger value="rgb" className="text-xs sm:text-sm">RGB LED</TabsTrigger>
             <TabsTrigger value="system" className="text-xs sm:text-sm">System</TabsTrigger>
+            <TabsTrigger value="cam" className="text-xs sm:text-sm">Camera</TabsTrigger>
           </TabsList>
         </div>
 
@@ -1258,6 +1264,100 @@ export default function CommandsPage() {
             </div>
           </div>
 
+        </TabsContent>
+
+        {/* ── CAMERA ── */}
+        <TabsContent value="cam">
+          <Card className="glass-card border-none">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2">
+                <Camera className="w-4 h-4 text-muted-foreground" />
+                <CardTitle className="text-sm font-medium">CAM Live Feed</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="px-4 pb-5 flex flex-col items-center gap-4">
+
+              {/* Feed — centered, capped width, 4:3 VGA ratio */}
+              <div className="relative w-full max-w-md rounded-xl overflow-hidden bg-black aspect-[4/3]">
+                {streamActive ? (
+                  <>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      key={streamKey}
+                      src={`/api/device/${selectedDevice}/stream?k=${streamKey}`}
+                      alt="CAM live feed"
+                      className={`w-full h-full object-contain transition-opacity duration-300 ${streamStatus === 'live' ? 'opacity-100' : 'opacity-0'}`}
+                      onLoad={() => setStreamStatus('live')}
+                      onError={() => setStreamStatus('error')}
+                    />
+                    {streamStatus === 'loading' && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                        <Camera className="w-8 h-8 opacity-25 animate-pulse" />
+                        <p className="text-xs">Connecting to camera…</p>
+                      </div>
+                    )}
+                    {streamStatus === 'error' && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                        <VideoOff className="w-8 h-8 opacity-25" />
+                        <p className="text-xs">Camera unreachable</p>
+                      </div>
+                    )}
+                    {/* Live badge overlay */}
+                    {streamStatus === 'live' && (
+                      <div className="absolute top-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-full bg-black/50 backdrop-blur-sm">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
+                        <span className="text-xs text-emerald-400 font-medium">Live</span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+                    <Camera className="w-10 h-10 opacity-15" />
+                    <p className="text-sm opacity-40">Stream not started</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Controls row */}
+              <div className="flex items-center gap-2">
+                {!streamActive ? (
+                  <Button
+                    size="sm"
+                    className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                    onClick={() => { setStreamStatus('loading'); setStreamActive(true); setStreamKey(k => k + 1) }}
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    Start Live View
+                  </Button>
+                ) : (
+                  <>
+                    <Button
+                      size="sm" variant="outline" className="gap-1.5 text-xs"
+                      onClick={() => { setStreamActive(false); setStreamStatus('idle') }}
+                    >
+                      <VideoOff className="w-3.5 h-3.5" />
+                      Stop
+                    </Button>
+                    <Button
+                      size="sm" variant="outline" className="gap-1.5 text-xs"
+                      onClick={() => { setStreamStatus('loading'); setStreamKey(k => k + 1) }}
+                    >
+                      <RefreshCcw className="w-3.5 h-3.5" />
+                      Reconnect
+                    </Button>
+                  </>
+                )}
+                <Button
+                  size="sm" variant="outline" className="gap-1.5 text-xs"
+                  onClick={() => window.open(`/api/device/${selectedDevice}/snapshot?t=${Date.now()}`, '_blank')}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Snapshot
+                </Button>
+              </div>
+
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
 

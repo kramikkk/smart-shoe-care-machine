@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { Camera, Loader2, CheckCircle, AlertCircle, WifiOff } from 'lucide-react'
+import { Camera, Loader2, CheckCircle, AlertCircle, WifiOff, ImageOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useWebSocket } from '@/contexts/WebSocketContext'
 import { debug } from '@/lib/debug'
@@ -16,6 +16,7 @@ type ClassificationResult = {
   confidence: number // -1 = manually selected
   subCategory?: string
   condition?: 'normal' | 'too_dirty'
+  snapshotDataUrl?: string
 }
 
 const VALID_SHOE_TYPES = ['mesh', 'canvas', 'rubber'] as const
@@ -134,6 +135,9 @@ export default function ClassifyPage() {
           confidence: message.confidence,
           subCategory: message.subCategory ?? '',
           condition: message.condition === 'too_dirty' ? 'too_dirty' : 'normal',
+          snapshotDataUrl: message.snapshotBase64
+            ? `data:image/jpeg;base64,${message.snapshotBase64}`
+            : undefined,
         })
         setShowPicker(false)
         setState('success')
@@ -231,248 +235,260 @@ export default function ClassifyPage() {
   const isValidShoeType = result && VALID_SHOE_TYPES.includes(result.shoeType as typeof VALID_SHOE_TYPES[number])
   const canProceed = isValidShoeType && result?.condition !== 'too_dirty'
 
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center px-4 py-8">
-      <StepIndicator steps={AUTO_STEPS} currentStep={1} />
-
-      {/* Title */}
-      <h1 className="text-5xl font-bold text-center mb-8 bg-gradient-to-r from-blue-600 via-cyan-600 to-green-600 bg-clip-text text-transparent">
-        Shoe Classification
-      </h1>
-
-      {/* Status Card */}
-      <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl p-8 max-w-md w-full text-center">
-        {/* Icon */}
-        <div className="mb-6 flex justify-center">
-          {state === 'connecting' && (
-            <div className="w-32 h-32 rounded-full bg-gray-100 flex items-center justify-center">
-              <Loader2 className="w-16 h-16 text-gray-400 animate-spin" />
-            </div>
-          )}
-          {state === 'syncing' && (
-            <div className="w-32 h-32 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center animate-pulse">
-              <WifiOff className="w-16 h-16 text-white" />
-            </div>
-          )}
-          {state === 'classifying' && (
-            <div className="w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center animate-pulse">
-              <Camera className="w-16 h-16 text-white" />
-            </div>
-          )}
-          {state === 'success' && result && (
-            <div className={`w-32 h-32 rounded-full flex items-center justify-center ${
-              isValidShoeType
-                ? 'bg-gradient-to-br from-green-500 to-emerald-500'
-                : 'bg-gradient-to-br from-amber-400 to-orange-500'
-            }`}>
-              {isValidShoeType
-                ? <CheckCircle className="w-16 h-16 text-white" />
-                : <AlertCircle className="w-16 h-16 text-white" />
-              }
-            </div>
-          )}
-          {state === 'error' && (
-            <div className="w-32 h-32 rounded-full bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center">
-              <AlertCircle className="w-16 h-16 text-white" />
-            </div>
-          )}
-        </div>
-
-        {/* Status Text */}
-        <div className="mb-6">
-          {state === 'connecting' && (
-            <>
-              <h2 className="text-2xl font-bold text-gray-700 mb-2">Connecting...</h2>
-              <p className="text-gray-500">Setting up camera connection</p>
-            </>
-          )}
-          {state === 'syncing' && (
-            <>
-              <h2 className="text-2xl font-bold text-amber-600 mb-2">Camera Not Synced</h2>
-              <p className="text-gray-500">Waiting for camera module to connect...</p>
-              <div className="mt-4 flex justify-center gap-1">
-                {[0, 1, 2].map((i) => (
-                  <div
-                    key={i}
-                    className="w-3 h-3 rounded-full bg-amber-500 animate-bounce"
-                    style={{ animationDelay: `${i * 0.15}s` }}
-                  />
-                ))}
-              </div>
-              <p className="mt-4 text-sm text-gray-400">
-                The camera module is syncing via ESP-NOW. This usually takes a few seconds.
-              </p>
-            </>
-          )}
-          {state === 'classifying' && (
-            <>
-              <h2 className="text-2xl font-bold text-gray-700 mb-2">Analyzing Shoe...</h2>
-              <p className="text-gray-500">Please wait while we identify your shoe type</p>
-              <div className="mt-4 flex justify-center gap-1">
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <div
-                    key={i}
-                    className="w-3 h-3 rounded-full bg-cyan-500 animate-bounce"
-                    style={{ animationDelay: `${i * 0.1}s` }}
-                  />
-                ))}
-              </div>
-            </>
-          )}
-          {state === 'success' && result && !showPicker && (
-            <>
-              {isValidShoeType && (
-                <>
-                  <h2 className="text-2xl font-bold text-green-600 mb-2">Shoe Detected!</h2>
-                  <p className="text-3xl font-bold text-gray-800 capitalize mb-1">
-                    {result.shoeType}
-                  </p>
-                  {result.subCategory && (
-                    <p className="text-lg text-gray-600 mb-1">{result.subCategory}</p>
-                  )}
-                  <p className="text-gray-500">
-                    Confidence: {result.confidence === -1 ? 'Manual' : `${(result.confidence * 100).toFixed(1)}%`}
-                  </p>
-                  {result.condition && (
-                    <>
-                      {result.condition === 'too_dirty' ? (
-                        <div className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-100 text-red-700 font-semibold text-sm">
-                          <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
-                          Too Dirty
-                        </div>
-                      ) : (
-                        <div className="mt-3 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-green-100 text-green-700 font-semibold text-sm">
-                          <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
-                          Normal Condition
-                        </div>
-                      )}
-                      {result.condition === 'too_dirty' && (
-                        <p className="mt-3 text-sm text-red-600">
-                          The shoe is too heavily soiled for our system. Please remove excessive mud or dirt before trying again.
-                        </p>
-                      )}
-                    </>
-                  )}
-                </>
-              )}
-              {result.shoeType === 'no_shoe' && (
-                <>
-                  <h2 className="text-2xl font-bold text-amber-600 mb-2">No Shoe Detected</h2>
-                  <p className="text-gray-500">Please place your shoe in the chamber and try again.</p>
-                  {result.confidence > 0 && (
-                    <p className="text-sm text-gray-400 mt-1">
-                      Confidence: {(result.confidence * 100).toFixed(1)}%
-                    </p>
-                  )}
-                </>
-              )}
-              {result.shoeType === 'invalid' && (
-                <>
-                  <h2 className="text-2xl font-bold text-amber-600 mb-2">Unsupported Shoe Type</h2>
-                  {result.subCategory && (
-                    <p className="text-lg font-semibold text-gray-700 mb-1">{result.subCategory}</p>
-                  )}
-                  <p className="text-gray-500">This shoe type is not supported. Our machine cleans mesh, canvas, and rubber shoes only.</p>
-                  {result.confidence > 0 && (
-                    <p className="text-sm text-gray-400 mt-1">
-                      Confidence: {(result.confidence * 100).toFixed(1)}%
-                    </p>
-                  )}
-                </>
-              )}
-            </>
-          )}
-          {state === 'success' && showPicker && (
-            <>
-              <h2 className="text-2xl font-bold text-gray-700 mb-2">Select Shoe Type</h2>
-              <p className="text-gray-500 mb-4">Choose the material of your shoe:</p>
-              <div className="flex flex-col gap-3 w-full">
-                {(['mesh', 'canvas', 'rubber'] as const).map((type) => (
-                  <button
-                    key={type}
-                    onClick={() => handleManualSelect(type)}
-                    className="w-full py-4 rounded-2xl border-2 border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition-all text-xl font-semibold text-gray-700 capitalize"
-                  >
-                    {type}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={() => setShowPicker(false)}
-                className="mt-4 text-sm text-gray-400 hover:text-gray-600 underline"
-              >
-                Back
-              </button>
-            </>
-          )}
-          {state === 'error' && (
-            <>
-              <h2 className="text-2xl font-bold text-red-600 mb-2">Classification Failed</h2>
-              <p className="text-gray-500">{error}</p>
-            </>
-          )}
-        </div>
-
-        {/* Buttons */}
+  // ── Non-success states: centered icon card ──────────────────────────────────
+  const renderStatusCard = () => (
+    <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl p-8 max-w-md w-full text-center">
+      <div className="mb-6 flex justify-center">
         {state === 'connecting' && (
-          <div className="flex gap-4 justify-center">
-            <Button onClick={handleCancel} variant="outline" className="px-6 py-3">
-              Cancel
-            </Button>
+          <div className="w-32 h-32 rounded-full bg-gray-100 flex items-center justify-center">
+            <Loader2 className="w-16 h-16 text-gray-400 animate-spin" />
           </div>
         )}
         {state === 'syncing' && (
-          <div className="flex gap-4 justify-center">
-            <Button onClick={handleCancel} variant="outline" className="px-6 py-3">
-              Cancel
-            </Button>
+          <div className="w-32 h-32 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center animate-pulse">
+            <WifiOff className="w-16 h-16 text-white" />
           </div>
         )}
         {state === 'classifying' && (
-          <div className="flex gap-4 justify-center">
-            <Button onClick={handleCancel} variant="outline" className="px-6 py-3">
-              Cancel
-            </Button>
+          <div className="w-32 h-32 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center animate-pulse">
+            <Camera className="w-16 h-16 text-white" />
           </div>
         )}
-        {state === 'success' && result && !showPicker && (
-          <div className="flex gap-4 justify-center">
-            <Button onClick={handleCancel} variant="outline" className="px-6 py-3">
+        {state === 'error' && (
+          <div className="w-32 h-32 rounded-full bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center">
+            <AlertCircle className="w-16 h-16 text-white" />
+          </div>
+        )}
+      </div>
+
+      <div className="mb-6">
+        {state === 'connecting' && (
+          <>
+            <h2 className="text-2xl font-bold text-gray-700 mb-2">Connecting...</h2>
+            <p className="text-gray-500">Setting up camera connection</p>
+          </>
+        )}
+        {state === 'syncing' && (
+          <>
+            <h2 className="text-2xl font-bold text-amber-600 mb-2">Camera Not Synced</h2>
+            <p className="text-gray-500">Waiting for camera module to connect...</p>
+            <div className="mt-4 flex justify-center gap-1">
+              {[0, 1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="w-3 h-3 rounded-full bg-amber-500 animate-bounce"
+                  style={{ animationDelay: `${i * 0.15}s` }}
+                />
+              ))}
+            </div>
+            <p className="mt-4 text-sm text-gray-400">
+              The camera module is syncing via ESP-NOW. This usually takes a few seconds.
+            </p>
+          </>
+        )}
+        {state === 'classifying' && (
+          <>
+            <h2 className="text-2xl font-bold text-gray-700 mb-2">Analyzing Shoe...</h2>
+            <p className="text-gray-500">Please wait while we identify your shoe type</p>
+            <div className="mt-4 flex justify-center gap-1">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div
+                  key={i}
+                  className="w-3 h-3 rounded-full bg-cyan-500 animate-bounce"
+                  style={{ animationDelay: `${i * 0.1}s` }}
+                />
+              ))}
+            </div>
+          </>
+        )}
+        {state === 'error' && (
+          <>
+            <h2 className="text-2xl font-bold text-red-600 mb-2">Classification Failed</h2>
+            <p className="text-gray-500">{error}</p>
+          </>
+        )}
+      </div>
+
+      <div className="flex gap-4 justify-center">
+        <Button onClick={handleCancel} variant="outline" className="px-6 py-3">
+          Cancel
+        </Button>
+        {state === 'error' && (
+          <Button
+            onClick={handleRetry}
+            className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white"
+          >
+            Try Again
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+
+  // ── Success state: snapshot + result card ───────────────────────────────────
+  const renderSuccessCard = () => {
+    if (!result) return null
+
+    if (showPicker) {
+      return (
+        <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl p-8 max-w-md w-full text-center">
+          <h2 className="text-2xl font-bold text-gray-700 mb-2">Select Shoe Type</h2>
+          <p className="text-gray-500 mb-4">Choose the material of your shoe:</p>
+          <div className="flex flex-col gap-3 w-full">
+            {(['mesh', 'canvas', 'rubber'] as const).map((type) => (
+              <button
+                key={type}
+                onClick={() => handleManualSelect(type)}
+                className="w-full py-4 rounded-2xl border-2 border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition-all text-xl font-semibold text-gray-700 capitalize"
+              >
+                {type}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => setShowPicker(false)}
+            className="mt-4 text-sm text-gray-400 hover:text-gray-600 underline"
+          >
+            Back
+          </button>
+        </div>
+      )
+    }
+
+    const accentColor =
+      isValidShoeType && result.condition !== 'too_dirty'
+        ? 'from-green-500 to-emerald-500'
+        : result.shoeType === 'no_shoe'
+        ? 'from-gray-400 to-gray-500'
+        : 'from-amber-400 to-orange-500'
+
+    return (
+      <div className="bg-white/80 backdrop-blur-sm rounded-3xl shadow-xl overflow-hidden max-w-3xl w-full flex flex-row">
+        {/* LEFT — clean image, no overlays */}
+        <div className="relative aspect-[4/3] w-[55%] flex-shrink-0 bg-gray-900">
+          {result.snapshotDataUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={result.snapshotDataUrl}
+              alt="Shoe snapshot"
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-600">
+              <ImageOff className="w-12 h-12" />
+              <span className="text-sm">No snapshot</span>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT — three zones: status / info (centered) / actions */}
+        <div className="flex flex-col flex-1 px-7 py-5">
+
+          {/* Zone 1 — status + confidence */}
+          <div className="flex items-center justify-between pb-4 border-b border-gray-100">
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full bg-gradient-to-r ${accentColor} shadow-sm`}>
+              {isValidShoeType
+                ? <CheckCircle className="w-4 h-4 text-white" />
+                : <AlertCircle className="w-4 h-4 text-white" />
+              }
+              <span className="text-white text-sm font-semibold">
+                {isValidShoeType ? 'Shoe Detected' : result.shoeType === 'no_shoe' ? 'No Shoe' : 'Unsupported'}
+              </span>
+            </div>
+            {result.confidence >= 0 && (
+              <span className="text-sm font-semibold text-gray-400">
+                {(result.confidence * 100).toFixed(0)}% match
+              </span>
+            )}
+          </div>
+
+          {/* Zone 2 — main info, vertically centered */}
+          <div className="flex-1 flex flex-col justify-center gap-2 py-3">
+            {isValidShoeType && (
+              <>
+                <p className="text-5xl font-bold text-gray-800 capitalize leading-tight">{result.shoeType}</p>
+                {result.subCategory && (
+                  <p className="text-lg text-gray-400">{result.subCategory}</p>
+                )}
+                <div className="mt-1">
+                  {result.condition === 'too_dirty' ? (
+                    <>
+                      <span className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-red-100 text-red-700 font-semibold text-sm">
+                        <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+                        Too Dirty to Clean
+                      </span>
+                      <p className="mt-2 text-sm text-red-500">
+                        Too heavily soiled. Remove excessive mud or dirt and try again.
+                      </p>
+                    </>
+                  ) : (
+                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-green-100 text-green-700 font-semibold text-sm">
+                      <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
+                      Normal Condition
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+
+            {result.shoeType === 'no_shoe' && (
+              <>
+                <p className="text-3xl font-bold text-amber-600">No Shoe Detected</p>
+                <p className="text-gray-400 text-sm">Place your shoe in the chamber and try again.</p>
+              </>
+            )}
+
+            {result.shoeType === 'invalid' && (
+              <>
+                <p className="text-3xl font-bold text-amber-600">Unsupported Shoe</p>
+                {result.subCategory && (
+                  <p className="text-lg font-semibold text-gray-700">{result.subCategory}</p>
+                )}
+                <p className="text-gray-400 text-sm">We clean mesh, canvas, and rubber shoes only.</p>
+              </>
+            )}
+          </div>
+
+          {/* Zone 3 — actions */}
+          <div className="flex items-center gap-3 pt-4 border-t border-gray-100">
+            <Button onClick={handleCancel} variant="outline" className="flex-1 py-3">
               Cancel
             </Button>
             <Button
               onClick={handleRetry}
               variant={canProceed ? 'outline' : 'default'}
-              className={canProceed ? 'px-6 py-3' : 'px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white'}
+              className={canProceed
+                ? 'flex-1 py-3'
+                : 'flex-1 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white'}
             >
               Retry
             </Button>
             {canProceed && (
               <Button
                 onClick={handleProceedToPayment}
-                className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white"
+                className="flex-1 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white"
               >
                 Proceed
               </Button>
             )}
           </div>
-        )}
-        {state === 'error' && (
-          <div className="flex gap-4 justify-center">
-            <Button onClick={handleCancel} variant="outline" className="px-6 py-3">
-              Cancel
-            </Button>
-            <Button
-              onClick={handleRetry}
-              className="px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-700 hover:to-cyan-700 text-white"
-            >
-              Try Again
-            </Button>
-          </div>
-        )}
-      </div>
 
-      {/* Instructions */}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center px-4 py-8">
+      <StepIndicator steps={AUTO_STEPS} currentStep={1} />
+
+      <h1 className="text-5xl font-bold text-center mb-8 bg-gradient-to-r from-blue-600 via-cyan-600 to-green-600 bg-clip-text text-transparent">
+        Shoe Classification
+      </h1>
+
+      {state === 'success' ? renderSuccessCard() : renderStatusCard()}
+
+      {/* Instructions below card */}
       {(state === 'connecting' || state === 'classifying') && (
         <p className="mt-8 text-gray-500 text-center max-w-md">
           Please ensure your shoe is placed in the scanning area and the camera has a clear view.
