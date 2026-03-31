@@ -55,8 +55,16 @@ export async function POST(
   const owned = await verifyOwnership(deviceId, authResult.user.id)
   if (!owned) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-  const { alertKey, severity, title, description } = await req.json()
-  if (!alertKey || !severity || !title || !description) {
+  let body: { alertKey?: unknown; severity?: unknown; title?: unknown; description?: unknown }
+  try {
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
+  }
+  const { alertKey, severity, title, description } = body
+  if (!alertKey || !severity || !title || !description ||
+      typeof alertKey !== 'string' || typeof severity !== 'string' ||
+      typeof title !== 'string' || typeof description !== 'string') {
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
   }
 

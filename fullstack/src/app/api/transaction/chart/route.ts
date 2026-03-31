@@ -51,7 +51,7 @@ export async function GET(req: NextRequest) {
       )
     } else {
       // Use days param for day granularity
-      const days = parseInt(searchParams.get('days') || '7')
+      const days = Math.min(365, Math.max(1, parseInt(searchParams.get('days') ?? '7') || 7))
       startDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000)
     }
 

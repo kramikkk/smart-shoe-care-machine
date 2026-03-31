@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { z } from 'zod'
+import { rateLimit } from '@/lib/rate-limit'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,6 +16,9 @@ const DeviceStatusSchema = z.object({
  * This allows the device to maintain its online status
  */
 export async function POST(request: NextRequest) {
+  const rateLimitResult = rateLimit(request, { maxRequests: 30, windowMs: 60000 })
+  if (rateLimitResult) return rateLimitResult
+
   try {
     const body = await request.json()
     const validatedData = DeviceStatusSchema.parse(body)

@@ -9,7 +9,8 @@ interface RateLimitStore {
 // In production, use Redis for distributed rate limiting
 const rateLimitStore = new Map<string, RateLimitStore>()
 
-// Clean up expired entries every 10 minutes
+// Clean up expired entries every 10 minutes.
+// unref() so this timer doesn't prevent clean process exit.
 setInterval(() => {
   const now = Date.now()
   for (const [key, value] of rateLimitStore.entries()) {
@@ -17,7 +18,7 @@ setInterval(() => {
       rateLimitStore.delete(key)
     }
   }
-}, 10 * 60 * 1000)
+}, 10 * 60 * 1000).unref()
 
 export interface RateLimitConfig {
   maxRequests: number // Maximum requests allowed

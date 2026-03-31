@@ -36,10 +36,10 @@ const itemVariants = {
 }
 
 const TIME_RANGE_OPTIONS: { value: TimeRange; label: string }[] = [
-    { value: 'today', label: 'Today vs Yesterday' },
-    { value: 'week', label: 'This Week vs Last Week' },
-    { value: 'month', label: 'This Month vs Last Month' },
-    { value: 'year', label: 'This Year vs Last Year' },
+    { value: 'today', label: 'Today' },
+    { value: 'week', label: 'This Week' },
+    { value: 'month', label: 'This Month' },
+    { value: 'year', label: 'This Year' },
 ]
 
 function DashboardInner() {
@@ -79,17 +79,17 @@ function DashboardInner() {
                 <StatsCard id="totalRevenue" />
                 <StatsCard id="totalTransactions" />
                 <div className="sm:col-span-2 xl:col-span-1">
-                    <SensorCard id="systemStatus"/>
+                    <SensorCard id="systemStatus" />
                 </div>
             </motion.div>
 
             {/* Charts Section */}
             <motion.div variants={itemVariants} className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-stretch">
                 <div className="lg:col-span-1 xl:col-span-2 h-full">
-                    <AreaChartCard/>
+                    <AreaChartCard />
                 </div>
                 <div className="lg:col-span-1 xl:col-span-1 h-full">
-                    <PieChartCard/>
+                    <PieChartCard />
                 </div>
             </motion.div>
 

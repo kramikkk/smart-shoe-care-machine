@@ -27,7 +27,12 @@ export async function GET(req: NextRequest) {
     // Build where clause with device ownership enforcement
     const whereClause: any = {}
     if (startDate && endDate) {
-      whereClause.dateTime = { gte: new Date(startDate), lte: new Date(endDate) }
+      const start = new Date(startDate)
+      const end = new Date(endDate)
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return NextResponse.json({ success: false, error: 'Invalid date range' }, { status: 400 })
+      }
+      whereClause.dateTime = { gte: start, lte: end }
     }
     if (deviceId) {
       if (!userDeviceIds.includes(deviceId)) {
@@ -41,9 +46,10 @@ export async function GET(req: NextRequest) {
       whereClause.deviceId = { in: userDeviceIds }
     }
 
-    // Fetch transactions with optional device filter
+    // Fetch transactions with optional device filter — cap at 10k rows to avoid OOM
     const transactions = await prisma.transaction.findMany({
-      where: whereClause
+      where: whereClause,
+      take: 10000,
     })
 
     // Determine which field to group by based on type

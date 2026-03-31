@@ -26,6 +26,22 @@ export function createWebSocketServer(server: Server) {
     path: '/api/ws'
   })
 
+  // Heartbeat: ping every 30s, terminate connections that don't pong back.
+  // This cleans up dead TCP connections (e.g. network drop without FIN) that
+  // would otherwise accumulate in deviceConnections with readyState === OPEN.
+  const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((ws: WebSocket & { _isAlive?: boolean }) => {
+      if (ws._isAlive === false) {
+        ws.terminate()
+        return
+      }
+      ws._isAlive = false
+      ws.ping()
+    })
+  }, 30_000)
+  heartbeatInterval.unref()
+  wss.on('close', () => clearInterval(heartbeatInterval))
+
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`)
 
@@ -74,14 +90,18 @@ export function createWebSocketServer(server: Server) {
     // Let Next.js handle its own WebSocket connections
   })
 
-  wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
+  wss.on('connection', (ws: WebSocket & { _isAlive?: boolean }, request: IncomingMessage) => {
+    ws._isAlive = true
+    ws.on('pong', () => { ws._isAlive = true })
     console.log('[WebSocket] New connection')
 
     const connUrl = new URL(request.url || '', `http://${request.headers.host}`)
-    const connToken = connUrl.searchParams.get('token') || request.headers.cookie?.match(/auth-token=([^;]+)/)?.[1] || null
-    const connDeviceId = connUrl.searchParams.get('deviceId')
-    // True if this WS connection is from an ESP32 device (no auth token, SSCM- prefix)
-    const isDeviceWsClient = !validateWebSocketToken(connToken) && !!connDeviceId && connDeviceId.startsWith('SSCM-')
+    // Set to true only when a status-update message is received.
+    // Browser clients (kiosk, dashboard) also pass deviceId in the URL but never send
+    // status-update, so they are NOT treated as device connections. Detecting client type
+    // from URL params alone would misclassify browser tabs as ESP32 devices because both
+    // connect without a valid WS_AUTH_TOKEN in the browser context.
+    let isDeviceWsClient = false
 
     let deviceId: string | null = null
 
@@ -164,6 +184,10 @@ export function createWebSocketServer(server: Server) {
         // Handle device status update from ESP32
         else if (message.type === 'status-update' && message.deviceId) {
           const updateDeviceId = message.deviceId as string
+
+          // Mark this connection as an actual ESP32 device — only firmware sends status-update.
+          // This is used by the close handler to decide whether to broadcast device-offline.
+          isDeviceWsClient = true
 
           // Only the device itself may send status-update for its own deviceId
           if (deviceId && deviceId.startsWith('SSCM-') && deviceId !== updateDeviceId) {
@@ -532,7 +556,12 @@ function broadcastToDevice(deviceId: string, message: any) {
     const messageStr = JSON.stringify(message)
     connections.forEach((ws) => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(messageStr)
+        try {
+          ws.send(messageStr)
+        } catch (err) {
+          // Socket closed between readyState check and send — safe to ignore
+          console.warn(`[WebSocket] Send failed for ${deviceId}:`, err)
+        }
       }
     })
   }
@@ -573,7 +602,8 @@ export function broadcastClassificationResult(
   result: string,
   confidence: number,
   subCategory: string = '',
-  condition: 'normal' | 'too_dirty' = 'normal'
+  condition: 'normal' | 'too_dirty' = 'normal',
+  snapshotBase64?: string
 ) {
   broadcastToDevice(deviceId, {
     type: 'classification-result',
@@ -582,6 +612,7 @@ export function broadcastClassificationResult(
     confidence,
     subCategory,
     condition,
+    ...(snapshotBase64 ? { snapshotBase64 } : {}),
   })
 }
 
