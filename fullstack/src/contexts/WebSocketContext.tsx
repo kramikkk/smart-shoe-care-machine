@@ -30,7 +30,7 @@ enum ConnectionState {
 
 const DEVICE_ID_KEY    = 'kiosk_device_id'
 const GROUP_TOKEN_KEY  = 'kiosk_group_token'
-const MAX_RECONNECT_ATTEMPTS = 5
+const MAX_RECONNECT_DELAY_MS = 30000
 const RECONNECT_DELAY_MS = 3000
 
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
@@ -151,18 +151,17 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
       debug.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`)
 
-      // Attempt to reconnect with exponential backoff
-      if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-        reconnectAttemptsRef.current++
-        const delay = RECONNECT_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current - 1)
-        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`)
+      // Attempt to reconnect with exponential backoff, capped at MAX_RECONNECT_DELAY_MS
+      reconnectAttemptsRef.current++
+      const delay = Math.min(
+        RECONNECT_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current - 1),
+        MAX_RECONNECT_DELAY_MS
+      )
+      console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`)
 
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connectWebSocket(devId)
-        }, delay)
-      } else {
-        console.warn('[WebSocket] Max reconnection attempts reached')
-      }
+      reconnectTimeoutRef.current = setTimeout(() => {
+        connectWebSocket(devId)
+      }, delay)
     }
   }, [])
 

@@ -231,6 +231,14 @@ export function SensorDataProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     if (!selectedDevice) return
 
+    // Pre-check live online status so the UI doesn't flicker offline on page refresh.
+    // The WS subscribe path is slightly delayed (connect → subscribe → server responds),
+    // so we hit the REST status endpoint first to get the current live state immediately.
+    fetch(`/api/device/${encodeURIComponent(selectedDevice)}/status`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then((data: { online?: boolean } | null) => { if (data?.online) setIsConnected(true) })
+      .catch(() => {})
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const wsUrl = `${protocol}//${window.location.host}/api/ws?deviceId=${encodeURIComponent(selectedDevice)}`
 

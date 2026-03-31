@@ -9,9 +9,27 @@ import prisma from './prisma'
 declare global {
   // eslint-disable-next-line no-var
   var _deviceConnections: Map<string, Set<WebSocket>> | undefined
+  // eslint-disable-next-line no-var
+  var _deviceLiveConnections: Map<string, WebSocket> | undefined
+  // eslint-disable-next-line no-var
+  var _deviceLastStatusTime: Map<string, number> | undefined
 }
 const deviceConnections: Map<string, Set<WebSocket>> =
   global._deviceConnections ?? (global._deviceConnections = new Map())
+
+// Tracks the live WebSocket of the ESP32 device itself (set when status-update is received).
+// Used to check real-time online status rather than relying on the stale lastSeen timestamp.
+const deviceLiveConnections: Map<string, WebSocket> =
+  global._deviceLiveConnections ?? (global._deviceLiveConnections = new Map())
+
+// Tracks the last time each device sent a status-update message.
+// Used by the application-level timeout to detect ungraceful disconnects (e.g. power cut)
+// faster than the TCP heartbeat can.
+const deviceLastStatusTime: Map<string, number> =
+  global._deviceLastStatusTime ?? (global._deviceLastStatusTime = new Map())
+
+// Offline after 3 missed status-update cycles (ESP32 sends every 5s → 15s threshold).
+const DEVICE_STATUS_TIMEOUT_MS = 15_000
 
 // Token validation — requires WS_AUTH_TOKEN (enforced at startup in server.ts)
 function validateWebSocketToken(token: string | null): boolean {
@@ -26,7 +44,7 @@ export function createWebSocketServer(server: Server) {
     path: '/api/ws'
   })
 
-  // Heartbeat: ping every 30s, terminate connections that don't pong back.
+  // Heartbeat: ping every 15s, terminate connections that don't pong back.
   // This cleans up dead TCP connections (e.g. network drop without FIN) that
   // would otherwise accumulate in deviceConnections with readyState === OPEN.
   const heartbeatInterval = setInterval(() => {
@@ -38,9 +56,27 @@ export function createWebSocketServer(server: Server) {
       ws._isAlive = false
       ws.ping()
     })
-  }, 30_000)
+  }, 15_000)
   heartbeatInterval.unref()
   wss.on('close', () => clearInterval(heartbeatInterval))
+
+  // Application-level device timeout: detect when an ESP32 stops sending status-updates
+  // (e.g. power cut without a graceful TCP close). Faster than the TCP heartbeat because
+  // we know the device sends status-update every 5s — 3 missed cycles = offline.
+  const deviceTimeoutInterval = setInterval(() => {
+    const now = Date.now()
+    deviceLiveConnections.forEach((_, devId) => {
+      const lastSeen = deviceLastStatusTime.get(devId) ?? 0
+      if (now - lastSeen > DEVICE_STATUS_TIMEOUT_MS) {
+        console.log(`[WebSocket] Device ${devId} timed out (no status-update in ${DEVICE_STATUS_TIMEOUT_MS}ms) — marking offline`)
+        deviceLiveConnections.delete(devId)
+        deviceLastStatusTime.delete(devId)
+        broadcastToDevice(devId, { type: 'device-offline', deviceId: devId })
+      }
+    })
+  }, 5_000)
+  deviceTimeoutInterval.unref()
+  wss.on('close', () => clearInterval(deviceTimeoutInterval))
 
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`)
@@ -93,9 +129,11 @@ export function createWebSocketServer(server: Server) {
   wss.on('connection', (ws: WebSocket & { _isAlive?: boolean }, request: IncomingMessage) => {
     ws._isAlive = true
     ws.on('pong', () => { ws._isAlive = true })
-    console.log('[WebSocket] New connection')
 
     const connUrl = new URL(request.url || '', `http://${request.headers.host}`)
+    const connDeviceId = connUrl.searchParams.get('deviceId')
+    const connSource = connDeviceId?.startsWith('SSCM-') ? `device ${connDeviceId}` : 'browser'
+    console.log(`[WebSocket] New connection from ${connSource}`)
     // Set to true only when a status-update message is received.
     // Browser clients (kiosk, dashboard) also pass deviceId in the URL but never send
     // status-update, so they are NOT treated as device connections. Detecting client type
@@ -160,13 +198,11 @@ export function createWebSocketServer(server: Server) {
                 }
               }))
 
-              // If device was seen recently, it's already online — tell the client immediately.
-              // Use 15s so a stale lastSeen doesn't falsely report the device as online
-              // after it has physically disconnected.
-              const secondsSinceLastSeen = device.lastSeen
-                ? (Date.now() - new Date(device.lastSeen).getTime()) / 1000
-                : Infinity
-              if (secondsSinceLastSeen < 10) {
+              // If the device's live WebSocket is currently open, tell the client immediately.
+              // This avoids the stale-lastSeen false-positive where a recently disconnected
+              // device appears online because its lastSeen timestamp is still fresh.
+              const liveWs = deviceLiveConnections.get(subscribeDeviceId)
+              if (liveWs && liveWs.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                   type: 'device-online',
                   deviceId: subscribeDeviceId,
@@ -188,6 +224,8 @@ export function createWebSocketServer(server: Server) {
           // Mark this connection as an actual ESP32 device — only firmware sends status-update.
           // This is used by the close handler to decide whether to broadcast device-offline.
           isDeviceWsClient = true
+          deviceLiveConnections.set(updateDeviceId, ws)
+          deviceLastStatusTime.set(updateDeviceId, Date.now())
 
           // Only the device itself may send status-update for its own deviceId
           if (deviceId && deviceId.startsWith('SSCM-') && deviceId !== updateDeviceId) {
@@ -199,9 +237,10 @@ export function createWebSocketServer(server: Server) {
 
           // Update lastSeen in database and get current paired status
           try {
-            const updatedDevice = await prisma.device.update({
+            const updatedDevice = await prisma.device.upsert({
               where: { deviceId: updateDeviceId },
-              data: { lastSeen: new Date() }
+              create: { deviceId: updateDeviceId, lastSeen: new Date() },
+              update: { lastSeen: new Date() }
             })
 
             // Send acknowledgment with current paired status for sync
@@ -534,8 +573,17 @@ export function createWebSocketServer(server: Server) {
         }
         // If the ESP32 device itself disconnected, notify browser subscribers
         if (isDeviceWsClient) {
-          console.log(`[WebSocket] ESP32 device disconnected: ${deviceId} — broadcasting device-offline`)
-          broadcastToDevice(deviceId, { type: 'device-offline', deviceId })
+          // Only remove if this specific socket is still the active connection.
+          // This prevents a delayed close event from a dead socket (conn1) 
+          // from deleting the live connection of a reconnected socket (conn2).
+          if (deviceLiveConnections.get(deviceId) === ws) {
+            deviceLiveConnections.delete(deviceId)
+            deviceLastStatusTime.delete(deviceId)
+            console.log(`[WebSocket] ESP32 device disconnected: ${deviceId} — broadcasting device-offline`)
+            broadcastToDevice(deviceId, { type: 'device-offline', deviceId })
+          } else {
+            console.log(`[WebSocket] Stale ESP32 connection closed: ${deviceId} — ignoring since a newer connection exists`)
+          }
         }
         console.log(`[WebSocket] Client unsubscribed from device: ${deviceId}`)
       }
@@ -565,6 +613,14 @@ function broadcastToDevice(deviceId: string, message: any) {
       }
     })
   }
+}
+
+// Returns true if the device has an open live WebSocket connection right now.
+// Used by the status REST endpoint to report real-time online state without
+// relying on the stale lastSeen DB timestamp.
+export function isDeviceLive(deviceId: string): boolean {
+  const liveWs = deviceLiveConnections.get(deviceId)
+  return !!liveWs && liveWs.readyState === WebSocket.OPEN
 }
 
 // Broadcast restart command to ESP32
