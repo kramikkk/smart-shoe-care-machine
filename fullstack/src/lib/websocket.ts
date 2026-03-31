@@ -247,7 +247,17 @@ export function createWebSocketServer(server: Server) {
           // Update lastSeen in database and get current paired status
           // Throttle database writes to once every 60 seconds to prevent connection pool exhaustion
           let isPaired = deviceCachedPairedStatus.get(updateDeviceId) ?? false;
-          
+
+          // Broadcast device-online immediately — before the DB try/catch so it
+          // always fires even if the DB upsert throws. deviceLiveConnections and
+          // deviceLastStatusTime are already set above, so the device IS live.
+          broadcastToDevice(updateDeviceId, {
+            type: 'device-online',
+            deviceId: updateDeviceId,
+            paired: isPaired,
+            lastSeen: new Date().toISOString()
+          })
+
           try {
             if (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId)) {
               const updatedDevice = await prisma.device.upsert({
@@ -258,6 +268,14 @@ export function createWebSocketServer(server: Server) {
               isPaired = updatedDevice.paired;
               deviceCachedPairedStatus.set(updateDeviceId, isPaired);
               deviceLastDbUpdateTime.set(updateDeviceId, now);
+
+              // Re-broadcast with the confirmed paired status from DB (may differ from cache)
+              broadcastToDevice(updateDeviceId, {
+                type: 'device-online',
+                deviceId: updateDeviceId,
+                paired: isPaired,
+                lastSeen: new Date().toISOString()
+              })
             }
 
             // Send acknowledgment with current paired status for sync
@@ -267,15 +285,6 @@ export function createWebSocketServer(server: Server) {
               success: true,
               paired: isPaired
             }))
-
-            // Broadcast device online status to all subscribed clients (tablets)
-            // This ensures tablets know the ESP32 is connected/alive
-            broadcastToDevice(updateDeviceId, {
-              type: 'device-online',
-              deviceId: updateDeviceId,
-              paired: isPaired,
-              lastSeen: new Date().toISOString()
-            })
           } catch (error) {
             console.error(`[WebSocket] Failed to update device ${updateDeviceId}:`, error)
             ws.send(JSON.stringify({

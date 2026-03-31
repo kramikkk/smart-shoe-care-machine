@@ -116,10 +116,14 @@ export default function CommandsPage() {
     setIsDeviceReady(false)
   }, [selectedDevice])
 
-  // Log connection events and handle incoming WS messages
+  // Log connection events and sync isDeviceReady with isConnected.
+  // isDeviceReady must be set true here (not just from incoming messages) so
+  // that commands are enabled immediately when the user navigates to this page
+  // while the device is already online — not waiting for the next sensor tick.
   useEffect(() => {
     if (isConnected) {
       addLog('system', 'Connected to device')
+      setIsDeviceReady(true)
     } else {
       setIsDeviceReady(false)
     }

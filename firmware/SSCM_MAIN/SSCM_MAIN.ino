@@ -1,7 +1,7 @@
 // Set to 0 to disable Serial logging in production builds
 #define SSCM_DEBUG 1
 
-#define FIRMWARE_VERSION "1.0.1"
+#define FIRMWARE_VERSION "1.0.2"
 #define BOARD_NAME "SSCM-MAIN"
 
 /*
@@ -1095,6 +1095,13 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     String subscribeMsg =
         "{\"type\":\"subscribe\",\"deviceId\":\"" + deviceId + "\"}";
     webSocket.sendTXT(subscribeMsg);
+    // Send status-update immediately — don't wait for the subscribed round-trip.
+    // This ensures device-online is broadcast to browser clients right away even
+    // if the subscribed response is delayed or lost.
+    String statusMsg =
+        "{\"type\":\"status-update\",\"deviceId\":\"" + deviceId + "\"}";
+    webSocket.sendTXT(statusMsg);
+    lastStatusUpdate = millis();
     wsLog("info", "WebSocket connected — IP: " + WiFi.localIP().toString() +
                       ", device: " + deviceId);
     break;
@@ -1109,15 +1116,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       Serial.println("[WebSocket] Subscribed");
 #endif
 
-      // Send initial status update immediately after subscribing
-      String statusMsg =
-          "{\"type\":\"status-update\",\"deviceId\":\"" + deviceId + "\"}";
-      webSocket.sendTXT(statusMsg);
-      // Reset the periodic timer so the next scheduled send starts from now,
-      // preventing a double-send burst (immediate + periodic firing right after)
-      lastStatusUpdate = millis();
-
-      // Send CAM sync status so frontend knows if CAM is ready
+      // status-update was already sent in WStype_CONNECTED — no need to
+      // send it again here. Just sync CAM state so the frontend knows if
+      // the camera module is ready.
       sendCamSyncStatus();
     } else if (message.indexOf("\"type\":\"status-ack\"") != -1) {
       // Acknowledgment of status update with paired status sync
@@ -3853,6 +3854,15 @@ void loop() {
     // Register device with backend if not paired (HTTP - one time)
     if (!isPaired) {
       sendDeviceRegistration();
+    }
+
+    // Reset WS library state so connectWebSocket() calls begin() with a fresh
+    // socket. WiFi.begin() above reset the TCP stack, invalidating any socket
+    // the library was holding. Resetting wsInitialized forces a clean begin()
+    // call instead of relying on the library's reconnect from a stale socket.
+    if (!wsConnected) {
+      webSocket.disconnect();
+      wsInitialized = false;
     }
 
     // Connect to WebSocket for real-time updates

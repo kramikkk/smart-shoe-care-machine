@@ -331,11 +331,21 @@ export function SensorDataProvider({ children }: { children: React.ReactNode }) 
           }
 
           if (message.type === 'device-online') {
+            // If sensor data was cleared when the device went offline (lastUpdate
+            // is null), show the loading spinner until fresh data arrives instead
+            // of immediately rendering stale zeros with "Normal" status badges.
+            if (sensorDataRef.current.lastUpdate === null) {
+              setIsLoadingData(true)
+              if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current)
+              dataTimeoutRef.current = setTimeout(() => setIsLoadingData(false), 10000)
+            }
             setIsConnected(true)
           }
 
           if (message.type === 'device-offline') {
             setIsConnected(false)
+            setIsLoadingData(false)
+            if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
             setSensorData(DEFAULT_SENSOR_DATA)
             sensorDataRef.current = DEFAULT_SENSOR_DATA
           }
