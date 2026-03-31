@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Loader2, XCircle, ArrowLeft } from 'lucide-react'
 import { DEFAULT_SERVICES, ServiceType } from '@/lib/kiosk-constants'
 import { usePricing } from '@/hooks/usePricing'
-import { useWebSocket } from '@/contexts/WebSocketContext'
+import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 import { debug, isDebug } from '@/lib/debug'
 
 const OnlinePayment = () => {
@@ -32,7 +32,7 @@ const OnlinePayment = () => {
   }
 
   const { services, isLoaded: isPricingLoaded } = usePricing()
-  const { onMessage } = useWebSocket()
+  const { onMessage } = useKioskWebSocket()
 
   // Get selected service data
   const selectedServiceData = useMemo(() => {

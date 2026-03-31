@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import Image from 'next/image'
 import { Progress } from "@/components/ui/progress"
 import { useSearchParams, useRouter } from 'next/navigation'
-import { useWebSocket } from '@/contexts/WebSocketContext'
+import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 
 const DEFAULT_DURATIONS: Record<string, Record<string, number>> = {
   cleaning:    { gentle: 300, normal: 300, strong: 300 },
@@ -19,7 +19,7 @@ const CustomProgress = () => {
   const care    = searchParams.get('care')    || 'normal'
   const router  = useRouter()
 
-  const { isConnected, deviceId, sendMessage, onMessage } = useWebSocket()
+  const { isConnected, deviceId, sendMessage, onMessage } = useKioskWebSocket()
 
   const fallbackDuration = DEFAULT_DURATIONS[service.toLowerCase()]?.[care.toLowerCase()] ?? 120
   const [totalTime, setTotalTime]         = useState(fallbackDuration)

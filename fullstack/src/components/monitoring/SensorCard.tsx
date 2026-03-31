@@ -5,12 +5,12 @@ import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Loader2 } from "lucide-react"
 import { SensorData } from "@/data/SensorData"
-import { useSensorData } from "@/contexts/SensorDataContext"
+import { useDashboardWebSocket } from "@/contexts/DashboardWebSocketContext"
 
 const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
   const sensor = SensorData[id]
 
-  const { sensorData, isConnected, isLoadingData } = useSensorData()
+  const { sensorData, isConnected, isLoadingData } = useDashboardWebSocket()
 
   const Icon = sensor.icon
 

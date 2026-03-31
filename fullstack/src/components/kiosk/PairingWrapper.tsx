@@ -1,6 +1,6 @@
 'use client'
 
-import { useWebSocket } from '@/contexts/WebSocketContext'
+import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,7 @@ interface PairingWrapperProps {
 }
 
 export default function PairingWrapper({ children }: PairingWrapperProps) {
-  const { isPaired, pairingCode, deviceId } = useWebSocket()
+  const { isPaired, pairingCode, deviceId } = useKioskWebSocket()
   const [setupInput, setSetupInput] = useState('')
   const [setupError, setSetupError] = useState('')
 

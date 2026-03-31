@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { useDeviceFilter } from '@/contexts/DeviceFilterContext'
-import { useSensorData, deriveAlerts } from '@/contexts/SensorDataContext'
+import { useDashboardWebSocket, deriveAlerts } from '@/contexts/DashboardWebSocketContext'
 import { toast } from 'sonner'
 
 type StoredAlert = {
@@ -58,7 +58,7 @@ function formatDateTime(iso: string) {
 
 const SystemAlertCard = ({ className }: { className?: string }) => {
   const { selectedDevice } = useDeviceFilter()
-  const { sensorData, isConnected, alertRefreshSignal } = useSensorData()
+  const { sensorData, isConnected, alertRefreshSignal } = useDashboardWebSocket()
 
   const [activeTab, setActiveTab] = useState<TabType>('current')
   const [currentAlerts, setCurrentAlerts] = useState<StoredAlert[]>([])

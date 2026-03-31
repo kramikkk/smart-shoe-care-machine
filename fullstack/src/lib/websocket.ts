@@ -154,8 +154,61 @@ export function createWebSocketServer(server: Server) {
     // from URL params alone would misclassify browser tabs as ESP32 devices because both
     // connect without a valid WS_AUTH_TOKEN in the browser context.
     let isDeviceWsClient = false
+    let deviceId: string | null = connDeviceId
 
-    let deviceId: string | null = null
+    // AUTO-SUBSCRIBE: If deviceId is provided in URL, add to connections set immediately.
+    // This ensures that even if the client's first 'subscribe' message is delayed or 
+    // the server restarts, the connection is already 'in the room'.
+    if (deviceId) {
+      let connections = deviceConnections.get(deviceId)
+      if (!connections) {
+        connections = new Set<WebSocket>()
+        deviceConnections.set(deviceId, connections)
+      }
+      connections.add(ws)
+      console.log(`[WebSocket] [${connLabel}] auto-subscribed to device: ${deviceId}`);
+
+      // EAGER PUSH: Proactively push the device state immediately after handshake.
+      // Do not wait for the client to send a 'subscribe' JSON packet.
+      ;(async () => {
+        try {
+          const device = await prisma.device.findUnique({
+            where: { deviceId: deviceId as string },
+            select: { paired: true, pairedAt: true, name: true, pairingCode: true, groupToken: true, lastSeen: true, camSynced: true, camDeviceId: true }
+          })
+          if (device && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'device-update',
+              deviceId: deviceId,
+              data: {
+                paired: device.paired,
+                pairedAt: device.pairedAt,
+                deviceName: device.name,
+                pairingCode: device.paired ? null : device.pairingCode,
+                groupToken: device.paired ? device.groupToken : null,
+                camSynced: device.camSynced,
+                camDeviceId: device.camDeviceId,
+              }
+            }))
+
+            // Also check if the device itself is live and tell the joining client
+            const liveWs = deviceLiveConnections.get(deviceId as string)
+            if (liveWs && liveWs.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: 'device-online',
+                deviceId: deviceId,
+                paired: device.paired,
+                camSynced: device.camSynced,
+                camDeviceId: device.camDeviceId,
+                lastSeen: device.lastSeen?.toISOString()
+              }))
+            }
+          }
+        } catch (err) {
+          console.warn(`[WebSocket] Eager push failed for ${deviceId}:`, err)
+        }
+      })()
+    }
 
     ws.on('message', async (data: Buffer) => {
       try {
@@ -197,7 +250,7 @@ export function createWebSocketServer(server: Server) {
           try {
             const device = await prisma.device.findUnique({
               where: { deviceId: subscribeDeviceId },
-              select: { paired: true, pairedAt: true, name: true, pairingCode: true, groupToken: true, lastSeen: true }
+              select: { paired: true, pairedAt: true, name: true, pairingCode: true, groupToken: true, lastSeen: true, camSynced: true, camDeviceId: true }
             })
             if (device) {
               ws.send(JSON.stringify({
@@ -209,6 +262,8 @@ export function createWebSocketServer(server: Server) {
                   deviceName: device.name,
                   pairingCode: device.paired ? null : device.pairingCode,
                   groupToken: device.paired ? device.groupToken : null,
+                  camSynced: device.camSynced,
+                  camDeviceId: device.camDeviceId,
                 }
               }))
 
@@ -242,6 +297,19 @@ export function createWebSocketServer(server: Server) {
           }
           isDeviceWsClient = true
           deviceLiveConnections.set(updateDeviceId, ws)
+          
+          // CRITICAL: Ensure the device is in the subscription set so it can receive commands.
+          // If the server restarted, the ESP32 might still be connected but forgotten by memory.
+          let connections = deviceConnections.get(updateDeviceId)
+          if (!connections) {
+            connections = new Set<WebSocket>()
+            deviceConnections.set(updateDeviceId, connections)
+          }
+          if (!connections.has(ws)) {
+            connections.add(ws)
+            console.log(`[WebSocket] Auto-resubscribed device: ${updateDeviceId}`)
+          }
+
           const now = Date.now()
           const lastDbUpdate = deviceLastDbUpdateTime.get(updateDeviceId) || 0;
           deviceLastStatusTime.set(updateDeviceId, now)
@@ -262,6 +330,8 @@ export function createWebSocketServer(server: Server) {
             type: 'device-online',
             deviceId: updateDeviceId,
             paired: isPaired,
+            camSynced: message.camSynced,
+            camDeviceId: message.camDeviceId,
             lastSeen: new Date().toISOString()
           })
 
@@ -269,8 +339,8 @@ export function createWebSocketServer(server: Server) {
             if (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId)) {
               const updatedDevice = await prisma.device.upsert({
                 where: { deviceId: updateDeviceId },
-                create: { deviceId: updateDeviceId, lastSeen: new Date() },
-                update: { lastSeen: new Date() }
+                create: { deviceId: updateDeviceId, lastSeen: new Date(), camSynced: message.camSynced, camDeviceId: message.camDeviceId },
+                update: { lastSeen: new Date(), camSynced: message.camSynced, camDeviceId: message.camDeviceId }
               })
               isPaired = updatedDevice.paired;
               deviceCachedPairedStatus.set(updateDeviceId, isPaired);

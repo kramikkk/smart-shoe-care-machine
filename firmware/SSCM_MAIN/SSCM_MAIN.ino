@@ -1,7 +1,7 @@
 // Set to 0 to disable Serial logging in production builds
 #define SSCM_DEBUG 1
 
-#define FIRMWARE_VERSION "1.0.2"
+#define FIRMWARE_VERSION "1.0.3"
 #define BOARD_NAME "SSCM-MAIN"
 
 /*
@@ -149,6 +149,7 @@ static portMUX_TYPE espNowMux = portMUX_INITIALIZER_UNLOCKED;
 // Enqueue a deferred ESP-NOW action (call from onDataRecv only)
 static void espNowEnqueue(EspNowPending action, const char *shoeType = "",
                           float confidence = 0.0f, const char *errorCode = "") {
+  bool dropped = false;
   portENTER_CRITICAL(&espNowMux);
   uint8_t next = (espNowQueueTail + 1) % ESPNOW_QUEUE_SIZE;
   if (next != espNowQueueHead) {
@@ -160,11 +161,15 @@ static void espNowEnqueue(EspNowPending action, const char *shoeType = "",
     espNowQueue[espNowQueueTail].errorCode[31] = '\0';
     espNowQueueTail = next;
   } else {
+    dropped = true;
+  }
+  portEXIT_CRITICAL(&espNowMux);
+
+  if (dropped) {
 #if SSCM_DEBUG
     Serial.println("[ESP-NOW] Dispatch queue full — message dropped");
 #endif
   }
-  portEXIT_CRITICAL(&espNowMux);
 }
 
 // Pairing broadcast retry (retries until CAM sends PairingAck)
@@ -1031,16 +1036,19 @@ void sendDeviceRegistration() {
 
   HTTPClient http;
   String url = String(BACKEND_URL) + "/api/device/register";
+  WiFiClientSecure *secureClient = nullptr;
 
 #if USE_LOCAL_BACKEND
   http.begin(url);
 #else
-  WiFiClientSecure secureClient;
-  // Note: setInsecure() skips TLS certificate verification.
-  // For higher security, replace with secureClient.setCACert(CA_CERT_PEM)
-  // where CA_CERT_PEM is the Render/hosting root CA certificate.
-  secureClient.setInsecure();
-  http.begin(secureClient, url);
+  secureClient = new WiFiClientSecure();
+  if (secureClient) {
+    secureClient->setInsecure();
+    http.begin(*secureClient, url);
+  } else {
+    wsLog("error", "Failed to allocate secure client for registration");
+    return;
+  }
 #endif
   http.addHeader("Content-Type", "application/json");
 
@@ -1075,6 +1083,8 @@ void sendDeviceRegistration() {
   }
 
   http.end();
+  if (secureClient)
+    delete secureClient;
 }
 
 void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
@@ -1095,9 +1105,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     String subscribeMsg =
         "{\"type\":\"subscribe\",\"deviceId\":\"" + deviceId + "\"}";
     webSocket.sendTXT(subscribeMsg);
-    // Send status-update immediately — don't wait for the subscribed round-trip.
-    // This ensures device-online is broadcast to browser clients right away even
-    // if the subscribed response is delayed or lost.
+    // Send status-update immediately — don't wait for the subscribed
+    // round-trip. This ensures device-online is broadcast to browser clients
+    // right away even if the subscribed response is delayed or lost.
     String statusMsg =
         "{\"type\":\"status-update\",\"deviceId\":\"" + deviceId + "\"}";
     webSocket.sendTXT(statusMsg);
@@ -1108,8 +1118,12 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   }
 
   case WStype_TEXT: {
-    // Parse JSON response
-    String message = String((char *)payload);
+    // Parse JSON response safely (don't assume null-termination)
+    String message = "";
+    message.reserve(length + 1);
+    for (size_t i = 0; i < length; i++) {
+      message += (char)payload[i];
+    }
 
     if (message.indexOf("\"type\":\"subscribed\"") != -1) {
 #if SSCM_DEBUG
@@ -2031,7 +2045,7 @@ void sendServiceStatusUpdate() {
     remaining = (serviceDuration - elapsed) / 1000; // Convert to seconds
   }
 
-  int progress = (elapsed * 100) / serviceDuration;
+  int progress = (serviceDuration > 0) ? (elapsed * 100) / serviceDuration : 0;
   if (progress > 100)
     progress = 100;
 
@@ -3224,6 +3238,8 @@ void handleSerialCommand(String cmd) {
                       (stepper1Moving ? " (moving)" : ""));
     wsLog("info", "Stepper2: " + String(currentStepper2Position / 200.0) +
                       "mm" + (stepper2Moving ? " (moving)" : ""));
+    wsLog("info", "Heap: " + String(ESP.getFreeHeap() / 1024) + " KB (" +
+                      String(ESP.getMinFreeHeap() / 1024) + " KB min)");
 #if SSCM_DEBUG
     Serial.println("\nDevice: " + deviceId);
     Serial.println("WiFi: " + String(wifiConnected ? WiFi.localIP().toString()
@@ -3237,6 +3253,8 @@ void handleSerialCommand(String cmd) {
                    "mm" + (stepper1Moving ? " (moving)" : ""));
     Serial.println("Stepper2: " + String(currentStepper2Position / 200.0) +
                    "mm" + (stepper2Moving ? " (moving)" : ""));
+    Serial.printf("Heap: %d KB (Min: %d KB)\n\n", ESP.getFreeHeap() / 1024,
+                  ESP.getMinFreeHeap() / 1024);
 #endif
   } else if (cmd.startsWith("RELAY")) {
     // Commands: RELAY_1_ON, RELAY_1_OFF, RELAY_ALL_OFF
@@ -3940,11 +3958,36 @@ void loop() {
   if (wsConnected && millis() - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
     lastStatusUpdate = millis();
 
-    // Send status update via WebSocket (non-blocking)
-    String statusMsg =
-        "{\"type\":\"status-update\",\"deviceId\":\"" + deviceId + "\"}";
+    // Send status update via WebSocket (non-blocking) with full state sync
+    String statusMsg = "{\"type\":\"status-update\",\"deviceId\":\"" +
+                       deviceId +
+                       "\",\"camSynced\":" + (camSynced ? "true" : "false") +
+                       ",\"camDeviceId\":\"" + camDeviceId +
+                       "\",\"isPaired\":" + (isPaired ? "true" : "false") + "}";
     webSocket.sendTXT(statusMsg);
-    // Silent - keep-alive doesn't need logging
+
+    // PERIODIC SYNC: Every 30 seconds, resend subscription and sync status
+    // This heals desyncs if the server restarts or a client joins late.
+    static unsigned long lastForceSync = 0;
+    if (millis() - lastForceSync >= 30000) {
+      lastForceSync = millis();
+
+      // Resend subscribe
+      String subMsg =
+          "{\"type\":\"subscribe\",\"deviceId\":\"" + deviceId + "\"}";
+      webSocket.sendTXT(subMsg);
+
+      // Resend CAM sync status (so UI knows if CAM is ready)
+      String syncMsg = "{\"type\":\"cam-sync-status\",\"deviceId\":\"" +
+                       deviceId +
+                       "\",\"camSynced\":" + (camSynced ? "true" : "false") +
+                       ",\"camDeviceId\":\"" + camDeviceId + "\"}";
+      webSocket.sendTXT(syncMsg);
+
+#if SSCM_DEBUG
+      Serial.println("[WebSocket] Periodic sync sent (subscribe + cam-status)");
+#endif
+    }
   }
 
   /* ================= SENSOR READINGS (BLOCKING) ================= */

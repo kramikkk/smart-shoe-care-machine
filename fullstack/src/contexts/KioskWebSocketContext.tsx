@@ -8,9 +8,10 @@ interface WebSocketMessage {
   [key: string]: any
 }
 
-interface WebSocketContextType {
+interface KioskWebSocketContextType {
   isConnected: boolean
   isPaired: boolean | null
+  camSynced: boolean
   pairingCode: string
   deviceId: string
   sendMessage: (message: WebSocketMessage) => void
@@ -18,7 +19,7 @@ interface WebSocketContextType {
   onMessage: (handler: (message: WebSocketMessage) => void) => () => void
 }
 
-const WebSocketContext = createContext<WebSocketContextType | undefined>(undefined)
+const KioskWebSocketContext = createContext<KioskWebSocketContextType | undefined>(undefined)
 
 // WebSocket connection states
 enum ConnectionState {
@@ -33,9 +34,10 @@ const GROUP_TOKEN_KEY  = 'kiosk_group_token'
 const MAX_RECONNECT_DELAY_MS = 10000
 const RECONNECT_DELAY_MS = 3000
 
-export function WebSocketProvider({ children }: { children: React.ReactNode }) {
+export function KioskWebSocketProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected] = useState(false)
   const [isPaired, setIsPaired] = useState<boolean | null>(null)
+  const [camSynced, setCamSynced] = useState<boolean>(false)
   const [pairingCode, setPairingCode] = useState<string>('')
   const [deviceId, setDeviceId] = useState<string>('')
 
@@ -98,14 +100,16 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         } else if (message.type === 'device-update') {
           debug.log('[WebSocket] Received device update:', message.data)
           setIsPaired(message.data.paired)
+          setCamSynced(message.data.camSynced || false)
           setPairingCode(message.data.pairingCode || '')
           if (message.data.groupToken) {
             localStorage.setItem(GROUP_TOKEN_KEY, message.data.groupToken)
             debug.log('[WebSocket] Stored groupToken for 3-way binding')
           }
         } else if (message.type === 'device-online') {
-          debug.log('[WebSocket] Device is online:', message.deviceId)
-          setIsPaired(message.paired)
+          debug.log('[WebSocket] Device state from server:', message.deviceId)
+          if (message.paired !== undefined) setIsPaired(message.paired)
+          if (message.camSynced !== undefined) setCamSynced(message.camSynced)
         } else if (message.type === 'error' && message.code === 'INVALID_GROUP_TOKEN') {
           console.warn('[WebSocket] GroupToken rejected — clearing and reloading')
           localStorage.removeItem(GROUP_TOKEN_KEY)
@@ -168,9 +172,15 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   // Initial setup
   useEffect(() => {
     const checkInitialStatus = async () => {
-      try {
-        const storedDeviceId = localStorage.getItem(DEVICE_ID_KEY)
+      // PROACTIVE: If we have a deviceId, connect the WebSocket immediately.
+      // Do not wait for the REST check to finish.
+      const storedDeviceId = localStorage.getItem(DEVICE_ID_KEY)
+      if (storedDeviceId) {
+        setDeviceId(storedDeviceId)
+        connectWebSocket(storedDeviceId)
+      }
 
+      try {
         if (storedDeviceId) {
           const response = await fetch(`/api/device/${storedDeviceId}/status`, {
             method: 'GET',
@@ -185,6 +195,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             if (data.groupToken) {
               localStorage.setItem(GROUP_TOKEN_KEY, data.groupToken)
             }
+            // WebSocket might already be connecting; connectWebSocket has a guard
             connectWebSocket(data.deviceId)
           } else if (response.status === 404) {
             localStorage.removeItem(DEVICE_ID_KEY)
@@ -199,9 +210,6 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (error) {
         console.error('Initial pairing check error:', error)
-        setDeviceId('Connection error')
-        setIsPaired(false)
-        setPairingCode('')
       }
     }
 
@@ -251,9 +259,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const value: WebSocketContextType = {
+  const value: KioskWebSocketContextType = {
     isConnected,
     isPaired,
+    camSynced,
     pairingCode,
     deviceId,
     sendMessage,
@@ -262,16 +271,16 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <WebSocketContext.Provider value={value}>
+    <KioskWebSocketContext.Provider value={value}>
       {children}
-    </WebSocketContext.Provider>
+    </KioskWebSocketContext.Provider>
   )
 }
 
-export function useWebSocket() {
-  const context = useContext(WebSocketContext)
+export function useKioskWebSocket() {
+  const context = useContext(KioskWebSocketContext)
   if (context === undefined) {
-    throw new Error('useWebSocket must be used within a WebSocketProvider')
+    throw new Error('useKioskWebSocket must be used within a KioskWebSocketProvider')
   }
   return context
 }

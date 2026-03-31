@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Camera, Loader2, CheckCircle, AlertCircle, WifiOff, ImageOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useWebSocket } from '@/contexts/WebSocketContext'
+import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 import { debug } from '@/lib/debug'
 import { StepIndicator } from '@/components/kiosk/StepIndicator'
 import { AUTO_STEPS } from '@/lib/kiosk-constants'
@@ -23,7 +23,7 @@ const VALID_SHOE_TYPES = ['mesh', 'canvas', 'rubber'] as const
 
 export default function ClassifyPage() {
   const router = useRouter()
-  const { isConnected, deviceId, sendMessage, subscribe, onMessage } = useWebSocket()
+  const { isConnected, deviceId, sendMessage, subscribe, onMessage } = useKioskWebSocket()
   const [state, setState] = useState<ClassificationState>('connecting')
   const [camSynced, setCamSynced] = useState<boolean>(false)
   const [hasReceivedSyncStatus, setHasReceivedSyncStatus] = useState<boolean>(false)

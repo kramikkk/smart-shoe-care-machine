@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react'
 
-const SELECTED_DEVICE_KEY = 'dashboard_selected_device'
+export const SELECTED_DEVICE_KEY = 'dashboard_selected_device'
 
 type DeviceFilterContextType = {
   selectedDevice: string // deviceId
@@ -15,7 +15,7 @@ type DeviceFilterContextType = {
 const DeviceFilterContext = createContext<DeviceFilterContextType | undefined>(undefined)
 
 export function DeviceFilterProvider({ children }: { children: React.ReactNode }) {
-  // Initialise from localStorage so SensorDataContext can start its WS connection
+  // Initialise from localStorage so DashboardWebSocketContext can start its WS connection
   // immediately on return visits, without waiting for the device list fetch.
   const [selectedDevice, setSelectedDeviceState] = useState<string>(() => {
     if (typeof window === 'undefined') return ''
