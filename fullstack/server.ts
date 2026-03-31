@@ -51,6 +51,15 @@ const handle = app.getRequestHandler()
 app.prepare()
   .then(() => {
     const server = createServer(async (req, res) => {
+      // /healthz — Render's health check probe. Must respond instantly before
+      // Next.js processes anything, so it never times out during cold-start and
+      // a DB hiccup never triggers an unnecessary container restart.
+      // Use /api/health for manual DB-inclusive status checks instead.
+      if (req.url === '/healthz') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' })
+        res.end('ok')
+        return
+      }
       try {
         await handle(req, res)
       } catch (err) {
