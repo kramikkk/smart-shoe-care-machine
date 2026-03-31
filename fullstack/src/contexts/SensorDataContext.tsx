@@ -240,7 +240,7 @@ export function SensorDataProvider({ children }: { children: React.ReactNode }) 
       .catch(() => {})
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/api/ws?deviceId=${encodeURIComponent(selectedDevice)}`
+    const wsUrl = `${protocol}//${window.location.host}/api/ws?deviceId=${encodeURIComponent(selectedDevice)}&source=dashboard`
 
     let ws: WebSocket
 

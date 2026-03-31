@@ -142,7 +142,11 @@ export function createWebSocketServer(server: Server) {
 
     const connUrl = new URL(request.url || '', `http://${request.headers.host}`)
     const connDeviceId = connUrl.searchParams.get('deviceId')
-    const connSource = connDeviceId?.startsWith('SSCM-') ? `device ${connDeviceId}` : 'browser'
+    const connSourceParam = connUrl.searchParams.get('source') // 'kiosk' | 'dashboard' | null (ESP32)
+    // Both browser and ESP32 connect with deviceId=SSCM-xxx. Browser contexts
+    // include a 'source' param; ESP32 firmware does not — use that to label them.
+    const connLabel = connSourceParam ?? (connDeviceId ? 'esp32' : 'unknown')
+    const connSource = connDeviceId ? `${connLabel} for ${connDeviceId}` : `${connLabel} client`
     console.log(`[WebSocket] New connection from ${connSource}`)
     // Set to true only when a status-update message is received.
     // Browser clients (kiosk, dashboard) also pass deviceId in the URL but never send
@@ -182,7 +186,7 @@ export function createWebSocketServer(server: Server) {
           }
           connections.add(ws)
 
-          console.log(`[WebSocket] Client subscribed to device: ${subscribeDeviceId}`)
+          console.log(`[WebSocket] [${connLabel}] subscribed to device: ${subscribeDeviceId}`)
 
           ws.send(JSON.stringify({
             type: 'subscribed',
@@ -233,6 +237,9 @@ export function createWebSocketServer(server: Server) {
 
           // Mark this connection as an actual ESP32 device — only firmware sends status-update.
           // This is used by the close handler to decide whether to broadcast device-offline.
+          if (!isDeviceWsClient) {
+            console.log(`[WebSocket] ESP32 identified: ${updateDeviceId}`)
+          }
           isDeviceWsClient = true
           deviceLiveConnections.set(updateDeviceId, ws)
           const now = Date.now()
@@ -615,7 +622,7 @@ export function createWebSocketServer(server: Server) {
             console.log(`[WebSocket] Stale ESP32 connection closed: ${deviceId} — ignoring since a newer connection exists`)
           }
         }
-        console.log(`[WebSocket] Client unsubscribed from device: ${deviceId}`)
+        console.log(`[WebSocket] [${isDeviceWsClient ? 'esp32' : connLabel}] unsubscribed from device: ${deviceId}`)
       }
     })
 
