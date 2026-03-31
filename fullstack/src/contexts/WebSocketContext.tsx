@@ -30,7 +30,7 @@ enum ConnectionState {
 
 const DEVICE_ID_KEY    = 'kiosk_device_id'
 const GROUP_TOKEN_KEY  = 'kiosk_group_token'
-const MAX_RECONNECT_DELAY_MS = 30000
+const MAX_RECONNECT_DELAY_MS = 10000
 const RECONNECT_DELAY_MS = 3000
 
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
