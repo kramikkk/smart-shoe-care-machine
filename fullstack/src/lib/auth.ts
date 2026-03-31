@@ -3,6 +3,7 @@ import { prismaAdapter } from 'better-auth/adapters/prisma'
 import prisma from '@/lib/prisma'
 import { nextCookies } from 'better-auth/next-js'
 import { admin } from 'better-auth/plugins'
+import { transporter } from '@/lib/mailer'
 
 // Get trusted origins from environment variable or use defaults
 const getTrustedOrigins = () => {
@@ -21,14 +22,30 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     disableSignUp: true, // all accounts created by admin only
+    requireEmailVerification: true,
+  },
+  emailVerification: {
+    sendOnSignUp: true,
+    callbackURL: '/client/login',
+    sendVerificationEmail: async ({ user, url }) => {
+      await transporter.sendMail({
+        from: `"SSCM" <${process.env.GMAIL_USER}>`,
+        to: user.email,
+        subject: 'Verify your Smart Shoe Care Machine account',
+        html: `
+          <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;background:#0a0a0a;color:#ffffff;border-radius:8px;">
+            <h2 style="font-size:20px;font-weight:900;letter-spacing:-0.5px;margin:0 0 8px;">Verify your email</h2>
+            <p style="color:#888;font-size:14px;margin:0 0 24px;">You've been registered as a client on the Smart Shoe Care Machine platform. Click the button below to verify your email address and activate your account.</p>
+            <a href="${url}" style="display:inline-block;background:#3b82f6;color:#fff;font-weight:700;font-size:14px;padding:12px 24px;border-radius:6px;text-decoration:none;letter-spacing:0.05em;">Verify Email</a>
+            <p style="color:#555;font-size:12px;margin:24px 0 0;">If you did not expect this email, you can safely ignore it.</p>
+          </div>
+        `,
+      })
+    },
   },
   session: {
     expiresIn: 60 * 60 * 8,        // 8 hours
     updateAge: 60 * 60,             // refresh session timestamp every 1 hour
-    cookieCache: {
-      enabled: true,
-      maxAge: 5 * 60,               // cache session cookie for 5 minutes
-    },
   },
   trustedOrigins: getTrustedOrigins(),
   plugins: [nextCookies(), admin()],

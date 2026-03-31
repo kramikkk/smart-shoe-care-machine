@@ -10,9 +10,9 @@ import { StepIndicator } from '@/components/kiosk/StepIndicator'
 import { CUSTOM_STEPS } from '@/lib/kiosk-constants'
 
 const shoeTypes = [
-  { id: 'mesh',   label: 'Mesh',   image: '/MeshShoes.png',   desc: 'Mesh-like material' },
-  { id: 'canvas', label: 'Canvas', image: '/CanvasShoes.png', desc: 'Fabric-like material' },
-  { id: 'rubber', label: 'Rubber', image: '/RubberShoes.png', desc: 'Rubber-like material' },
+  { id: 'mesh',   label: 'Mesh',   image: '/MeshShoes.webp',   desc: 'Mesh-like material' },
+  { id: 'canvas', label: 'Canvas', image: '/CanvasShoes.webp', desc: 'Fabric-like material' },
+  { id: 'rubber', label: 'Rubber', image: '/RubberShoes.webp', desc: 'Rubber-like material' },
 ]
 
 const ShoeTypePage = () => {

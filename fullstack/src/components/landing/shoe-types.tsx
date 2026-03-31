@@ -10,21 +10,21 @@ const shoeTypes = [
     type: 'Rubber',
     title: 'Rubber & Synthetics',
     description: 'Specialized deep cleaning and gentle heating algorithms designed for sneakers, running shoes, and synthetic materials to remove tough stains.',
-    image: '/RubberShoes.png',
+    image: '/RubberShoes.webp',
     color: 'from-blue-600/20 to-cyan-600/20',
   },
   {
     type: 'Canvas',
     title: 'Canvas & Textiles',
     description: 'Precision brushing paired with low-temperature drying to preserve fabric integrity, prevent shrinking, and revive original colors.',
-    image: '/CanvasShoes.png',
+    image: '/CanvasShoes.webp',
     color: 'from-purple-600/20 to-pink-600/20',
   },
   {
     type: 'Mesh',
     title: 'Mesh & Knit',
     description: 'Delicate water flow and UV sterilization penetrate deep into porous mesh layers to eliminate deep-seated odors and bacteria.',
-    image: '/MeshShoes.png',
+    image: '/MeshShoes.webp',
     color: 'from-orange-600/20 to-yellow-600/20',
   }
 ]

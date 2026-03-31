@@ -42,7 +42,11 @@ export function LoginForm({
       })
 
       if (result.error) {
-        setError(result.error.message || "Invalid email or password")
+        if (result.error.code === 'EMAIL_NOT_VERIFIED') {
+          setError("Please verify your email before logging in. Check your inbox for the verification link.")
+        } else {
+          setError(result.error.message || "Invalid email or password")
+        }
         setLoading(false)
         return
       }
@@ -67,7 +71,7 @@ export function LoginForm({
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center group-hover:bg-primary transition-colors">
               <img
-                src="/SSCMLogoCircle.png"
+                src="/SSCMLogoCircle.webp"
                 alt="Logo"
                 className="w-6 h-6 group-hover:invert transition-all"
               />

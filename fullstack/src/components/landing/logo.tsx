@@ -5,7 +5,7 @@ export const Logo = () => {
   return (
     <div className="flex items-center gap-2">
       <Image
-        src="/SSCMLogoCircle.png"
+        src="/SSCMLogoCircle.webp"
         alt="SSCM Logo"
         width={32}
         height={32}

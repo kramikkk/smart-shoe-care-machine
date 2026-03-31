@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Resend } from 'resend'
+import { transporter } from '@/lib/mailer'
 import { rateLimit } from '@/lib/rate-limit'
-
-const resend = new Resend(process.env.RESEND_API_KEY)
 
 function escapeHtml(str: string): string {
     return str
@@ -37,11 +35,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid email address.' }, { status: 400 })
     }
 
-    const contactEmail = process.env.CONTACT_EMAIL
-    if (!contactEmail) {
-        console.error('[contact] CONTACT_EMAIL env var is not set')
-        return NextResponse.json({ error: 'Server misconfiguration.' }, { status: 500 })
-    }
+    const contactEmail = process.env.GMAIL_USER!
 
     const safeName    = escapeHtml(`${firstName} ${lastName}`)
     const safeEmail   = escapeHtml(email)
@@ -58,8 +52,8 @@ export async function POST(req: NextRequest) {
         timeZoneName: 'short',
     })
 
-    const { error } = await resend.emails.send({
-        from: 'onboarding@resend.dev',
+    const { messageId, rejected } = await transporter.sendMail({
+        from: `"SSCM" <${process.env.GMAIL_USER}>`,
         to: contactEmail,
         replyTo: email,
         subject: `New Inquiry from ${safeName} — Smart Shoe Care Machine`,
@@ -174,8 +168,8 @@ export async function POST(req: NextRequest) {
         `,
     })
 
-    if (error) {
-        console.error('[contact] Resend error:', error)
+    if (rejected?.length) {
+        console.error('[contact] Email rejected:', rejected)
         return NextResponse.json({ error: 'Failed to send email.' }, { status: 500 })
     }
 

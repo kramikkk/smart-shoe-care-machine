@@ -20,12 +20,14 @@ import { getInitials } from "@/lib/utils/strings"
 
 export function SideBarUser({
   user,
+  onProfileUpdated,
 }: {
   user: {
     name: string
     email: string
     avatar: string
   }
+  onProfileUpdated?: (name: string, image: string) => void
 }) {
   const [isProfileOpen, setIsProfileOpen] = useState(false)
 
@@ -53,10 +55,11 @@ export function SideBarUser({
         </SidebarMenuItem>
       </SidebarMenu>
 
-      <UserProfileDialog 
-        user={user} 
-        open={isProfileOpen} 
-        onOpenChange={setIsProfileOpen} 
+      <UserProfileDialog
+        user={user}
+        open={isProfileOpen}
+        onOpenChange={setIsProfileOpen}
+        onProfileUpdated={onProfileUpdated}
       />
     </>
   )

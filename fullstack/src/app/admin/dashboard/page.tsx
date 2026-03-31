@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { Users, Server, Wifi, DollarSign, Plus, Loader2, RefreshCw, Trash2 } from 'lucide-react'
+import { Users, Server, Wifi, DollarSign, Plus, Loader2, RefreshCw, Trash2, CheckCircle2, Clock } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -27,6 +27,7 @@ interface Client {
   id: string
   name: string
   email: string
+  emailVerified: boolean
   createdAt: string
   deviceCount: number
 }
@@ -248,6 +249,7 @@ export default function AdminDashboardPage() {
                       <tr className="border-b border-white/5">
                         <th className="text-left pb-3 pr-4 text-xs tracking-widest uppercase text-muted-foreground font-semibold">Name</th>
                         <th className="text-left pb-3 pr-4 text-xs tracking-widest uppercase text-muted-foreground font-semibold">Email</th>
+                        <th className="text-center pb-3 pr-4 text-xs tracking-widest uppercase text-muted-foreground font-semibold">Verified</th>
                         <th className="text-center pb-3 pr-4 text-xs tracking-widest uppercase text-muted-foreground font-semibold">Devices</th>
                         <th className="text-left pb-3 pr-4 text-xs tracking-widest uppercase text-muted-foreground font-semibold">Joined</th>
                         <th className="pb-3 text-xs tracking-widest uppercase text-muted-foreground font-semibold" />
@@ -258,6 +260,19 @@ export default function AdminDashboardPage() {
                         <tr key={client.id} className="border-b border-white/5 last:border-0 hover:bg-white/2 transition-colors">
                           <td className="py-3 pr-4 font-medium">{client.name}</td>
                           <td className="py-3 pr-4 text-muted-foreground">{client.email}</td>
+                          <td className="py-3 pr-4 text-center">
+                            {client.emailVerified ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-semibold border border-emerald-500/20">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Verified
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 text-xs font-semibold border border-amber-500/20">
+                                <Clock className="w-3 h-3" />
+                                Pending
+                              </span>
+                            )}
+                          </td>
                           <td className="py-3 pr-4 text-center">
                             <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-bold">
                               {client.deviceCount}

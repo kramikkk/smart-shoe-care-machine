@@ -18,7 +18,7 @@ export default function AdminNavBar() {
         setUser({
           name: session.user.name || "Admin",
           email: session.user.email,
-          avatar: session.user.image || "/SSCMlogo.png"
+          avatar: session.user.image || "/SSCMlogo.webp"
         })
       }
     }
@@ -29,7 +29,7 @@ export default function AdminNavBar() {
     <nav className="px-6 py-4 flex items-center justify-between border-b border-white/5 bg-transparent backdrop-blur-md sticky top-0 z-50">
       <div className="flex items-center gap-3">
         <div className="relative w-9 h-9 rounded-full overflow-hidden border border-white/10 shadow-lg flex-shrink-0">
-          <Image src="/SSCMLogoCircle.png" alt="SSCM Icon" fill sizes="36px" className="object-cover" />
+          <Image src="/SSCMLogoCircle.webp" alt="SSCM Icon" fill sizes="36px" className="object-cover" />
         </div>
         <span className="text-lg font-black tracking-tighter uppercase italic text-white/90">
           SSCM <span className="text-primary">Admin</span>
@@ -52,10 +52,11 @@ export default function AdminNavBar() {
                 <span className="text-[10px] text-muted-foreground group-hover:text-muted-foreground/80 transition-colors">Admin Portal · v{process.env.NEXT_PUBLIC_APP_VERSION}</span>
               </div>
             </button>
-            <UserProfileDialog 
-              user={user} 
-              open={isProfileOpen} 
-              onOpenChange={setIsProfileOpen} 
+            <UserProfileDialog
+              user={user}
+              open={isProfileOpen}
+              onOpenChange={setIsProfileOpen}
+              onProfileUpdated={(name, image) => setUser(prev => prev ? { ...prev, name, avatar: image } : null)}
             />
           </>
         )}

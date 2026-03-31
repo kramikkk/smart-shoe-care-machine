@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile } from "fs/promises";
-import { join } from "path";
 import { auth } from "@/lib/auth";
 import { headers } from "next/headers";
 
 export async function POST(request: NextRequest) {
   try {
-    // Check authentication
     const session = await auth.api.getSession({ headers: await headers() });
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -19,7 +16,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
     }
 
-    // Validate file type
     const validTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"];
     if (!validTypes.includes(file.type)) {
       return NextResponse.json(
@@ -28,39 +24,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate file size (5MB max)
-    const maxSize = 5 * 1024 * 1024; // 5MB
-    if (file.size > maxSize) {
+    if (file.size > 5 * 1024 * 1024) {
       return NextResponse.json(
         { error: "File too large. Maximum size is 5MB" },
         { status: 400 }
       );
     }
 
-    // Generate unique filename
+    // Convert to base64 data URL — stored directly in the DB so it
+    // survives server restarts and deployments without filesystem dependency.
     const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-    const timestamp = Date.now();
-    const userId = session.user.id;
-    const ext = file.name.split(".").pop();
-    const filename = `avatar-${userId}-${timestamp}.${ext}`;
+    const base64 = Buffer.from(bytes).toString("base64");
+    const url = `data:${file.type};base64,${base64}`;
 
-    // Save to public/avatars directory
-    const publicPath = join(process.cwd(), "public", "avatars");
-    const filePath = join(publicPath, filename);
-
-    // Create directory if it doesn't exist
-    const fs = require("fs");
-    if (!fs.existsSync(publicPath)) {
-      fs.mkdirSync(publicPath, { recursive: true });
-    }
-
-    await writeFile(filePath, buffer);
-
-    // Return the public URL
-    const imageUrl = `/avatars/${filename}`;
-
-    return NextResponse.json({ url: imageUrl }, { status: 200 });
+    return NextResponse.json({ url }, { status: 200 });
   } catch (error) {
     console.error("Upload error:", error);
     return NextResponse.json(

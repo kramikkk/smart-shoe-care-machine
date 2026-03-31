@@ -25,7 +25,7 @@ export function LoginVisualSide() {
         className="absolute inset-0 z-0"
       >
         <Image
-          src="/SSCMHero.png"
+          src="/SSCMHero.webp"
           alt="SSCM Machine"
           fill
           className="object-cover opacity-60 mix-blend-luminosity grayscale hover:grayscale-0 hover:opacity-100 hover:scale-105 transition-all duration-[2s] ease-out"

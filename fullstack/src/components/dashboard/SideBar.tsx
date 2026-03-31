@@ -39,14 +39,14 @@ const SideBar = () => {
         setUser({
           name: session.user.name || "User",
           email: session.user.email || "user@example.com",
-          avatar: session.user.image || "/SSCMlogo.png"
+          avatar: session.user.image || "/SSCMlogo.webp"
         });
       } else {
         // Fallback to default user if no session
         setUser({
           name: "Admin",
           email: "admin@example.com",
-          avatar: "/SSCMlogo.png"
+          avatar: "/SSCMlogo.webp"
         });
       }
     };
@@ -66,7 +66,7 @@ const SideBar = () => {
         <SidebarHeader className="py-8 px-4">
             <Link href="/client/dashboard" className="flex items-center gap-3 transition-all group">
                 <div className="relative p-2 rounded-xl bg-primary/20 border border-primary/20 group-hover:bg-primary/30 transition-all shadow-[0_0_20px_rgba(var(--primary),0.2)]">
-                  <Image src="/SSCMlogoTrans.png" alt="Logo" width={28} height={28} priority className="w-7 h-7 object-contain drop-shadow-2xl"/>
+                  <Image src="/SSCMlogoTrans.webp" alt="Logo" width={28} height={28} priority className="w-7 h-7 object-contain drop-shadow-2xl"/>
                 </div>
                 <div className="flex flex-col">
                     <span className="text-sm font-black tracking-wider uppercase leading-none text-white/90">Smart Shoe <span className="text-primary text-nowrap">Care Machine</span></span>
@@ -120,7 +120,12 @@ const SideBar = () => {
                 <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-muted-foreground/30">Portal</span>
                 <span className="text-[10px] font-mono text-muted-foreground/30">v{process.env.NEXT_PUBLIC_APP_VERSION}</span>
               </div>
-              {user && <SideBarUser user={user} />}
+              {user && (
+                <SideBarUser
+                  user={user}
+                  onProfileUpdated={(name, image) => setUser(prev => prev ? { ...prev, name, avatar: image } : null)}
+                />
+              )}
             </div>
         </SidebarFooter>
       </Sidebar>

@@ -13,7 +13,7 @@ import { CUSTOM_STEPS } from '@/lib/kiosk-constants'
 const careTypes = [
   { id: 'gentle', name: 'Gentle', image: '/Gentle3D.webp' },
   { id: 'normal', name: 'Normal', image: '/Normal3D.webp' },
-  { id: 'strong', name: 'Strong', image: '/Strong3D.png' },
+  { id: 'strong', name: 'Strong', image: '/Strong3D.webp' },
 ]
 
 function CareContent() {

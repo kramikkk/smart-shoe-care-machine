@@ -114,9 +114,10 @@ export default function HeroSection() {
 
 
                     <Image
-                        src="/SSCMHero.png"
+                        src="/SSCMHero.webp"
                         alt="SSCM Machine"
                         fill
+                        sizes="100vw"
                         className="relative z-10 object-cover drop-shadow-[0_0_150px_rgba(var(--primary),0.3)] transition-transform duration-500 ease-out"
                         priority
                     />

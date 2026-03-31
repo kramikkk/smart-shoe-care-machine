@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth-middleware'
+import { transporter } from '@/lib/mailer'
 
 export const dynamic = 'force-dynamic'
 
@@ -103,8 +104,7 @@ async function sendAlertEmail({
   description: string
   severity: string
 }) {
-  const apiKey = process.env.RESEND_API_KEY
-  if (!apiKey) return // Resend not configured — skip silently
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return // mailer not configured — skip silently
 
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } })
   if (!user?.email) return
@@ -126,11 +126,8 @@ async function sendAlertEmail({
     timeZoneName: 'short',
   })
 
-  const { Resend } = await import('resend')
-  const resend = new Resend(apiKey)
-
-  await resend.emails.send({
-    from: 'onboarding@resend.dev',
+  await transporter.sendMail({
+    from: `"SSCM" <${process.env.GMAIL_USER}>`,
     to: user.email,
     subject: `[${severityLabel}] ${title} — Smart Shoe Care Machine`,
     html: `

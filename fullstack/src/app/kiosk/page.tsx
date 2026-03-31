@@ -19,7 +19,7 @@ const KioskHomePage = () => {
         transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut' }}
       >
         <Image
-          src="/SSCMlogoTrans.png"
+          src="/SSCMlogoTrans.webp"
           alt="Smart Shoe Care Machine Logo"
           width={300}
           height={300}

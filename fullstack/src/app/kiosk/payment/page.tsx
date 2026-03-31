@@ -20,7 +20,7 @@ const paymentMethods = [
   },
   {
     id: 'online',
-    src: '/QR3D.png',
+    src: '/QR3D.webp',
     alt: 'Online Payment',
     title: 'Online Payment',
     descriptions: ['Scan QR code with your mobile device', 'Supports GCash, PayMaya, and GrabPay'],

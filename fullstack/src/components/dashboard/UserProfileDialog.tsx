@@ -42,12 +42,14 @@ interface UserProfileDialogProps {
   }
   open: boolean
   onOpenChange: (open: boolean) => void
+  onProfileUpdated?: (name: string, image: string) => void
 }
 
 export function UserProfileDialog({
   user,
   open,
   onOpenChange,
+  onProfileUpdated,
 }: UserProfileDialogProps) {
   const router = useRouter()
   const [isEditing, setIsEditing] = useState(false)
@@ -83,6 +85,7 @@ export function UserProfileDialog({
 
       if (result) {
         toast.success("Profile updated successfully");
+        onProfileUpdated?.(editedName.trim(), editedAvatar);
         setIsEditing(false);
         setPreviewImage(null);
         router.refresh();

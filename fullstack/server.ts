@@ -11,8 +11,8 @@ const REQUIRED_ENV_VARS = [
   'PAYMONGO_SECRET_KEY',
   'PAYMONGO_WEBHOOK_SECRET',
   'WS_AUTH_TOKEN',
-  'RESEND_API_KEY',
-  'CONTACT_EMAIL',
+  'GMAIL_USER',
+  'GMAIL_APP_PASSWORD',
 ]
 
 const missing = REQUIRED_ENV_VARS.filter(key => !process.env[key])
