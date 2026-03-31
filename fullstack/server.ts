@@ -2,6 +2,18 @@ import { createServer } from 'http'
 import next from 'next'
 import { createWebSocketServer } from './src/lib/websocket'
 
+process.on('uncaughtException', (err) => {
+  console.error('[Global] Uncaught Exception:', err);
+  // Log it but let the application crash if it needs to, 
+  // or gracefully shutdown. Exiting is safer for native crashes.
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Global] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+
 // Validate required environment variables before starting
 const REQUIRED_ENV_VARS = [
   'DATABASE_URL',

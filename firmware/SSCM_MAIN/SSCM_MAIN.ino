@@ -1,7 +1,7 @@
 // Set to 0 to disable Serial logging in production builds
 #define SSCM_DEBUG 1
 
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.0.1"
 #define BOARD_NAME "SSCM-MAIN"
 
 /*
@@ -1113,6 +1113,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       String statusMsg =
           "{\"type\":\"status-update\",\"deviceId\":\"" + deviceId + "\"}";
       webSocket.sendTXT(statusMsg);
+      // Reset the periodic timer so the next scheduled send starts from now,
+      // preventing a double-send burst (immediate + periodic firing right after)
+      lastStatusUpdate = millis();
 
       // Send CAM sync status so frontend knows if CAM is ready
       sendCamSyncStatus();
@@ -1395,6 +1398,11 @@ void connectWebSocket() {
 #endif
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(WS_RECONNECT_INTERVAL);
+  // Heartbeat: send a WS-level ping every 15s to keep Render's proxy from
+  // killing idle SSL connections. Without this, Render drops the connection
+  // silently (no WStype_ERROR, just WStype_DISCONNECTED) during the TLS idle
+  // window, causing the constant reconnect loop seen in production.
+  webSocket.enableHeartbeat(15000, 3000, 2);
   wsInitialized = true;
 }
 

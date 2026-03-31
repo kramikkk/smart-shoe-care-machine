@@ -13,6 +13,10 @@ declare global {
   var _deviceLiveConnections: Map<string, WebSocket> | undefined
   // eslint-disable-next-line no-var
   var _deviceLastStatusTime: Map<string, number> | undefined
+  // eslint-disable-next-line no-var
+  var _deviceLastDbUpdateTime: Map<string, number> | undefined
+  // eslint-disable-next-line no-var
+  var _deviceCachedPairedStatus: Map<string, boolean> | undefined
 }
 const deviceConnections: Map<string, Set<WebSocket>> =
   global._deviceConnections ?? (global._deviceConnections = new Map())
@@ -27,6 +31,12 @@ const deviceLiveConnections: Map<string, WebSocket> =
 // faster than the TCP heartbeat can.
 const deviceLastStatusTime: Map<string, number> =
   global._deviceLastStatusTime ?? (global._deviceLastStatusTime = new Map())
+
+const deviceLastDbUpdateTime: Map<string, number> =
+  global._deviceLastDbUpdateTime ?? (global._deviceLastDbUpdateTime = new Map())
+
+const deviceCachedPairedStatus: Map<string, boolean> =
+  global._deviceCachedPairedStatus ?? (global._deviceCachedPairedStatus = new Map())
 
 // Offline after 3 missed status-update cycles (ESP32 sends every 5s → 15s threshold).
 const DEVICE_STATUS_TIMEOUT_MS = 15_000
@@ -225,30 +235,37 @@ export function createWebSocketServer(server: Server) {
           // This is used by the close handler to decide whether to broadcast device-offline.
           isDeviceWsClient = true
           deviceLiveConnections.set(updateDeviceId, ws)
-          deviceLastStatusTime.set(updateDeviceId, Date.now())
+          const now = Date.now()
+          const lastDbUpdate = deviceLastDbUpdateTime.get(updateDeviceId) || 0;
+          deviceLastStatusTime.set(updateDeviceId, now)
 
-          // Only the device itself may send status-update for its own deviceId
-          if (deviceId && deviceId.startsWith('SSCM-') && deviceId !== updateDeviceId) {
-            console.warn(`[WebSocket] Device ${deviceId} attempted status-update for ${updateDeviceId} — rejected`)
-            return
+          // Silence status-update logging unless there's a change or it's the first time
+          if (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId)) {
+            console.log(`[WebSocket] Status heartbeat from device: ${updateDeviceId}`)
           }
 
-          console.log(`[WebSocket] Status update from device: ${updateDeviceId}`)
-
           // Update lastSeen in database and get current paired status
+          // Throttle database writes to once every 60 seconds to prevent connection pool exhaustion
+          let isPaired = deviceCachedPairedStatus.get(updateDeviceId) ?? false;
+          
           try {
-            const updatedDevice = await prisma.device.upsert({
-              where: { deviceId: updateDeviceId },
-              create: { deviceId: updateDeviceId, lastSeen: new Date() },
-              update: { lastSeen: new Date() }
-            })
+            if (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId)) {
+              const updatedDevice = await prisma.device.upsert({
+                where: { deviceId: updateDeviceId },
+                create: { deviceId: updateDeviceId, lastSeen: new Date() },
+                update: { lastSeen: new Date() }
+              })
+              isPaired = updatedDevice.paired;
+              deviceCachedPairedStatus.set(updateDeviceId, isPaired);
+              deviceLastDbUpdateTime.set(updateDeviceId, now);
+            }
 
             // Send acknowledgment with current paired status for sync
             ws.send(JSON.stringify({
               type: 'status-ack',
               deviceId: updateDeviceId,
               success: true,
-              paired: updatedDevice.paired
+              paired: isPaired
             }))
 
             // Broadcast device online status to all subscribed clients (tablets)
@@ -256,7 +273,7 @@ export function createWebSocketServer(server: Server) {
             broadcastToDevice(updateDeviceId, {
               type: 'device-online',
               deviceId: updateDeviceId,
-              paired: updatedDevice.paired,
+              paired: isPaired,
               lastSeen: new Date().toISOString()
             })
           } catch (error) {
@@ -315,18 +332,22 @@ export function createWebSocketServer(server: Server) {
           const sensorDeviceId = message.deviceId as string
           console.log(`[WebSocket] Sensor data from ${sensorDeviceId}: Temp ${message.temperature}°C, Humidity ${message.humidity}%, CAM Synced: ${message.camSynced}, CAM ID: ${message.camDeviceId || 'NOT PROVIDED'}`)
 
-          // Update camSynced and camDeviceId in database if provided
+          // Update camSynced and camDeviceId in database only if they changed
           if (message.camSynced !== undefined || message.camDeviceId) {
             try {
-              const updateData: { camSynced?: boolean; camDeviceId?: string } = {}
-              if (message.camSynced !== undefined) updateData.camSynced = message.camSynced
+              const existing = await prisma.device.findUnique({
+                where: { deviceId: sensorDeviceId },
+                select: { camDeviceId: true, camSynced: true }
+              })
 
-              if (message.camDeviceId) {
-                const existing = await prisma.device.findUnique({
-                  where: { deviceId: sensorDeviceId },
-                  select: { camDeviceId: true }
-                })
-                if (existing?.camDeviceId !== message.camDeviceId) {
+              const updateData: { camSynced?: boolean; camDeviceId?: string } = {}
+              
+              if (existing) {
+                if (message.camSynced !== undefined && existing.camSynced !== message.camSynced) {
+                  updateData.camSynced = message.camSynced
+                }
+
+                if (message.camDeviceId && existing.camDeviceId !== message.camDeviceId) {
                   updateData.camDeviceId = message.camDeviceId as string
                   console.log(`[WebSocket] ✅ Saved CAM Device ID to database: ${message.camDeviceId}`)
                 }
@@ -639,6 +660,11 @@ export function broadcastDeviceUpdate(deviceId: string, data: {
   pairingCode?: string | null
   groupToken?: string | null
 }) {
+  // Sync the local cache immediately so the next status-update 
+  // from the device gets the correct value without waiting for DB throttle
+  deviceCachedPairedStatus.set(deviceId, data.paired);
+  deviceLastDbUpdateTime.set(deviceId, Date.now());
+
   broadcastToDevice(deviceId, {
     type: 'device-update',
     deviceId,

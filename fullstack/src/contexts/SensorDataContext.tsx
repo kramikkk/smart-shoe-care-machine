@@ -348,19 +348,20 @@ export function SensorDataProvider({ children }: { children: React.ReactNode }) 
       }
 
       ws.onerror = () => {
+        // Don't wipe sensor data on transient errors — the ESP32's data is still
+        // valid. Only clear on authoritative device-offline from the server.
         setIsConnected(false)
         setIsLoadingData(false)
-        setSensorData(DEFAULT_SENSOR_DATA)
-        sensorDataRef.current = DEFAULT_SENSOR_DATA
         if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
         wsRef.current = null
       }
 
       ws.onclose = () => {
+        // Don't wipe sensor data on reconnect — this causes the gauges to flash
+        // to zero every 5s during a brief WS drop. Sensor data is preserved so
+        // the dashboard stays stable. Data is cleared only on device-offline.
         setIsConnected(false)
         setIsLoadingData(false)
-        setSensorData(DEFAULT_SENSOR_DATA)
-        sensorDataRef.current = DEFAULT_SENSOR_DATA
         if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
         wsRef.current = null
         reconnectTimeoutRef.current = setTimeout(() => connect(), 5000)
