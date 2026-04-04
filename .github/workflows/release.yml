@@ -26,21 +26,20 @@ jobs:
           echo "cam=$CAM_VERSION" >> $GITHUB_OUTPUT
           echo "tag=v$WEB_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Check if tag already exists
-        id: tag_check
+      - name: Delete existing release and tag if present
         run: |
-          if git ls-remote --tags origin | grep -q "refs/tags/${{ steps.versions.outputs.tag }}$"; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
+          gh release delete ${{ steps.versions.outputs.tag }} --yes || true
+          git push origin :refs/tags/${{ steps.versions.outputs.tag }} || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release
-        if: steps.tag_check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.versions.outputs.tag }}
           name: Release ${{ steps.versions.outputs.tag }}
+          generate_release_notes: true
+          make_latest: true
           body: |
             ## Versions
             | Component | Version |

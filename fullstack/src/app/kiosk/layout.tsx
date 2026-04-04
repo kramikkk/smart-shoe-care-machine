@@ -1,6 +1,6 @@
 import './kiosk.css'
 import PairingWrapper from '@/components/kiosk/PairingWrapper'
-import { WebSocketProvider } from '@/contexts/WebSocketContext'
+import { KioskWebSocketProvider } from '@/contexts/KioskWebSocketContext'
 
 const isDebug = process.env.NEXT_PUBLIC_DEBUG === 'true'
 
@@ -11,7 +11,7 @@ export default function UserLayout({
 }>) {
 
     return (
-        <WebSocketProvider>
+        <KioskWebSocketProvider>
             <PairingWrapper>
                 <div className="h-screen w-screen bg-gradient-to-r from-green-200 via-cyan-200 to-blue-400 text-gray-900 flex items-center justify-center">
                     {isDebug && (
@@ -23,6 +23,6 @@ export default function UserLayout({
                     {children}
                 </div>
             </PairingWrapper>
-        </WebSocketProvider>
+        </KioskWebSocketProvider>
     );
 }

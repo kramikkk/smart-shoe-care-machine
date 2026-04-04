@@ -6,7 +6,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { cookies } from "next/dist/server/request/cookies";
 import { Toaster } from "@/components/ui/sonner";
 import { DeviceFilterProvider } from "@/contexts/DeviceFilterContext";
-import { SensorDataProvider } from "@/contexts/SensorDataContext";
+import { DashboardWebSocketProvider } from "@/contexts/DashboardWebSocketContext";
 
 export const metadata: Metadata = {
   title: "SSCM Client Dashboard",
@@ -40,9 +40,9 @@ export default async function AdminLayout({
                                     enableSystem={false}
                                     disableTransitionOnChange
                                 />
-                                <SensorDataProvider>
+                                <DashboardWebSocketProvider>
                                     {children}
-                                </SensorDataProvider>
+                                </DashboardWebSocketProvider>
                             </div>
                         </main>
                     </div>

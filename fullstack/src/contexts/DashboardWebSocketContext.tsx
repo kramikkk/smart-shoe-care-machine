@@ -1,7 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
-import { useDeviceFilter } from './DeviceFilterContext'
+import { useDeviceFilter, SELECTED_DEVICE_KEY } from './DeviceFilterContext'
 
 // Re-export deriveAlerts so SystemAlertCard can use the same logic
 export type AlertSeverity = 'critical' | 'warning' | 'info'
@@ -139,7 +139,7 @@ type SensorData = {
   camSynced: boolean
 }
 
-type SensorDataContextType = {
+interface DashboardWebSocketContextType {
   sensorData: SensorData
   isConnected: boolean
   isLoadingData: boolean
@@ -148,7 +148,7 @@ type SensorDataContextType = {
   addMessageHandler: (handler: MessageHandler) => () => void
 }
 
-const SensorDataContext = createContext<SensorDataContextType | undefined>(undefined)
+const DashboardWebSocketContext = createContext<DashboardWebSocketContextType | undefined>(undefined)
 
 const DEFAULT_SENSOR_DATA: SensorData = {
   temperature: 0,
@@ -163,8 +163,13 @@ const DEFAULT_SENSOR_DATA: SensorData = {
   camSynced: false,
 }
 
-export function SensorDataProvider({ children }: { children: React.ReactNode }) {
-  const { selectedDevice } = useDeviceFilter()
+export function DashboardWebSocketProvider({ children }: { children: React.ReactNode }) {
+  // Read selectedDevice directly — DeviceFilterContext propagates the same
+  // localStorage value but only after a render cycle. Reading it here lets
+  // the WS connect on the very first render without waiting for context.
+  const { selectedDevice: contextDevice } = useDeviceFilter()
+  const selectedDevice = contextDevice ||
+    (typeof window !== 'undefined' ? (localStorage.getItem(SELECTED_DEVICE_KEY) ?? '') : '')
 
   // Keep a ref to the latest sensor data so cleanup can read it without stale closures
   const sensorDataRef = useRef<SensorData>(DEFAULT_SENSOR_DATA)
@@ -231,8 +236,16 @@ export function SensorDataProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     if (!selectedDevice) return
 
+    // PARALLEL SYNC: Start the WebSocket connection immediately while the fetch check is running.
+    // This removes 500ms-2s of delay before real-time data starts flowing.
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/api/ws?deviceId=${encodeURIComponent(selectedDevice)}`
+    const wsUrl = `${protocol}//${window.location.host}/api/ws?deviceId=${encodeURIComponent(selectedDevice)}&source=dashboard`
+    
+    // REST check (kept for robust offline checking)
+    fetch(`/api/device/${encodeURIComponent(selectedDevice)}/status`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then((data: { online?: boolean } | null) => { if (data?.online) setIsConnected(true) })
+      .catch(() => {})
 
     let ws: WebSocket
 
@@ -323,11 +336,24 @@ export function SensorDataProvider({ children }: { children: React.ReactNode }) 
           }
 
           if (message.type === 'device-online') {
+            // If sensor data was cleared when the device went offline (lastUpdate
+            // is null), show the loading spinner until fresh data arrives instead
+            // of immediately rendering stale zeros with "Normal" status badges.
+            if (sensorDataRef.current.lastUpdate === null) {
+              setIsLoadingData(true)
+              if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current)
+              dataTimeoutRef.current = setTimeout(() => setIsLoadingData(false), 10000)
+            }
             setIsConnected(true)
+            if (message.camSynced !== undefined) {
+              setSensorData(prev => ({ ...prev, camSynced: message.camSynced }))
+            }
           }
 
           if (message.type === 'device-offline') {
             setIsConnected(false)
+            setIsLoadingData(false)
+            if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
             setSensorData(DEFAULT_SENSOR_DATA)
             sensorDataRef.current = DEFAULT_SENSOR_DATA
           }
@@ -335,24 +361,25 @@ export function SensorDataProvider({ children }: { children: React.ReactNode }) 
           // Forward every message to registered handlers (e.g. Commands page)
           messageHandlersRef.current.forEach(h => h(message))
         } catch (error) {
-          console.error('[SensorData] Error parsing message:', error)
+          console.error('[DashboardWebSocket] Error parsing message:', error)
         }
       }
 
       ws.onerror = () => {
+        // Don't wipe sensor data on transient errors — the ESP32's data is still
+        // valid. Only clear on authoritative device-offline from the server.
         setIsConnected(false)
         setIsLoadingData(false)
-        setSensorData(DEFAULT_SENSOR_DATA)
-        sensorDataRef.current = DEFAULT_SENSOR_DATA
         if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
         wsRef.current = null
       }
 
       ws.onclose = () => {
+        // Don't wipe sensor data on reconnect — this causes the gauges to flash
+        // to zero every 5s during a brief WS drop. Sensor data is preserved so
+        // the dashboard stays stable. Data is cleared only on device-offline.
         setIsConnected(false)
         setIsLoadingData(false)
-        setSensorData(DEFAULT_SENSOR_DATA)
-        sensorDataRef.current = DEFAULT_SENSOR_DATA
         if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
         wsRef.current = null
         reconnectTimeoutRef.current = setTimeout(() => connect(), 5000)
@@ -391,16 +418,16 @@ export function SensorDataProvider({ children }: { children: React.ReactNode }) 
   }, [isConnected])
 
   return (
-    <SensorDataContext.Provider value={{ sensorData, isConnected, isLoadingData, alertRefreshSignal, sendMessage, addMessageHandler }}>
+    <DashboardWebSocketContext.Provider value={{ sensorData, isConnected, isLoadingData, alertRefreshSignal, sendMessage, addMessageHandler }}>
       {children}
-    </SensorDataContext.Provider>
+    </DashboardWebSocketContext.Provider>
   )
 }
 
-export function useSensorData() {
-  const context = useContext(SensorDataContext)
+export function useDashboardWebSocket() {
+  const context = useContext(DashboardWebSocketContext)
   if (context === undefined) {
-    throw new Error('useSensorData must be used within a SensorDataProvider')
+    throw new Error('useDashboardWebSocket must be used within a DashboardWebSocketProvider')
   }
   return context
 }

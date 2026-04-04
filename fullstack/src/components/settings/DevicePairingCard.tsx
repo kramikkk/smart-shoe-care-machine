@@ -15,6 +15,9 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { useDashboardWebSocket } from "@/contexts/DashboardWebSocketContext"
+import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
+import { useState, useEffect } from "react"
 
 type Device = {
   id: string
@@ -62,7 +65,7 @@ type DevicePairingCardProps = {
 }
 
 export function DevicePairingCard({
-  devices,
+  devices: initialDevices,
   isPairing,
   pairingDialogOpen,
   pairingDeviceId,
@@ -83,6 +86,25 @@ export function DevicePairingCard({
   onUnpairConfirmIdChange,
   formatLastSeen,
 }: DevicePairingCardProps) {
+  const { isConnected, sensorData } = useDashboardWebSocket()
+  const { selectedDevice } = useDeviceFilter()
+  const [now, setNow] = useState(Date.now())
+
+  // Keep the relative time ticking every second for the "Live" experience
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  const formatLiveLastSeen = (lastUpdate: Date | null) => {
+    if (!lastUpdate) return 'Just now'
+    const diffSecs = Math.floor((now - lastUpdate.getTime()) / 1000)
+    if (diffSecs < 1) return 'Just now'
+    if (diffSecs < 60) return `${diffSecs} sec${diffSecs > 1 ? 's' : ''} ago`
+    const diffMins = Math.floor(diffSecs / 60)
+    return `${diffMins} min${diffMins > 1 ? 's' : ''} ago`
+  }
+
   return (
     <>
       {/* Unpair Confirm Dialog */}
@@ -188,7 +210,7 @@ export function DevicePairingCard({
 
         <CardContent>
           <div className="space-y-3">
-            {devices.length === 0 ? (
+            {initialDevices.length === 0 ? (
               <div className="text-center py-12 border-2 border-dashed rounded-xl">
                 <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-muted mb-3">
                   <Smartphone className="h-7 w-7 text-muted-foreground" />
@@ -197,26 +219,33 @@ export function DevicePairingCard({
                 <p className="text-sm text-muted-foreground mt-1">Click &quot;Pair New Device&quot; to get started</p>
               </div>
             ) : (
-              devices.map((device) => {
-                const isConnected = device.status === 'connected'
-                const isPairing = device.status === 'pairing'
-                const accentColor = isConnected ? 'border-l-green-500' : isPairing ? 'border-l-amber-500' : 'border-l-gray-500'
-                const iconBg = isConnected ? 'bg-green-500/10 text-green-500' : isPairing ? 'bg-amber-500/10 text-amber-500' : 'bg-gray-500/10 text-gray-500'
-                const badgeClass = isConnected
-                  ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                  : isPairing
+              initialDevices.map((device) => {
+                // Real-time override for the active (selected) device
+                const isCurrentActive = device.deviceId === selectedDevice
+                const isActuallyConnected = isCurrentActive ? isConnected : (device.status === 'connected')
+                const isActuallyPairing = device.status === 'pairing'
+                
+                const accentColor = isActuallyConnected ? 'border-l-green-500' : isActuallyPairing ? 'border-l-amber-500' : 'border-l-gray-500'
+                const iconBg = isActuallyConnected ? 'bg-green-500/10 text-green-500 shadow-[0_0_15px_-5px_rgba(34,197,94,0.3)]' : isActuallyPairing ? 'bg-amber-500/10 text-amber-500' : 'bg-gray-500/10 text-gray-500'
+                const badgeClass = isActuallyConnected
+                  ? 'bg-green-500/10 text-green-400 border-green-500/20 shadow-[0_0_10px_-2px_rgba(34,197,94,0.2)]'
+                  : isActuallyPairing
                   ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                   : 'bg-gray-500/10 text-gray-400 border-gray-500/20'
+
+                const lastSeenText = (isCurrentActive && isActuallyConnected)
+                  ? formatLiveLastSeen(sensorData.lastUpdate)
+                  : formatLastSeen(device.lastSeen)
 
                 return (
                   <div
                     key={device.id}
-                    className={`rounded-xl border border-white/5 border-l-2 ${accentColor} bg-white/[0.02] p-4 transition-all hover:bg-white/[0.04]`}
+                    className={`rounded-xl border border-white/5 border-l-2 ${accentColor} bg-white/[0.02] p-4 transition-all hover:bg-white/[0.04] ${isCurrentActive && isActuallyConnected ? 'shadow-[inset_0_1px_1px_rgba(255,255,255,0.05),0_10px_30px_-15px_rgba(0,0,0,0.5)]' : ''}`}
                   >
                     {/* Top row: icon + name/status | actions icon-only on mobile, labeled on sm+ */}
                     <div className="flex items-start gap-2 mb-3">
-                      <div className={`p-2.5 rounded-lg shrink-0 ${iconBg}`}>
-                        {isConnected ? <Wifi className="h-5 w-5" /> : <WifiOff className="h-5 w-5" />}
+                      <div className={`p-2.5 rounded-lg shrink-0 transition-all duration-500 ${iconBg}`}>
+                        {isActuallyConnected ? <Wifi className="h-5 w-5" /> : <WifiOff className="h-5 w-5" />}
                       </div>
 
                       <div className="flex-1 min-w-0">
@@ -259,15 +288,20 @@ export function DevicePairingCard({
                         )}
 
                         <div className="flex items-center gap-1.5 mt-0.5">
-                          {isConnected && (
+                          {isActuallyConnected && (
                             <span className="relative flex h-1.5 w-1.5">
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500" />
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500 shadow-[0_0_8px_rgba(34,197,94,1)]" />
                             </span>
                           )}
-                          <Badge variant="outline" className={`text-[10px] h-4 px-1.5 ${badgeClass}`}>
-                            {isConnected ? 'Online' : isPairing ? 'Pairing' : 'Offline'}
+                          <Badge variant="outline" className={`text-[10px] h-4 px-1.5 transition-colors duration-500 ${badgeClass}`}>
+                            {isActuallyConnected ? 'Online' : isActuallyPairing ? 'Pairing' : 'Offline'}
                           </Badge>
+                          {isCurrentActive && isActuallyConnected && (
+                            <Badge variant="outline" className="text-[9px] h-3.5 px-1 bg-blue-500/10 text-blue-400 border-blue-500/20 animate-pulse">
+                              LIVE
+                            </Badge>
+                          )}
                         </div>
                       </div>
 
@@ -328,7 +362,9 @@ export function DevicePairingCard({
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <Clock className="h-3 w-3 shrink-0 opacity-60" />
                         <span className="opacity-60 shrink-0">Last seen</span>
-                        <span className="text-foreground/80">{formatLastSeen(device.lastSeen)}</span>
+                        <span className={`text-foreground/80 tabular-nums ${isCurrentActive && isActuallyConnected ? 'text-green-400/90' : ''}`}>
+                          {lastSeenText}
+                        </span>
                       </div>
 
                       {device.pairedAt && (

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useDeviceFilter } from '@/contexts/DeviceFilterContext'
-import { useSensorData } from '@/contexts/SensorDataContext'
+import { useDashboardWebSocket } from '@/contexts/DashboardWebSocketContext'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -58,7 +58,7 @@ const RELAY_COLOR_MAP: Record<string, { icon: string; glow: string; ring: string
 export default function CommandsPage() {
   const { selectedDevice } = useDeviceFilter()
 
-  const { isConnected, sendMessage, addMessageHandler } = useSensorData()
+  const { sendMessage, isConnected, addMessageHandler } = useDashboardWebSocket()
   const [isDeviceReady, setIsDeviceReady] = useState(false)
 
   // Log
@@ -116,10 +116,14 @@ export default function CommandsPage() {
     setIsDeviceReady(false)
   }, [selectedDevice])
 
-  // Log connection events and handle incoming WS messages
+  // Log connection events and sync isDeviceReady with isConnected.
+  // isDeviceReady must be set true here (not just from incoming messages) so
+  // that commands are enabled immediately when the user navigates to this page
+  // while the device is already online — not waiting for the next sensor tick.
   useEffect(() => {
     if (isConnected) {
       addLog('system', 'Connected to device')
+      setIsDeviceReady(true)
     } else {
       setIsDeviceReady(false)
     }

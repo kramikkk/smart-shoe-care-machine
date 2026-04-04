@@ -1,7 +1,4 @@
-// Set to 0 to disable Serial logging in production builds
-#define SSCM_DEBUG 1
-
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.0.2"
 #define BOARD_NAME "SSCM-MAIN"
 
 /*
@@ -149,6 +146,7 @@ static portMUX_TYPE espNowMux = portMUX_INITIALIZER_UNLOCKED;
 // Enqueue a deferred ESP-NOW action (call from onDataRecv only)
 static void espNowEnqueue(EspNowPending action, const char *shoeType = "",
                           float confidence = 0.0f, const char *errorCode = "") {
+  bool dropped = false;
   portENTER_CRITICAL(&espNowMux);
   uint8_t next = (espNowQueueTail + 1) % ESPNOW_QUEUE_SIZE;
   if (next != espNowQueueHead) {
@@ -160,11 +158,12 @@ static void espNowEnqueue(EspNowPending action, const char *shoeType = "",
     espNowQueue[espNowQueueTail].errorCode[31] = '\0';
     espNowQueueTail = next;
   } else {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Dispatch queue full — message dropped");
-#endif
+    dropped = true;
   }
   portEXIT_CRITICAL(&espNowMux);
+
+  if (dropped) {
+  }
 }
 
 // Pairing broadcast retry (retries until CAM sends PairingAck)
@@ -474,6 +473,8 @@ String pairingCode = "";
 String deviceId = "";
 String groupToken = ""; // 8 hex chars — shared secret for 3-way binding
 bool isPaired = false;
+bool camSynced = false;
+String camDeviceId = "";
 
 /* ===================== BACKEND URL ===================== */
 // ============================================================
@@ -500,7 +501,6 @@ const char *BACKEND_URL = BACKEND_URL_STR;
 /* ===================== FIRMWARE LOGGING ===================== */
 // Sends a log message to the backend via WebSocket → broadcast to kiosk browser
 // console. level: "info", "warn", "error" Only sends if WS is connected.
-// Serial.println still handled by SSCM_DEBUG guard elsewhere.
 void wsLog(const char *level, const String &msg) {
   if (!wsConnected || deviceId.length() == 0)
     return;
@@ -532,9 +532,6 @@ String generateGroupToken() {
 // Send callback (ESP32 Arduino Core v3.x)
 void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
   if (status != ESP_NOW_SEND_SUCCESS) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Send failed");
-#endif
   }
 }
 
@@ -548,30 +545,18 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
   uint8_t msgType = data[0];
   uint8_t *senderMac = recv_info->src_addr;
 
-#if SSCM_DEBUG
-  Serial.printf("\n[ESP-NOW] Data received, type=%d len=%d\n", msgType, len);
-#endif
 
   // ============================================================
   // PAIRING ACK (type 2): CAM accepted our pairing broadcast
   // ============================================================
   if (msgType == CAM_MSG_PAIR_ACK) {
     if (len < (int)sizeof(PairingAck)) {
-#if SSCM_DEBUG
-      Serial.println("[ESP-NOW] PairingAck too small: " + String(len));
-#endif
       return;
     }
 
     PairingAck ack;
     memcpy(&ack, data, sizeof(PairingAck));
 
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] PairingAck received:");
-    Serial.println("  CAM Device ID: " + String(ack.camOwnDeviceId));
-    Serial.println("  CAM IP:        " +
-                   String(strlen(ack.camIp) > 0 ? ack.camIp : "(no IP yet)"));
-#endif
 
     // Store/update CAM device ID
     pairedCamDeviceId = String(ack.camOwnDeviceId);
@@ -589,12 +574,6 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
       prefs.putBytes("camMac", camMacAddress, 6);
       camMacPaired = true;
 
-#if SSCM_DEBUG
-      Serial.printf(
-          "[ESP-NOW] Locked to CAM MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-          camMacAddress[0], camMacAddress[1], camMacAddress[2],
-          camMacAddress[3], camMacAddress[4], camMacAddress[5]);
-#endif
 
       // Switch from broadcast peer to direct CAM MAC
       esp_now_del_peer(broadcastAddress);
@@ -604,17 +583,11 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
       peer.channel = 0;
       peer.encrypt = false;
       esp_now_add_peer(&peer);
-#if SSCM_DEBUG
-      Serial.println("[ESP-NOW] Switched to direct CAM communication");
-#endif
     }
 
     camIsReady = true;
     lastCamHeartbeat =
         millis(); // Reset heartbeat so we don't immediately expire
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] CAM paired and ready");
-#endif
 
     // Defer WS send to loop() — cannot call webSocket.sendTXT() from ESP-NOW
     // callback
@@ -627,9 +600,6 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
   // ============================================================
   if (msgType == CAM_MSG_CLASSIFY_RESULT) {
     if (len < (int)sizeof(CamMessage)) {
-#if SSCM_DEBUG
-      Serial.println("[ESP-NOW] CamMessage too small: " + String(len));
-#endif
       return;
     }
 
@@ -643,56 +613,32 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
     // ESP-NOW callback
     switch (msg.status) {
     case CAM_STATUS_OK:
-#if SSCM_DEBUG
-      Serial.println("[Classification] OK: " + String(msg.shoeType) + " (" +
-                     String(msg.confidence * 100, 1) + "%)");
-#endif
       espNowEnqueue(ESPNOW_CLASSIFY_OK, msg.shoeType, msg.confidence);
       break;
 
     case CAM_STATUS_LOW_CONFIDENCE:
-#if SSCM_DEBUG
-      Serial.println(
-          "[Classification] LOW_CONFIDENCE: " + String(msg.shoeType) + " (" +
-          String(msg.confidence * 100, 1) + "%) — below threshold");
-#endif
       espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "LOW_CONFIDENCE");
       break;
 
     case CAM_STATUS_BUSY:
-#if SSCM_DEBUG
-      Serial.println("[Classification] CAM busy — retry later");
-#endif
       espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "CAM_BUSY");
       break;
 
     case CAM_STATUS_TIMEOUT:
-#if SSCM_DEBUG
-      Serial.println("[Classification] CAM timeout");
-#endif
       espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "CLASSIFICATION_TIMEOUT");
       break;
 
     case CAM_STATUS_NOT_READY:
-#if SSCM_DEBUG
-      Serial.println("[Classification] CAM camera not ready");
-#endif
       espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "CAMERA_NOT_READY");
       break;
 
     case CAM_STATUS_API_HANDLED:
-#if SSCM_DEBUG
-      Serial.println("[ESP-NOW] CAM: Gemini API handled classification");
-#endif
       classificationPending = false;
       espNowEnqueue(ESPNOW_API_HANDLED);
       break;
 
     case CAM_STATUS_ERROR:
     default:
-#if SSCM_DEBUG
-      Serial.println("[Classification] CAM error");
-#endif
       espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "CLASSIFICATION_ERROR");
       break;
     }
@@ -708,16 +654,9 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
     CamMessage msg;
     memcpy(&msg, data, sizeof(CamMessage));
     lastCamHeartbeat = millis();
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] STATUS_PONG: CAM " +
-                   String(msg.status == CAM_STATUS_OK ? "READY" : "NOT_READY"));
-#endif
     return;
   }
 
-#if SSCM_DEBUG
-  Serial.println("[ESP-NOW] Unknown message type: " + String(msgType));
-#endif
 }
 
 // Initialize ESP-NOW (call after WiFi.mode is set)
@@ -726,9 +665,6 @@ void initESPNow() {
     return;
 
   if (esp_now_init() != ESP_OK) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Init failed!");
-#endif
     return;
   }
 
@@ -744,10 +680,6 @@ void initESPNow() {
   pairedCamIp = prefs.getString("camIp", "");
 
   if (pairedCamDeviceId.length() > 0) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Restored CAM ID: " + pairedCamDeviceId +
-                   " — pairing broadcast will start after WiFi connects");
-#endif
     // pairingBroadcastStarted is set by sendPairingBroadcast() once WiFi
     // confirms connected, ensuring validated credentials are sent to the CAM.
   }
@@ -757,29 +689,17 @@ void initESPNow() {
   memset(&peer, 0, sizeof(peer));
   if (camMacPaired) {
     memcpy(peer.peer_addr, camMacAddress, 6);
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Added paired CAM as peer");
-#endif
   } else {
     memcpy(peer.peer_addr, broadcastAddress, 6);
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Added broadcast peer for initial discovery");
-#endif
   }
   peer.channel = 0;
   peer.encrypt = false;
 
   if (esp_now_add_peer(&peer) != ESP_OK) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Failed to add peer");
-#endif
     return;
   }
 
   espNowInitialized = true;
-#if SSCM_DEBUG
-  Serial.println("[ESP-NOW] Initialized");
-#endif
 }
 
 // Send pairing broadcast to CAM (replaces old sendCredentialsToCAM)
@@ -793,10 +713,6 @@ void sendPairingBroadcast() {
   if (ssid.length() == 0) {
     static bool warned = false;
     if (!warned) {
-#if SSCM_DEBUG
-      Serial.println(
-          "[ESP-NOW] No WiFi credentials — cannot send pairing broadcast");
-#endif
       warned = true;
     }
     return;
@@ -820,19 +736,11 @@ void sendPairingBroadcast() {
 
   static int sendCount = 0;
   sendCount++;
-#if SSCM_DEBUG
-  Serial.println("[ESP-NOW] Pairing broadcast sent (attempt " +
-                 String(sendCount) + ")");
-#endif
 }
 
 // Send classify request to CAM via ESP-NOW
 void sendClassifyRequest() {
   if (!espNowInitialized || !camMacPaired) {
-#if SSCM_DEBUG
-    Serial.println(
-        "[Classification] CAM not paired — cannot send classify request");
-#endif
     return;
   }
 
@@ -845,9 +753,6 @@ void sendClassifyRequest() {
   classificationPending = true;
   classificationRequestTime = millis();
   wsLog("info", "Classification request sent to CAM via ESP-NOW");
-#if SSCM_DEBUG
-  Serial.println("[Classification] CLASSIFY_REQUEST sent to CAM via ESP-NOW");
-#endif
 }
 
 // Send LED control to CAM via ESP-NOW
@@ -860,12 +765,6 @@ void sendLedControl(uint8_t ledMsgType) {
   msg.type = ledMsgType;
 
   esp_now_send(camMacAddress, (uint8_t *)&msg, sizeof(msg));
-#if SSCM_DEBUG
-  Serial.println(
-      "[ESP-NOW] LED " +
-      String(ledMsgType == CAM_MSG_LED_ENABLE ? "ENABLE" : "DISABLE") +
-      " sent to CAM");
-#endif
 }
 
 /* ===================== WIFI FUNCTIONS ===================== */
@@ -910,14 +809,6 @@ void startSoftAP() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP("Smart Shoe Care Machine Setup");
-#if SSCM_DEBUG
-  Serial.println("[SoftAP] Open (no password)");
-  Serial.println("=== SoftAP Started ===");
-  Serial.print("SSID: Smart Shoe Care Machine Setup");
-  Serial.print("\nIP: ");
-  Serial.println(WiFi.softAPIP());
-  Serial.println("======================");
-#endif
 
   wifiServer.begin();
 }
@@ -1042,118 +933,72 @@ void sendDeviceRegistration() {
   secureClient.setInsecure();
   http.begin(secureClient, url);
 #endif
+
+  // Hard timeout: Render free-tier cold starts can take 10-30s. Without
+  // explicit timeouts, the OS-level TCP connect timeout (60s) applies, which
+  // blocks loop() completely — no serial output, no WS connection, looks like
+  // a crash. 10s is enough for a warm Render instance; cold starts will fail
+  // and retry on the next boot cycle rather than hanging the device.
+  http.setConnectTimeout(10000); // 10s TCP connect timeout
+  http.setTimeout(10000);        // 10s read/write timeout
+
   http.addHeader("Content-Type", "application/json");
 
   String payload = "{";
   payload += "\"deviceId\":\"" + deviceId + "\",";
-  payload += "\"pairingCode\":\"" + pairingCode + "\"";
-  if (groupToken.length() > 0) {
-    payload += ",\"groupToken\":\"" + groupToken + "\"";
-  }
+  payload += "\"deviceName\":\"Smart Shoe Care Machine\",";
+  payload += "\"firmwareVersion\":\"" + String(FIRMWARE_VERSION) + "\"";
   payload += "}";
 
-  int httpCode = http.POST(payload);
+  int httpResponseCode = http.POST(payload);
 
-  if (httpCode == 200 || httpCode == 201) {
+  if (httpResponseCode > 0) {
     String response = http.getString();
-    if (response.indexOf("\"paired\":true") != -1) {
-#if SSCM_DEBUG
-      Serial.println("[HTTP] Device already paired");
-#endif
-      isPaired = true;
-      prefs.putBool("paired", true);
-    }
-  } else if (httpCode > 0) {
-#if SSCM_DEBUG
-    Serial.println("[HTTP] Registration failed: " + String(httpCode));
-#endif
   } else {
-#if SSCM_DEBUG
-    Serial.println("[HTTP] Registration error: " +
-                   http.errorToString(httpCode));
-#endif
   }
-
   http.end();
 }
 
 void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
-  case WStype_DISCONNECTED: {
-#if SSCM_DEBUG
-    Serial.println("[WebSocket] Disconnected");
-#endif
+  case WStype_DISCONNECTED:
     wsConnected = false;
     break;
-  }
 
   case WStype_CONNECTED: {
-#if SSCM_DEBUG
-    Serial.println("[WebSocket] Connected");
-#endif
     wsConnected = true;
-    String subscribeMsg =
+    // Send subscription message
+    String subMsg =
         "{\"type\":\"subscribe\",\"deviceId\":\"" + deviceId + "\"}";
-    webSocket.sendTXT(subscribeMsg);
-    wsLog("info", "WebSocket connected — IP: " + WiFi.localIP().toString() +
-                      ", device: " + deviceId);
+    webSocket.sendTXT(subMsg);
+    wsLog("info", "WS Connected (firmware v" + String(FIRMWARE_VERSION) + ")");
     break;
   }
 
   case WStype_TEXT: {
-    // Parse JSON response
     String message = String((char *)payload);
 
-    if (message.indexOf("\"type\":\"subscribed\"") != -1) {
-#if SSCM_DEBUG
-      Serial.println("[WebSocket] Subscribed");
-#endif
-
-      // Send initial status update immediately after subscribing
-      String statusMsg =
-          "{\"type\":\"status-update\",\"deviceId\":\"" + deviceId + "\"}";
-      webSocket.sendTXT(statusMsg);
-
-      // Send CAM sync status so frontend knows if CAM is ready
-      sendCamSyncStatus();
-    } else if (message.indexOf("\"type\":\"status-ack\"") != -1) {
-      // Acknowledgment of status update with paired status sync
-      if (message.indexOf("\"success\":true") != -1) {
-
-        // Sync paired status from database
-        bool dbPaired = (message.indexOf("\"paired\":true") != -1);
-
-        if (dbPaired != isPaired) {
-          if (dbPaired && !isPaired) {
-            isPaired = true;
-            prefs.putBool("paired", true);
-          } else if (!dbPaired && isPaired) {
-            isPaired = false;
-            prefs.putBool("paired", false);
-            pairingCode = generatePairingCode();
-            sendDeviceRegistration();
-          }
-        }
-      } else {
-#if SSCM_DEBUG
-        Serial.println("[WebSocket] Status update failed");
-#endif
+    if (message.indexOf("\"type\":\"status-ack\"") != -1) {
+      bool dbPaired = (message.indexOf("\"paired\":true") != -1);
+      if (dbPaired && !isPaired) {
+        isPaired = true;
+        prefs.putBool("paired", true);
+      } else if (!dbPaired && isPaired) {
+        isPaired = false;
+        prefs.putBool("paired", false);
+        // Regeneate pairing code if unpaired
+        pairingCode = generatePairingCode();
+        sendDeviceRegistration();
       }
     } else if (message.indexOf("\"type\":\"device-update\"") != -1) {
       if (message.indexOf("\"paired\":true") != -1) {
         if (!isPaired) {
-#if SSCM_DEBUG
-          Serial.println("[WebSocket] Device paired!");
-#endif
           isPaired = true;
           prefs.putBool("paired", true);
           wsLog("info", "Device paired by dashboard");
         }
       } else if (message.indexOf("\"paired\":false") != -1) {
         if (isPaired) {
-#if SSCM_DEBUG
-          Serial.println("[WebSocket] Device unpaired, restarting...");
-#endif
           isPaired = false;
           prefs.putBool("paired", false);
           wsLog("warn", "Device unpaired — restarting");
@@ -1162,18 +1007,12 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         }
       }
     } else if (message.indexOf("\"type\":\"enable-payment\"") != -1) {
-#if SSCM_DEBUG
-      Serial.println("[PAYMENT] Enabled");
-#endif
       paymentEnabled = true;
       paymentEnableTime = millis();
       digitalWrite(RELAY_1_PIN, RELAY_ON);
       relay1State = true;
       wsLog("info", "Payment system enabled");
     } else if (message.indexOf("\"type\":\"disable-payment\"") != -1) {
-#if SSCM_DEBUG
-      Serial.println("[PAYMENT] Disabled");
-#endif
       paymentEnabled = false;
       digitalWrite(RELAY_1_PIN, RELAY_OFF);
       relay1State = false;
@@ -1213,19 +1052,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         // Set the relay
         if (channel >= 1 && channel <= 8) {
           setRelay(channel, state);
-#if SSCM_DEBUG
-          Serial.println("[WebSocket] Relay CH" + String(channel) + " -> " +
-                         (state ? "ON" : "OFF"));
-#endif
         } else {
-#if SSCM_DEBUG
-          Serial.println("[WebSocket] Invalid relay CH" + String(channel));
-#endif
         }
       } else {
-#if SSCM_DEBUG
-        Serial.println("[WebSocket] Bad relay format");
-#endif
       }
     } else if (message.indexOf("\"type\":\"start-service\"") != -1) {
       // Parse start-service command
@@ -1280,64 +1109,27 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
                   " | care: " + careType +
                   (customDuration > 0 ? " | " + String(customDuration) + "s"
                                       : ""));
-#if SSCM_DEBUG
-        Serial.println(
-            "[WebSocket] Start: " + serviceType + " | " + shoeType + " | " +
-            careType +
-            (customDuration > 0 ? " | " + String(customDuration) + "s" : ""));
-#endif
       } else {
-#if SSCM_DEBUG
-        Serial.println("[WebSocket] Unknown service: " + serviceType);
-#endif
       }
     } else if (message.indexOf("\"type\":\"start-classification\"") != -1) {
       // Tablet/backend requesting classification — send to CAM via ESP-NOW
-#if SSCM_DEBUG
-      Serial.println("\n=== CLASSIFICATION REQUESTED (via ESP-NOW) ===");
-#endif
       if (camIsReady && camMacPaired) {
         sendClassifyRequest();
       } else {
-#if SSCM_DEBUG
-        Serial.println("[Classification] CAM not ready — aborting");
-#endif
         relayClassificationErrorToBackend("CAM_NOT_READY");
       }
-#if SSCM_DEBUG
-      Serial.println("==============================================\n");
-#endif
     } else if (message.indexOf("\"type\":\"enable-classification\"") != -1) {
       // User entered classification page — turn on WHITE LED + notify CAM
-#if SSCM_DEBUG
-      Serial.println("\n=== CLASSIFICATION PAGE ENTERED ===");
-#endif
       rgbWhite();
       classificationLedOn = true;
       sendLedControl(CAM_MSG_LED_ENABLE);
-#if SSCM_DEBUG
-      Serial.println("RGB Light: WHITE (camera lighting)");
-      Serial.println("===================================\n");
-#endif
     } else if (message.indexOf("\"type\":\"disable-classification\"") != -1) {
       // User left classification page — turn off LED + notify CAM
-#if SSCM_DEBUG
-      Serial.println("\n=== CLASSIFICATION PAGE EXITED ===");
-#endif
       rgbOff();
       classificationLedOn = false;
       sendLedControl(CAM_MSG_LED_DISABLE);
-#if SSCM_DEBUG
-      Serial.println("RGB Light: OFF");
-      Serial.println("==================================\n");
-#endif
     } else if (message.indexOf("\"type\":\"restart-device\"") != -1) {
       // Restart command from admin panel
-#if SSCM_DEBUG
-      Serial.println("\n=== RESTART COMMAND RECEIVED ===");
-      Serial.println("Restarting device in 2 seconds...");
-      Serial.println("================================\n");
-#endif
       delay(2000);
       ESP.restart();
     } else if (message.indexOf("\"type\":\"serial-command\"") != -1) {
@@ -1359,9 +1151,6 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   }
 
   case WStype_ERROR: {
-#if SSCM_DEBUG
-    Serial.println("[WebSocket] Error");
-#endif
     wsConnected = false;
     break;
   }
@@ -1384,10 +1173,6 @@ void connectWebSocket() {
     wsPath += "&groupToken=" + groupToken;
   }
 
-#if SSCM_DEBUG
-  Serial.println("[WebSocket] Connecting to " + String(BACKEND_HOST) + ":" +
-                 String(BACKEND_PORT));
-#endif
 #if USE_LOCAL_BACKEND
   webSocket.begin(BACKEND_HOST, BACKEND_PORT, wsPath);
 #else
@@ -1395,6 +1180,11 @@ void connectWebSocket() {
 #endif
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(WS_RECONNECT_INTERVAL);
+  // Heartbeat: send a WS-level ping every 15s to keep Render's proxy from
+  // killing idle SSL connections. Without this, Render drops the connection
+  // silently (no WStype_ERROR, just WStype_DISCONNECTED) during the TLS idle
+  // window, causing the constant reconnect loop seen in production.
+  webSocket.enableHeartbeat(15000, 3000, 2);
   wsInitialized = true;
 }
 
@@ -1403,9 +1193,6 @@ void connectWiFi() {
   String pass = prefs.getString("pass", "");
 
   if (ssid.length() == 0) {
-#if SSCM_DEBUG
-    Serial.println("No WiFi credentials found");
-#endif
     startSoftAP();
     return;
   }
@@ -1414,11 +1201,6 @@ void connectWiFi() {
   WiFi.begin(ssid.c_str(), pass.c_str());
   wifiStartTime = millis();
 
-#if SSCM_DEBUG
-  Serial.println("=== Connecting to WiFi ===");
-  Serial.println("SSID: " + ssid);
-  Serial.println("==========================");
-#endif
 }
 
 /* ===================== RELAY CONTROL FUNCTIONS ===================== */
@@ -1469,9 +1251,6 @@ void setRelay(int channel, bool state) {
     name = "UVC Light";
     break;
   default:
-#if SSCM_DEBUG
-    Serial.println("[ERROR] Invalid relay channel: " + String(channel));
-#endif
     return;
   }
 
@@ -1486,22 +1265,12 @@ void setRelay(int channel, bool state) {
     servoRight.write(currentRightPosition);
   }
 
-#if SSCM_DEBUG
-  Serial.println("[Relay " + String(channel) + "] " + name + ": " +
-                 (state ? "ON" : "OFF"));
-#endif
 }
 
 void allRelaysOff() {
-#if SSCM_DEBUG
-  Serial.println("\n=== Turning All Relays OFF ===");
-#endif
   for (int i = 1; i <= 8; i++) {
     setRelay(i, false);
   }
-#if SSCM_DEBUG
-  Serial.println("===============================\n");
-#endif
 }
 
 /* ===================== SERVICE FUNCTIONS ===================== */
@@ -1510,10 +1279,6 @@ void startService(String shoeType, String serviceType, String careType,
   // Turn OFF all service-related relays and RGB before starting new service
   // This ensures clean transition between services in auto mode
   if (serviceActive) {
-#if SSCM_DEBUG
-    Serial.println("[Service] Completing previous service: " +
-                   currentServiceType);
-#endif
 
     // Send completion message for the previous service
     if (wsConnected && isPaired) {
@@ -1527,9 +1292,6 @@ void startService(String shoeType, String serviceType, String careType,
       webSocket.sendTXT(msg);
       wsLog("info", "Service complete: " + currentServiceType + " | shoe: " +
                         currentShoeType + " | care: " + currentCareType);
-#if SSCM_DEBUG
-      Serial.println("[WebSocket] Sent completion for: " + currentServiceType);
-#endif
     }
 
     // Turn off RGB
@@ -1551,10 +1313,6 @@ void startService(String shoeType, String serviceType, String careType,
       stepper1MoveTo(0);
       stepper2MoveTo(0);
       motorsCoast();
-#if SSCM_DEBUG
-      Serial.println(
-          "[Service] Cleaning state reset, steppers/motors returning to home");
-#endif
     }
   }
 
@@ -1589,10 +1347,6 @@ void startService(String shoeType, String serviceType, String careType,
   // Override with custom duration from frontend if provided
   if (customDurationSeconds > 0) {
     serviceDuration = customDurationSeconds * 1000;
-#if SSCM_DEBUG
-    Serial.println(
-        "[Service] Custom duration: " + String(customDurationSeconds) + "s");
-#endif
   }
 
   currentShoeType = shoeType;
@@ -1602,43 +1356,19 @@ void startService(String shoeType, String serviceType, String careType,
   serviceStartTime = millis();
   lastServiceStatusUpdate = millis();
 
-#if SSCM_DEBUG
-  Serial.println("\n=== SERVICE STARTED ===");
-  Serial.print("Shoe Type: ");
-  Serial.println(shoeType);
-  Serial.print("Service Type: ");
-  Serial.println(serviceType);
-  Serial.print("Care Type: ");
-  Serial.println(careType);
-  Serial.print("Duration: ");
-  Serial.print(serviceDuration / 1000);
-  Serial.println(" seconds");
-#endif
 
   // Set RGB light color based on service type
   if (serviceType == "cleaning") {
     rgbBlue(); // Blue for cleaning
-#if SSCM_DEBUG
-    Serial.println("RGB Light: BLUE");
-#endif
   } else if (serviceType == "drying") {
     rgbGreen(); // Green for drying
-#if SSCM_DEBUG
-    Serial.println("RGB Light: GREEN");
-#endif
   } else if (serviceType == "sterilizing") {
     rgbPink(); // Pink for sterilizing
-#if SSCM_DEBUG
-    Serial.println("RGB Light: PINK");
-#endif
   }
 
   // Turn ON relays based on service type
   if (serviceType == "cleaning") {
     setRelay(5, true); // Diaphragm Pump ON
-#if SSCM_DEBUG
-    Serial.println("Relay 5 (Pump): ON");
-#endif
 
     // Side linear moves to designated position immediately
     long stepper2TargetSteps = 0;
@@ -1652,21 +1382,10 @@ void startService(String shoeType, String serviceType, String careType,
       stepper2TargetSteps = 19600; // Default normal
     }
     stepper2MoveTo(stepper2TargetSteps);
-#if SSCM_DEBUG
-    Serial.print("[Cleaning] Side linear moving to ");
-    Serial.print(stepper2TargetSteps / 200);
-    Serial.print("mm (");
-    Serial.print(careType);
-    Serial.println(" care)");
-#endif
 
     // Phase 1: 3s pump delay before top linear starts
     cleaningPhase = 1;
     brushPhaseStartTime = millis();
-#if SSCM_DEBUG
-    Serial.println(
-        "[Cleaning] Phase 1: Pump ON, waiting 3s before top linear starts");
-#endif
   } else if (serviceType == "drying") {
     setRelay(3, true); // Centrifugal Blower Fan ON (always on during drying)
     setRelay(4,
@@ -1675,25 +1394,11 @@ void startService(String shoeType, String serviceType, String careType,
              true); // Right PTC Heater ON (temperature control will manage it)
     dryingHeaterOn = true;
     dryingExhaustOn = false;
-#if SSCM_DEBUG
-    Serial.println("Relay 3 (Blower Fan): ON");
-    Serial.println("Relay 4 (Left PTC Heater): ON");
-    Serial.println("Relay 6 (Right PTC Heater): ON");
-    Serial.println(
-        "[Drying] Temperature control active: " + String(DRYING_TEMP_LOW, 0) +
-        "–" + String(DRYING_TEMP_HIGH, 0) + "°C");
-#endif
   } else if (serviceType == "sterilizing") {
     setRelay(8, true); // UVC ON
     setRelay(7, true); // Atomizer + Mist Fan ON
-#if SSCM_DEBUG
-    Serial.println("[Sterilize] UVC + Atomizer+Fan ON (full duration)");
-#endif
   }
 
-#if SSCM_DEBUG
-  Serial.println("=======================\n");
-#endif
 
   // Send service started confirmation via WebSocket
   sendServiceStatusUpdate();
@@ -1707,9 +1412,6 @@ void stopService() {
 
   // Turn OFF RGB light
   rgbOff();
-#if SSCM_DEBUG
-  Serial.println("RGB Light: OFF");
-#endif
 
   // Turn OFF relays based on service type
   if (currentServiceType == "cleaning") {
@@ -1717,23 +1419,11 @@ void stopService() {
     cleaningPhase = 0;
     brushCurrentCycle = 0;
     stepper1MoveTo(0);
-#if SSCM_DEBUG
-    Serial.println("[Cleaning] Returning top linear to home position");
-#endif
     stepper2MoveTo(0);
-#if SSCM_DEBUG
-    Serial.println("[Cleaning] Returning side linear to home position");
-#endif
     // Stop brush motors
     motorsCoast();
-#if SSCM_DEBUG
-    Serial.println("[Cleaning] Brush motors stopped");
-#endif
     // Reset servos to original position (fast return)
     setServoPositions(0, true); // Left: 0°, Right: 180°
-#if SSCM_DEBUG
-    Serial.println("[Cleaning] Resetting servos to home position");
-#endif
   } else if (currentServiceType == "drying") {
     setRelay(3, false); // Centrifugal Blower Fan
     setRelay(4, false); // Left PTC Heater
@@ -1748,9 +1438,6 @@ void stopService() {
     purgeServiceType = currentServiceType;
     purgeShoeType = currentShoeType;
     purgeCareType = currentCareType;
-#if SSCM_DEBUG
-    Serial.println("[Purge] Drying purge started - Bottom Exhaust ON for 15s");
-#endif
   } else if (currentServiceType == "sterilizing") {
     setRelay(7, false); // Atomizer + Mist Fan
     setRelay(8, false); // UVC Light
@@ -1761,17 +1448,8 @@ void stopService() {
     purgeServiceType = currentServiceType;
     purgeShoeType = currentShoeType;
     purgeCareType = currentCareType;
-#if SSCM_DEBUG
-    Serial.println(
-        "[Purge] Sterilizing purge started - Bottom Exhaust ON for 15s");
-#endif
   }
 
-#if SSCM_DEBUG
-  Serial.println("\n=== SERVICE STOPPED ===");
-  Serial.println("Service Type: " + currentServiceType);
-  Serial.println("=======================\n");
-#endif
 
   // Send service-complete immediately for all services — purge runs in
   // background
@@ -1784,9 +1462,6 @@ void stopService() {
     msg += "\"careType\":\"" + currentCareType + "\"";
     msg += "}";
     webSocket.sendTXT(msg);
-#if SSCM_DEBUG
-    Serial.println("[WebSocket] Complete: " + currentServiceType);
-#endif
   }
 
   // Clear service data
@@ -1802,9 +1477,6 @@ void handlePurge() {
   if (millis() - purgeStartTime >= PURGE_DURATION_MS) {
     purgeActive = false;
     setRelay(2, false); // Bottom Exhaust OFF
-#if SSCM_DEBUG
-    Serial.println("[Purge] Complete - Bottom Exhaust OFF");
-#endif
 
     purgeServiceType = "";
     purgeShoeType = "";
@@ -1824,17 +1496,10 @@ void handleDryingTemperature() {
       setRelay(4, true); // Left PTC Heater
       setRelay(6, true); // Right PTC Heater
       dryingHeaterOn = true;
-#if SSCM_DEBUG
-      Serial.println("[Drying] Temp " + String(currentTemperature, 1) +
-                     "°C < " + String(DRYING_TEMP_LOW, 0) + "°C — Heaters ON");
-#endif
     }
     if (dryingExhaustOn) {
       setRelay(2, false);
       dryingExhaustOn = false;
-#if SSCM_DEBUG
-      Serial.println("[Drying] Exhaust OFF");
-#endif
     }
   } else if (currentTemperature > DRYING_TEMP_HIGH) {
     // Too hot — heaters OFF, exhaust ON to release heat
@@ -1842,18 +1507,10 @@ void handleDryingTemperature() {
       setRelay(4, false); // Left PTC Heater
       setRelay(6, false); // Right PTC Heater
       dryingHeaterOn = false;
-#if SSCM_DEBUG
-      Serial.println("[Drying] Temp " + String(currentTemperature, 1) +
-                     "°C > " + String(DRYING_TEMP_HIGH, 0) +
-                     "°C — Heaters OFF");
-#endif
     }
     if (!dryingExhaustOn) {
       setRelay(2, true);
       dryingExhaustOn = true;
-#if SSCM_DEBUG
-      Serial.println("[Drying] Exhaust ON (cooling)");
-#endif
     }
   }
   // Within 35–40°C band: hold current state (hysteresis)
@@ -1867,10 +1524,6 @@ void handleService() {
 
   // Check if service duration is complete — stop immediately for all services
   if (elapsed >= serviceDuration) {
-#if SSCM_DEBUG
-    Serial.println("[Service] Duration elapsed (" + String(elapsed / 1000) +
-                   "s) — stopping immediately");
-#endif
     stopService();
     return;
   }
@@ -1883,11 +1536,6 @@ void handleService() {
       if (millis() - brushPhaseStartTime >= CLEANING_PUMP_DELAY_MS) {
         cleaningPhase = 2;
         stepper1MoveTo(CLEANING_MAX_POSITION);
-#if SSCM_DEBUG
-        Serial.print("[Cleaning] Phase 2: Top linear moving to ");
-        Serial.print(CLEANING_MAX_POSITION / 10);
-        Serial.println("mm");
-#endif
       }
     }
 
@@ -1896,9 +1544,6 @@ void handleService() {
       if (!stepper1Moving) {
         cleaningPhase = 3;
         stepper1MoveTo(0);
-#if SSCM_DEBUG
-        Serial.println("[Cleaning] Phase 3: Top linear returning to home");
-#endif
       }
     }
 
@@ -1907,9 +1552,6 @@ void handleService() {
       if (!stepper1Moving) {
         // Top linear home — pump OFF, start brushing
         setRelay(5, false); // Diaphragm Pump OFF
-#if SSCM_DEBUG
-        Serial.println("[Cleaning] Top linear at home - Pump OFF");
-#endif
         cleaningPhase = 4;
         brushCurrentCycle = 1;
         brushPhaseStartTime = millis();
@@ -1928,10 +1570,6 @@ void handleService() {
           setServoPositions(180, false);   // target: 180°
           servoStepInterval = dynInterval; // override with time-synced speed
         }
-#if SSCM_DEBUG
-        Serial.println("[Cleaning] Phase 4: Brushing started - CLOCKWISE, "
-                       "servo sweeping to 180° over remaining time");
-#endif
       }
     }
 
@@ -1943,10 +1581,6 @@ void handleService() {
         cleaningPhase = 6; // transition coast
         brushNextPhase = 5;
         brushPhaseStartTime = millis();
-#if SSCM_DEBUG
-        Serial.println("[Cleaning] Phase 6: Coast before CCW (cycle " +
-                       String(brushCurrentCycle) + ")");
-#endif
       }
     }
 
@@ -1959,10 +1593,6 @@ void handleService() {
           motorsCoast();
           cleaningPhase = 0;
           brushCurrentCycle = 0;
-#if SSCM_DEBUG
-          Serial.println("[Cleaning] Safety cap reached (" +
-                         String(BRUSH_TOTAL_CYCLES) + " cycles) - motors OFF");
-#endif
           stopService();
           return;
         } else {
@@ -1971,10 +1601,6 @@ void handleService() {
           cleaningPhase = 6; // transition coast
           brushNextPhase = 4;
           brushPhaseStartTime = millis();
-#if SSCM_DEBUG
-          Serial.println("[Cleaning] Phase 6: Coast before CW (cycle " +
-                         String(brushCurrentCycle) + ")");
-#endif
         }
       }
     }
@@ -1986,16 +1612,8 @@ void handleService() {
         brushPhaseStartTime = millis();
         if (brushNextPhase == 5) {
           setMotorsSameSpeed(-BRUSH_MOTOR_SPEED); // Start CCW
-#if SSCM_DEBUG
-          Serial.println("[Cleaning] Phase 5: Brush cycle " +
-                         String(brushCurrentCycle) + " - COUNTER-CLOCKWISE");
-#endif
         } else {
           setMotorsSameSpeed(BRUSH_MOTOR_SPEED); // Back to CW
-#if SSCM_DEBUG
-          Serial.println("[Cleaning] Phase 4: Brush cycle " +
-                         String(brushCurrentCycle) + " - CLOCKWISE");
-#endif
         }
       }
     }
@@ -2022,7 +1640,7 @@ void sendServiceStatusUpdate() {
     remaining = (serviceDuration - elapsed) / 1000; // Convert to seconds
   }
 
-  int progress = (elapsed * 100) / serviceDuration;
+  int progress = (serviceDuration > 0) ? (elapsed * 100) / serviceDuration : 0;
   if (progress > 100)
     progress = 100;
 
@@ -2048,12 +1666,6 @@ void sendServiceStatusUpdate() {
 // Handle classification result received from CAM via ESP-NOW, then relay to
 // backend
 void handleClassificationResultFromCAM(String shoeType, float confidence) {
-#if SSCM_DEBUG
-  Serial.println("\n=== CLASSIFICATION RESULT RECEIVED (ESP-NOW) ===");
-  Serial.println("Shoe Type:  " + shoeType);
-  Serial.println("Confidence: " + String(confidence * 100, 1) + "%");
-  Serial.println("================================================\n");
-#endif
 
   lastClassificationResult = shoeType;
   lastClassificationConfidence = confidence;
@@ -2069,9 +1681,6 @@ void handleClassificationResultFromCAM(String shoeType, float confidence) {
     webSocket.sendTXT(msg);
     wsLog("info", "Classification result: " + shoeType + " (" +
                       String((int)(confidence * 100)) + "% confidence)");
-#if SSCM_DEBUG
-    Serial.println("[WebSocket] Classification result relayed to backend");
-#endif
   }
 }
 
@@ -2087,9 +1696,6 @@ void relayClassificationErrorToBackend(String errorCode) {
   msg += "}";
   webSocket.sendTXT(msg);
   wsLog("warn", "Classification error: " + errorCode);
-#if SSCM_DEBUG
-  Serial.println("[WebSocket] Classification error relayed: " + errorCode);
-#endif
 }
 
 // Report CAM pairing info to backend after receiving PairingAck
@@ -2108,10 +1714,6 @@ void sendCamPairedToBackend() {
   webSocket.sendTXT(msg);
   wsLog("info", "CAM paired: " + pairedCamDeviceId +
                     (pairedCamIp.length() > 0 ? " @ " + pairedCamIp : ""));
-#if SSCM_DEBUG
-  Serial.println("[WebSocket] cam-paired sent: " + pairedCamDeviceId +
-                 (pairedCamIp.length() > 0 ? " @ " + pairedCamIp : ""));
-#endif
 }
 
 /* ===================== DHT22 FUNCTIONS ===================== */
@@ -2120,19 +1722,12 @@ bool readDHT11() {
   float hum = dht.readHumidity();
 
   if (isnan(temp) || isnan(hum)) {
-#if SSCM_DEBUG
-    Serial.println("[DHT11] Failed to read from sensor!");
-#endif
     return false; // Reading failed
   }
 
   currentTemperature = temp;
   currentHumidity = hum;
 
-#if SSCM_DEBUG
-  Serial.println("[DHT11] Temp: " + String(currentTemperature, 1) +
-                 "°C | Humidity: " + String(currentHumidity, 1) + "%");
-#endif
   return true; // Reading successful
 }
 
@@ -2173,39 +1768,46 @@ void sendCamSyncStatus() {
   syncMsg += "\"camSynced\":" + String(camIsReady ? "true" : "false");
   syncMsg += "}";
   webSocket.sendTXT(syncMsg);
-#if SSCM_DEBUG
-  Serial.println("[WebSocket] Sent CAM sync status: " +
-                 String(camIsReady ? "SYNCED" : "NOT_SYNCED"));
-#endif
 }
 
 /* ===================== ULTRASONIC FUNCTIONS ===================== */
 
-// Take 5 pulseIn samples and return the median duration (µs).
-// Median rejects outlier spikes and sporadic zeros from reflections/noise.
+// Take 3 pulseIn samples and return the median duration (µs).
+// 3 samples gives enough outlier rejection (1 bad value discarded) while
+// capping worst-case blocking at 3×25ms + 2×5ms = 85ms per sensor instead
+// of the previous 5×40ms + 4×10ms = 240ms. This keeps loop() responsive
+// during the 5s sensor cycle (webSocket.loop() must be called frequently).
 static unsigned long ultrasonicMedian(uint8_t trigPin, uint8_t echoPin) {
-  unsigned long samples[5];
-  for (int i = 0; i < 5; i++) {
+  unsigned long samples[3];
+  for (int i = 0; i < 3; i++) {
     digitalWrite(trigPin, LOW);
     delayMicroseconds(2);
     digitalWrite(trigPin, HIGH);
-    delayMicroseconds(20); // Spec requires >20µs; 25µs adds margin
+    delayMicroseconds(20);
     digitalWrite(trigPin, LOW);
-    samples[i] = pulseIn(echoPin, HIGH, 40000);
-    if (i < 4)
-      delay(10); // Short gap prevents echo bleed between samples
+    // 25ms timeout: JSN-SR20-Y1 max range ~4m → round-trip ~24ms.
+    // Reduces worst-case blocking per sample from 40ms → 25ms.
+    samples[i] = pulseIn(echoPin, HIGH, 25000);
+    if (i < 2)
+      delay(5); // Short gap prevents echo bleed between samples
   }
-  // Insertion sort (5 elements — negligible cost)
-  for (int i = 1; i < 5; i++) {
-    unsigned long key = samples[i];
-    int j = i - 1;
-    while (j >= 0 && samples[j] > key) {
-      samples[j + 1] = samples[j];
-      j--;
-    }
-    samples[j + 1] = key;
+  // Sort 3 elements and return median
+  if (samples[0] > samples[1]) {
+    unsigned long t = samples[0];
+    samples[0] = samples[1];
+    samples[1] = t;
   }
-  return samples[2]; // median
+  if (samples[1] > samples[2]) {
+    unsigned long t = samples[1];
+    samples[1] = samples[2];
+    samples[2] = t;
+  }
+  if (samples[0] > samples[1]) {
+    unsigned long t = samples[0];
+    samples[0] = samples[1];
+    samples[1] = t;
+  }
+  return samples[1]; // median
 }
 
 bool readAtomizerLevel() {
@@ -2214,9 +1816,6 @@ bool readAtomizerLevel() {
       ultrasonicMedian(ATOMIZER_TRIG_PIN, ATOMIZER_ECHO_PIN);
 
   if (duration == 0) {
-#if SSCM_DEBUG
-    Serial.println("[Atomizer] Invalid (no echo)");
-#endif
     currentAtomizerDistance = -1;
     return true;
   }
@@ -2226,10 +1825,6 @@ bool readAtomizerLevel() {
   int distance = (int)(duration * 0.0174f);
 
   if (distance > 21) {
-#if SSCM_DEBUG
-    Serial.println("[Atomizer] Invalid (out of range): " + String(distance) +
-                   " cm");
-#endif
     currentAtomizerDistance = -1;
     return true;
   }
@@ -2239,16 +1834,15 @@ bool readAtomizerLevel() {
 }
 
 bool readFoamLevel() {
-  // 50ms gap after atomizer read — prevents cross-sensor echo interference
-  delay(50);
+  // 20ms gap after atomizer read — prevents cross-sensor echo interference.
+  // Reduced from 50ms; sensors are on separate GPIO pairs so 20ms is enough
+  // for residual ultrasonic energy to dissipate.
+  delay(20);
 
   // 40ms timeout per sample; takes median of 5 samples to reject outliers
   unsigned long duration = ultrasonicMedian(FOAM_TRIG_PIN, FOAM_ECHO_PIN);
 
   if (duration == 0) {
-#if SSCM_DEBUG
-    Serial.println("[Foam] Invalid (no echo)");
-#endif
     currentFoamDistance = -1;
     return true;
   }
@@ -2258,10 +1852,6 @@ bool readFoamLevel() {
   int distance = (int)(duration * 0.0174f);
 
   if (distance > 21) {
-#if SSCM_DEBUG
-    Serial.println("[Foam] Invalid (out of range): " + String(distance) +
-                   " cm");
-#endif
     currentFoamDistance = -1;
     return true;
   }
@@ -2336,11 +1926,6 @@ void updateServoPositions() {
     // Both servos reached target
     if (leftReached && rightReached) {
       servosMoving = false;
-#if SSCM_DEBUG
-      Serial.println(
-          "[Servo] Reached target - Left: " + String(currentLeftPosition) +
-          "° Right: " + String(currentRightPosition) + "°");
-#endif
     }
   }
 }
@@ -2365,11 +1950,6 @@ void setServoPositions(int leftPos, bool fastMode) {
     targetLeftPosition = leftPos;
     targetRightPosition = rightPos;
     servosMoving = true;
-#if SSCM_DEBUG
-    Serial.println("[Servo] Moving to Left: " + String(leftPos) +
-                   "° Right: " + String(rightPos) + "° (" +
-                   (fastMode ? "FAST" : "SLOW") + ")");
-#endif
   }
 }
 
@@ -2501,18 +2081,7 @@ void stepper1MoveTo(long position) {
 
   if (targetStepper1Position != currentStepper1Position) {
     stepper1Moving = true;
-#if SSCM_DEBUG
-    Serial.println(
-        "[Top Linear] Moving from " + String(currentStepper1Position) + " to " +
-        String(targetStepper1Position) + " steps (" +
-        String(abs(targetStepper1Position - currentStepper1Position)) +
-        " steps)");
-#endif
   } else {
-#if SSCM_DEBUG
-    Serial.println("[Top Linear] Already at target position: " +
-                   String(targetStepper1Position));
-#endif
   }
   // NVS write deferred to updateStepper1Position() on movement completion
 }
@@ -2533,10 +2102,6 @@ void stepper1MoveByMM(float mm) {
 void stepper1Stop() {
   targetStepper1Position = currentStepper1Position;
   stepper1Moving = false;
-#if SSCM_DEBUG
-  Serial.println("[Top Linear] Stopped at position: " +
-                 String(currentStepper1Position) + " steps");
-#endif
 }
 
 // Home the stepper (declare current physical location as position 0)
@@ -2546,9 +2111,6 @@ void stepper1Home() {
   stepper1Moving = false;
   prefs.putLong("s1pos", 0); // persist immediately so reboot keeps the zero
   wsLog("info", "S1 zeroed at current position (NVS saved)");
-#if SSCM_DEBUG
-  Serial.println("[Top Linear] Homed - position reset to 0");
-#endif
 }
 
 // Non-blocking stepper update - called in loop()
@@ -2572,10 +2134,6 @@ void updateStepper1Position() {
       // Reached target — persist position to NVS now (not on every MoveTo call)
       stepper1Moving = false;
       prefs.putLong("s1pos", currentStepper1Position);
-#if SSCM_DEBUG
-      Serial.println("[Top Linear] Reached target position: " +
-                     String(currentStepper1Position) + " steps");
-#endif
     }
   }
 }
@@ -2597,11 +2155,6 @@ void setStepper2Speed(int stepsPerSecond) {
 
   // Calculate interval in microseconds
   stepper2StepInterval = 1000000UL / stepper2Speed;
-#if SSCM_DEBUG
-  Serial.println("[Side Linear] Speed: " + String(stepper2Speed) +
-                 " steps/sec = " +
-                 String(stepper2Speed / STEPPER2_STEPS_PER_MM) + " mm/sec");
-#endif
 }
 
 // Perform a single step in the specified direction - OPTIMIZED FOR SPEED
@@ -2636,18 +2189,7 @@ void stepper2MoveTo(long position) {
 
   if (targetStepper2Position != currentStepper2Position) {
     stepper2Moving = true;
-#if SSCM_DEBUG
-    Serial.println(
-        "[Side Linear] Moving from " + String(currentStepper2Position) +
-        " to " + String(targetStepper2Position) + " steps (" +
-        String(abs(targetStepper2Position - currentStepper2Position)) +
-        " steps)");
-#endif
   } else {
-#if SSCM_DEBUG
-    Serial.println("[Side Linear] Already at target position: " +
-                   String(targetStepper2Position));
-#endif
   }
   // NVS write deferred to updateStepper2Position() on movement completion
 }
@@ -2668,10 +2210,6 @@ void stepper2MoveByMM(float mm) {
 void stepper2Stop() {
   targetStepper2Position = currentStepper2Position;
   stepper2Moving = false;
-#if SSCM_DEBUG
-  Serial.println("[Side Linear] Stopped at position: " +
-                 String(currentStepper2Position) + " steps");
-#endif
 }
 
 // Home the stepper (declare current physical location as position 0)
@@ -2681,9 +2219,6 @@ void stepper2Home() {
   stepper2Moving = false;
   prefs.putLong("s2pos", 0); // persist immediately so reboot keeps the zero
   wsLog("info", "S2 zeroed at current position (NVS saved)");
-#if SSCM_DEBUG
-  Serial.println("[Side Linear] Homed - position reset to 0");
-#endif
 }
 
 // Non-blocking stepper update - called in loop()
@@ -2707,10 +2242,6 @@ void updateStepper2Position() {
       // Reached target — persist position to NVS now (not on every MoveTo call)
       stepper2Moving = false;
       prefs.putLong("s2pos", currentStepper2Position);
-#if SSCM_DEBUG
-      Serial.println("[Side Linear] Reached target position: " +
-                     String(currentStepper2Position) + " steps");
-#endif
     }
   }
 }
@@ -2730,53 +2261,31 @@ void setRGBColor(int red, int green, int blue) {
   }
   strip.show(); // Update the strip
 
-#if SSCM_DEBUG
-  Serial.println("[WS2812B] Color set - R:" + String(currentRed) +
-                 " G:" + String(currentGreen) + " B:" + String(currentBlue));
-#endif
 }
 
 // Preset colors
 void rgbWhite() {
   setRGBColor(255, 255, 255);
-#if SSCM_DEBUG
-  Serial.println("[WS2812B] WHITE");
-#endif
 }
 
 void rgbBlue() {
   setRGBColor(0, 0, 255);
-#if SSCM_DEBUG
-  Serial.println("[WS2812B] BLUE");
-#endif
 }
 
 void rgbGreen() {
   setRGBColor(0, 255, 0);
-#if SSCM_DEBUG
-  Serial.println("[WS2812B] GREEN");
-#endif
 }
 
 void rgbViolet() {
   setRGBColor(238, 130, 238); // Violet color
-#if SSCM_DEBUG
-  Serial.println("[WS2812B] VIOLET");
-#endif
 }
 
 void rgbPink() {
   setRGBColor(255, 20, 147); // Deep pink
-#if SSCM_DEBUG
-  Serial.println("[WS2812B] PINK");
-#endif
 }
 
 void rgbOff() {
   setRGBColor(0, 0, 0);
-#if SSCM_DEBUG
-  Serial.println("[WS2812B] OFF (all LEDs off)");
-#endif
 }
 
 /* ===================== COIN SLOT INTERRUPT HANDLER ===================== */
@@ -2849,9 +2358,6 @@ void factoryReset() {
   // If ESP-NOW is up and CAM is paired, reset CAM first before clearing our own
   // prefs
   if (espNowInitialized && camMacPaired) {
-#if SSCM_DEBUG
-    Serial.println("[FactoryReset] Sending reset command to CAM...");
-#endif
     CamMessage msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = CAM_MSG_FACTORY_RESET;
@@ -2860,24 +2366,11 @@ void factoryReset() {
       esp_now_send(camMacAddress, (uint8_t *)&msg, sizeof(msg));
       delay(500);
     }
-#if SSCM_DEBUG
-    Serial.println("[FactoryReset] Waiting for CAM to process reset...");
-#endif
     delay(1000);
   } else {
-#if SSCM_DEBUG
-    Serial.println("[FactoryReset] CAM not reachable (ESP-NOW not ready) — "
-                   "skipping CAM reset");
-#endif
   }
 
-#if SSCM_DEBUG
-  Serial.println("[FactoryReset] Clearing main board preferences...");
-#endif
   prefs.clear();
-#if SSCM_DEBUG
-  Serial.println("[FactoryReset] Done. Restarting...");
-#endif
   delay(500);
   ESP.restart();
 }
@@ -2895,69 +2388,35 @@ void setupOTA() {
     ArduinoOTA.setPassword("SSCM-OTA");
   }
   ArduinoOTA.onStart([]() {
-#if SSCM_DEBUG
-    Serial.println("[OTA] Starting update...");
-#endif
     allRelaysOff(); // Safety: turn off outputs before flashing
     wsLog("warn", "OTA firmware update started — device will restart");
   });
   ArduinoOTA.onEnd([]() {
-#if SSCM_DEBUG
-    Serial.println("[OTA] Done.");
-#endif
     wsLog("info", "OTA update complete — restarting now");
   });
   ArduinoOTA.onError([](ota_error_t error) {
-#if SSCM_DEBUG
-    Serial.printf("[OTA] Error [%u]\n", error);
-#endif
     wsLog("error", "OTA update failed — error code: " + String(error));
   });
   ArduinoOTA.begin();
-#if SSCM_DEBUG
-  Serial.println("[OTA] Ready. Hostname: " + String(hostname));
-#endif
 }
 
 /* ===================== SETUP ===================== */
 void setup() {
   Serial.begin(115200);
 
-#if SSCM_DEBUG
-  Serial.println("\n\n=================================");
-  Serial.printf("  %s\n", BOARD_NAME);
-  Serial.printf("  Firmware v%s\n", FIRMWARE_VERSION);
-  Serial.println("=================================\n");
-#endif
 
   prefs.begin("sscm", false);
 
   currentStepper1Position = prefs.getLong("s1pos", 0);
   currentStepper2Position = prefs.getLong("s2pos", 0);
-#if SSCM_DEBUG
-  Serial.println("[Setup] Stepper1 pos restored: " +
-                 String(currentStepper1Position));
-  Serial.println("[Setup] Stepper2 pos restored: " +
-                 String(currentStepper2Position));
-#endif
 
   // Factory reset via BOOT button (GPIO0) held at power-on for 3s
   pinMode(0, INPUT_PULLUP);
   if (digitalRead(0) == LOW) {
-#if SSCM_DEBUG
-    Serial.println(
-        "[Setup] BOOT button held — hold 3s to confirm factory reset...");
-#endif
     delay(3000);
     if (digitalRead(0) == LOW) {
-#if SSCM_DEBUG
-      Serial.println("[Setup] Confirmed — triggering factory reset!");
-#endif
       factoryReset();
     }
-#if SSCM_DEBUG
-    Serial.println("[Setup] BOOT button released — factory reset cancelled");
-#endif
   }
 
   // Initialize ESP-NOW for wireless communication with ESP32-CAM
@@ -2985,12 +2444,6 @@ void setup() {
   currentLeftPosition = 0;
   currentRightPosition = 180;
 
-#if SSCM_DEBUG
-  Serial.println("[Servo] Left attached:" + String(servoLeft.attached()) +
-                 " pin:" + String(SERVO_LEFT_PIN));
-  Serial.println("[Servo] Right attached:" + String(servoRight.attached()) +
-                 " pin:" + String(SERVO_RIGHT_PIN));
-#endif
   targetLeftPosition = 0;
   targetRightPosition = 180;
 
@@ -3026,11 +2479,6 @@ void setup() {
 
   // Set initial speed
   setStepper1Speed(800); // 800 steps/second default
-#if SSCM_DEBUG
-  Serial.println("[Stepper1] Top linear: GPIO " + String(STEPPER1_STEP_PIN) +
-                 "/" + String(STEPPER1_DIR_PIN) + ", " +
-                 String(stepper1Speed / STEPPER1_STEPS_PER_MM) + "mm/s");
-#endif
 
   // Initialize Side Linear Stepper (Double)
   pinMode(STEPPER2_STEP_PIN, OUTPUT);
@@ -3041,11 +2489,6 @@ void setup() {
 
   // Set initial speed
   setStepper2Speed(1500); // 1500 steps/second default (7.5mm/s)
-#if SSCM_DEBUG
-  Serial.println("[Stepper2] Side linear: GPIO " + String(STEPPER2_STEP_PIN) +
-                 "/" + String(STEPPER2_DIR_PIN) + ", " +
-                 String(stepper2Speed / STEPPER2_STEPS_PER_MM) + "mm/s");
-#endif
 
   // Auto-return to 0 on boot so the machine is always ready for cleaning
   if (currentStepper1Position != 0) {
@@ -3065,10 +2508,6 @@ void setup() {
       100);     // Set moderate brightness to reduce power draw (0-255)
   strip.show(); // Initialize all pixels to 'off'
 
-#if SSCM_DEBUG
-  Serial.println("[RGB] " + String(RGB_NUM_LEDS) + " LEDs on GPIO " +
-                 String(RGB_DATA_PIN));
-#endif
 
   // Initialize 8-channel relay
   pinMode(RELAY_1_PIN, OUTPUT);
@@ -3082,9 +2521,13 @@ void setup() {
 
   // Turn all relays OFF initially
   allRelaysOff();
-#if SSCM_DEBUG
-  Serial.println("[Relay] 8-channel initialized, all OFF");
-#endif
+
+  // Brief power-rail stabilization delay after initializing servos, motors,
+  // relays, and steppers. All these peripherals draw inrush current during
+  // GPIO initialization. Without a small pause, the combined inrush on a
+  // marginal PSU can dip the 3.3V rail below the ESP32-S3 brownout threshold
+  // (~2.43V), triggering a silent reset loop with no serial output at all.
+  delay(200);
 
   // Initialize coin acceptor
   pinMode(COIN_SLOT_PIN, INPUT_PULLUP);
@@ -3113,13 +2556,7 @@ void setup() {
   if (groupToken.length() == 0) {
     groupToken = generateGroupToken();
     prefs.putString("groupToken", groupToken);
-#if SSCM_DEBUG
-    Serial.println("[Setup] Generated new groupToken: " + groupToken);
-#endif
   } else {
-#if SSCM_DEBUG
-    Serial.println("[Setup] Loaded groupToken: " + groupToken);
-#endif
   }
 
   // Check if device is paired
@@ -3130,30 +2567,15 @@ void setup() {
     pairingCode = generatePairingCode();
   }
 
-#if SSCM_DEBUG
-  Serial.println("\n--- Device Info ---");
-  Serial.println("ID:         " + deviceId);
-  Serial.println("GroupToken: " + groupToken);
-  Serial.println("Paired:     " +
-                 String(isPaired ? "Yes" : "No - Code: " + pairingCode));
-  Serial.println("Money:      " + String(totalPesos) + " PHP");
-  Serial.println("-------------------\n");
-#endif
 
   // Check if we have WiFi credentials
   String storedSSID = prefs.getString("ssid", "");
 
   if (storedSSID.length() == 0) {
     // No credentials — start SoftAP captive portal only
-#if SSCM_DEBUG
-    Serial.println("[Setup] No WiFi credentials - starting SoftAP");
-#endif
     startSoftAP();
   } else {
     // Has credentials — init ESP-NOW then connect WiFi
-#if SSCM_DEBUG
-    Serial.println("[Setup] WiFi credentials found - connecting");
-#endif
     WiFi.mode(WIFI_STA);
     delay(100);
     initESPNow(); // Init only — pairing broadcast deferred until WiFi connects
@@ -3172,18 +2594,12 @@ void handleSerialCommand(String cmd) {
   if (cmd == "RESET_WIFI") {
     prefs.remove("ssid");
     prefs.remove("pass");
-#if SSCM_DEBUG
-    Serial.println("WiFi reset, restarting...");
-#endif
     delay(1000);
     ESP.restart();
   } else if (cmd == "RESET_PAIRING") {
     prefs.putBool("paired", false);
     isPaired = false;
     pairingCode = generatePairingCode();
-#if SSCM_DEBUG
-    Serial.println("Pairing reset, code: " + pairingCode);
-#endif
     delay(1000);
     ESP.restart();
   } else if (cmd == "RESET_MONEY") {
@@ -3194,13 +2610,7 @@ void handleSerialCommand(String cmd) {
     currentBillPulses = 0;
     prefs.putUInt("totalCoinPesos", 0);
     prefs.putUInt("totalBillPesos", 0);
-#if SSCM_DEBUG
-    Serial.println("Money counters reset");
-#endif
   } else if (cmd == "FACTORY_RESET") {
-#if SSCM_DEBUG
-    Serial.println("[Serial] Factory reset command received!");
-#endif
     factoryReset();
   } else if (cmd == "STATUS") {
     wsLog("info", "Device: " + deviceId);
@@ -3215,20 +2625,8 @@ void handleSerialCommand(String cmd) {
                       (stepper1Moving ? " (moving)" : ""));
     wsLog("info", "Stepper2: " + String(currentStepper2Position / 200.0) +
                       "mm" + (stepper2Moving ? " (moving)" : ""));
-#if SSCM_DEBUG
-    Serial.println("\nDevice: " + deviceId);
-    Serial.println("WiFi: " + String(wifiConnected ? WiFi.localIP().toString()
-                                                   : "Disconnected"));
-    Serial.println("WS: " + String(wsConnected ? "OK" : "Down"));
-    Serial.println("Paired: " + String(isPaired ? "Yes" : pairingCode));
-    Serial.println("Money: " + String(totalPesos) + " PHP");
-    Serial.println("Temp: " + String(currentTemperature) +
-                   "°C, Humidity: " + String(currentHumidity) + "%");
-    Serial.println("Stepper1: " + String(currentStepper1Position / 10.0) +
-                   "mm" + (stepper1Moving ? " (moving)" : ""));
-    Serial.println("Stepper2: " + String(currentStepper2Position / 200.0) +
-                   "mm" + (stepper2Moving ? " (moving)" : ""));
-#endif
+    wsLog("info", "Heap: " + String(ESP.getFreeHeap() / 1024) + " KB (" +
+                      String(ESP.getMinFreeHeap() / 1024) + " KB min)");
   } else if (cmd.startsWith("RELAY")) {
     // Commands: RELAY_1_ON, RELAY_1_OFF, RELAY_ALL_OFF
     if (cmd == "RELAY_ALL_OFF") {
@@ -3250,19 +2648,10 @@ void handleSerialCommand(String cmd) {
           } else if (action == "OFF") {
             setRelay(channel, false);
           } else {
-#if SSCM_DEBUG
-            Serial.println("[ERROR] Use: RELAY_X_ON/OFF or RELAY_ALL_OFF");
-#endif
           }
         } else {
-#if SSCM_DEBUG
-          Serial.println("[ERROR] Invalid channel (1-8)");
-#endif
         }
       } else {
-#if SSCM_DEBUG
-        Serial.println("[ERROR] Use: RELAY_X_ON/OFF or RELAY_ALL_OFF");
-#endif
       }
     }
   } else if (cmd == "SERVO_DEMO") {
@@ -3276,9 +2665,6 @@ void handleSerialCommand(String cmd) {
         delay(1);
       }
     }
-#if SSCM_DEBUG
-    Serial.println("Servo demo complete (0°→90°→180°→0°)");
-#endif
   } else if (cmd == "SERVO_STATUS") {
     Serial.println("[Servo] Left: " + String(currentLeftPosition) +
                    "° Right: " + String(currentRightPosition) +
@@ -3309,9 +2695,6 @@ void handleSerialCommand(String cmd) {
     if (angle >= 0 && angle <= 180) {
       setServoPositions(angle, true); // fast mode for manual commands
     } else {
-#if SSCM_DEBUG
-      Serial.println("[ERROR] Angle 0-180 (use: SERVO_X)");
-#endif
     }
   } else if (cmd.startsWith("MOTOR_LEFT_")) {
     // Left motor commands
@@ -3326,9 +2709,6 @@ void handleSerialCommand(String cmd) {
       if (speed >= -255 && speed <= 255) {
         setLeftMotorSpeed(speed);
       } else {
-#if SSCM_DEBUG
-        Serial.println("[ERROR] Invalid speed: " + subCmd);
-#endif
       }
     }
   } else if (cmd.startsWith("MOTOR_RIGHT_")) {
@@ -3344,9 +2724,6 @@ void handleSerialCommand(String cmd) {
       if (speed >= -255 && speed <= 255) {
         setRightMotorSpeed(speed);
       } else {
-#if SSCM_DEBUG
-        Serial.println("[ERROR] Invalid speed: " + subCmd);
-#endif
       }
     }
   } else if (cmd.startsWith("MOTOR_")) {
@@ -3362,9 +2739,6 @@ void handleSerialCommand(String cmd) {
       if (speed >= -255 && speed <= 255) {
         setMotorsSameSpeed(speed);
       } else {
-#if SSCM_DEBUG
-        Serial.println("[ERROR] Speed -255 to 255 (use: MOTOR_X)");
-#endif
       }
     }
   } else if (cmd.startsWith("STEPPER1_")) {
@@ -3372,13 +2746,7 @@ void handleSerialCommand(String cmd) {
     String subCmd = cmd.substring(9); // Remove "STEPPER1_"
 
     if (subCmd == "ENABLE" || subCmd == "DISABLE") {
-#if SSCM_DEBUG
-      Serial.println("[Stepper1] Always enabled (ENA+ hardwired)");
-#endif
     } else if (subCmd == "TEST_MANUAL") {
-#if SSCM_DEBUG
-      Serial.println("[Stepper1] Testing 10 steps...");
-#endif
       for (int i = 0; i < 10; i++) {
         digitalWrite(STEPPER1_DIR_PIN, HIGH);
         delayMicroseconds(5);
@@ -3387,46 +2755,18 @@ void handleSerialCommand(String cmd) {
         digitalWrite(STEPPER1_STEP_PIN, LOW);
         delayMicroseconds(20);
       }
-#if SSCM_DEBUG
-      Serial.println("[Stepper1] Test done");
-#endif
     } else if (subCmd == "TEST_PINS") {
       // Test if pins are actually outputting
-#if SSCM_DEBUG
-      Serial.println(
-          "[Top Linear] Pin Output Test (rapid pulses - non-blocking)");
-      Serial.println("[Top Linear] Blinking STEP pin (GPIO " +
-                     String(STEPPER1_STEP_PIN) + ") 10 times");
-      Serial.println(
-          "[Top Linear] Measure with oscilloscope or logic analyzer");
-#endif
 
       for (int i = 0; i < 10; i++) {
         digitalWrite(STEPPER1_STEP_PIN, HIGH);
-#if SSCM_DEBUG
-        Serial.println("[Top Linear] STEP pin HIGH (3.3V)");
-#endif
         delayMicroseconds(100); // 100us pulse - visible on scope
         digitalWrite(STEPPER1_STEP_PIN, LOW);
-#if SSCM_DEBUG
-        Serial.println("[Top Linear] STEP pin LOW (0V)");
-#endif
         delayMicroseconds(100); // 100us gap
       }
 
-#if SSCM_DEBUG
-      Serial.println("[Top Linear] Pin test complete (10 rapid pulses sent)");
-      Serial.println("[Top Linear] Use oscilloscope to verify - too fast for "
-                     "multimeter");
-#endif
     } else if (subCmd == "TEST_PULSE") {
       // Rapid pulse test - SHORT non-blocking version
-#if SSCM_DEBUG
-      Serial.println("[Top Linear] RAPID PULSE TEST (non-blocking)");
-      Serial.println(
-          "[Top Linear] Sending 100 rapid pulses at 1000 pulses/sec");
-      Serial.println("[Top Linear] TB6600 should click/buzz!");
-#endif
 
       // Send 100 pulses rapidly (~100ms total - non-blocking)
       int pulseCount = 100;
@@ -3437,12 +2777,6 @@ void handleSerialCommand(String cmd) {
         delayMicroseconds(980); // ~1000 pulses/sec
       }
 
-#if SSCM_DEBUG
-      Serial.println("[Top Linear] Sent " + String(pulseCount) +
-                     " pulses in ~100ms");
-      Serial.println(
-          "[Top Linear] Did TB6600 make buzzing noise? Did motor vibrate?");
-#endif
     } else if (subCmd == "STOP") {
       stepper1Stop();
     } else if (subCmd == "HOME") {
@@ -3457,11 +2791,6 @@ void handleSerialCommand(String cmd) {
       wsLog("info", "S1 pos=" + String(currentStepper1Position) +
                         " spd=" + String(stepper1Speed) +
                         (stepper1Moving ? " MOVING" : " IDLE"));
-#if SSCM_DEBUG
-      Serial.println("Pos: " + String(currentStepper1Position / 10.0) +
-                     "mm, Speed: " + String(stepper1Speed / 10) +
-                     "mm/s, Moving: " + String(stepper1Moving));
-#endif
     } else if (subCmd.startsWith("SPEED_")) {
       // STEPPER1_SPEED_XXX - set speed in steps per second
       String speedStr = subCmd.substring(6);
@@ -3469,10 +2798,6 @@ void handleSerialCommand(String cmd) {
       if (speed > 0 && speed <= 800) {
         setStepper1Speed(speed);
       } else {
-#if SSCM_DEBUG
-        Serial.println("[ERROR] Invalid stepper speed: " + speedStr);
-        Serial.println("Valid range: 1-800 steps/second (motor max: 80mm/s)");
-#endif
       }
     } else if (subCmd.startsWith("MOVE_")) {
       // STEPPER1_MOVE_XXX - move relative steps
@@ -3490,18 +2815,12 @@ void handleSerialCommand(String cmd) {
       float mm = mmStr.toFloat();
       stepper1MoveByMM(mm);
     } else {
-#if SSCM_DEBUG
-      Serial.println("[ERROR] Unknown stepper1 command");
-#endif
     }
   } else if (cmd.startsWith("STEPPER2_")) {
     // Stepper motor 2 commands
     String subCmd = cmd.substring(9); // Remove "STEPPER2_"
 
     if (subCmd == "ENABLE" || subCmd == "DISABLE") {
-#if SSCM_DEBUG
-      Serial.println("[Stepper2] Always enabled (ENA+ hardwired)");
-#endif
     } else if (subCmd == "STOP") {
       stepper2Stop();
     } else if (subCmd == "HOME") {
@@ -3523,11 +2842,6 @@ void handleSerialCommand(String cmd) {
       if (speed > 0 && speed <= STEPPER2_MAX_SPEED) {
         setStepper2Speed(speed);
       } else {
-#if SSCM_DEBUG
-        Serial.println("[ERROR] Invalid stepper2 speed: " + speedStr);
-        Serial.println("Valid range: 1-" + String(STEPPER2_MAX_SPEED) +
-                       " steps/second (motor max: 120mm/s)");
-#endif
       }
     } else if (subCmd.startsWith("MOVE_")) {
       // STEPPER2_MOVE_XXX - move relative steps (can be negative)
@@ -3545,9 +2859,6 @@ void handleSerialCommand(String cmd) {
       float mm = mmStr.toFloat();
       stepper2MoveByMM(mm);
     } else {
-#if SSCM_DEBUG
-      Serial.println("[ERROR] Unknown stepper2 command");
-#endif
     }
   } else if (cmd.startsWith("RGB_")) {
     // RGB LED Strip commands
@@ -3578,33 +2889,18 @@ void handleSerialCommand(String cmd) {
         int blue = rgbStr.substring(secondUnderscore + 1).toInt();
         setRGBColor(red, green, blue);
       } else {
-#if SSCM_DEBUG
-        Serial.println("[ERROR] Use: RGB_CUSTOM_R_G_B");
-#endif
       }
     } else {
-#if SSCM_DEBUG
-      Serial.println("[ERROR] Unknown RGB command");
-#endif
     }
   } else if (cmd.startsWith("CAM_")) {
     // ESP32-CAM commands (via WebSocket)
     String subCmd = cmd.substring(4);
 
     if (subCmd == "BROADCAST") {
-#if SSCM_DEBUG
-      Serial.println("[CAM] Broadcasting pairing via ESP-NOW...");
-#endif
       sendPairingBroadcast();
     } else if (subCmd == "CLASSIFY") {
-#if SSCM_DEBUG
-      Serial.println("[CAM] Requesting classification via ESP-NOW...");
-#endif
       sendClassifyRequest();
     } else {
-#if SSCM_DEBUG
-      Serial.println("[ERROR] Unknown CAM command");
-#endif
     }
   }
 }
@@ -3682,10 +2978,6 @@ void loop() {
       totalsDirty =
           true; // Flush to NVS in periodic save (avoids blocking flash write)
 
-#if SSCM_DEBUG
-      Serial.println("[COIN] " + String(coinValue) +
-                     " PHP (Total: " + String(totalPesos) + " PHP)");
-#endif
 
       if (isPaired && wsConnected) {
         String coinMsg = "{\"type\":\"coin-inserted\",\"deviceId\":\"" +
@@ -3719,10 +3011,6 @@ void loop() {
       totalsDirty =
           true; // Flush to NVS in periodic save (avoids blocking flash write)
 
-#if SSCM_DEBUG
-      Serial.println("[BILL] " + String(billValue) +
-                     " PHP (Total: " + String(totalPesos) + " PHP)");
-#endif
 
       if (isPaired && wsConnected) {
         String billMsg = "{\"type\":\"bill-inserted\",\"deviceId\":\"" +
@@ -3753,15 +3041,9 @@ void loop() {
     memset(&ping, 0, sizeof(ping));
     ping.type = CAM_MSG_STATUS_PING;
     esp_now_send(camMacAddress, (uint8_t *)&ping, sizeof(ping));
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] STATUS_PING sent to CAM");
-#endif
   }
 
   if (camIsReady && (millis() - lastCamHeartbeat > CAM_HEARTBEAT_TIMEOUT)) {
-#if SSCM_DEBUG
-    Serial.println("[Pairing] CAM heartbeat lost — clearing camIsReady");
-#endif
     camIsReady = false;
     lastCamHeartbeat = millis();
   }
@@ -3773,10 +3055,6 @@ void loop() {
       static uint32_t broadcastRetryCount = 0;
       broadcastRetryCount++;
       if (broadcastRetryCount % 6 == 1) { // Log every 30 seconds
-#if SSCM_DEBUG
-        Serial.printf("[ESP-NOW] Retrying pairing broadcast (attempt %lu)...\n",
-                      broadcastRetryCount);
-#endif
       }
       sendPairingBroadcast();
     }
@@ -3788,9 +3066,6 @@ void loop() {
       (millis() - classificationRequestTime >= CAM_CLASSIFY_TIMEOUT_MS)) {
     classificationPending = false;
     wsLog("warn", "Classification timeout — CAM did not respond");
-#if SSCM_DEBUG
-    Serial.println("[Classification] Timeout waiting for CAM response");
-#endif
     relayClassificationErrorToBackend("CAM_RESPONSE_TIMEOUT");
   }
 
@@ -3809,9 +3084,6 @@ void loop() {
 
   // Check if WiFi disconnected during runtime
   if (wifiConnected && WiFi.status() != WL_CONNECTED) {
-#if SSCM_DEBUG
-    Serial.println("WiFi disconnected! Attempting reconnect...");
-#endif
     wifiConnected = false;
     wsConnected = false;
     wifiStartTime = millis();
@@ -3834,11 +3106,6 @@ void loop() {
     wifiServer.stop();
     WiFi.softAPdisconnect(true);
 
-#if SSCM_DEBUG
-    Serial.println("\n=== WiFi Connected ===");
-    Serial.println("IP: " + WiFi.localIP().toString());
-    Serial.println("======================\n");
-#endif
     // wsLog not yet available (WS connects after WiFi) — logged after WS
     // connects
 
@@ -3847,14 +3114,19 @@ void loop() {
       sendDeviceRegistration();
     }
 
+    // Reset WS library state so connectWebSocket() calls begin() with a fresh
+    // socket. WiFi.begin() above reset the TCP stack, invalidating any socket
+    // the library was holding. Resetting wsInitialized forces a clean begin()
+    // call instead of relying on the library's reconnect from a stale socket.
+    if (!wsConnected) {
+      webSocket.disconnect();
+      wsInitialized = false;
+    }
+
     // Connect to WebSocket for real-time updates
     connectWebSocket();
 
     // Broadcast pairing again (in case CAM booted after main board)
-#if SSCM_DEBUG
-    Serial.println(
-        "[ESP-NOW] Re-broadcasting pairing to CAM (WiFi connected)...");
-#endif
     delay(100);
     sendPairingBroadcast();
   }
@@ -3871,15 +3143,9 @@ void loop() {
       }
 
       if (status == WL_IDLE_STATUS) {
-#if SSCM_DEBUG
-        Serial.println("WiFi idle, starting connection...");
-#endif
         WiFi.begin(prefs.getString("ssid", "").c_str(),
                    prefs.getString("pass", "").c_str());
       } else if (status == WL_DISCONNECTED) {
-#if SSCM_DEBUG
-        Serial.println("WiFi disconnected, retrying...");
-#endif
         WiFi.begin(prefs.getString("ssid", "").c_str(),
                    prefs.getString("pass", "").c_str());
       }
@@ -3889,11 +3155,6 @@ void loop() {
       if (millis() - wifiStartTime > WIFI_TIMEOUT) {
         if (wifiRetryStart == 0) {
           // Enter retry wait period
-#if SSCM_DEBUG
-          Serial.println(
-              "[WiFi] Timeout — credentials preserved, retrying in " +
-              String(wifiRetryDelay / 1000) + "s");
-#endif
           startSoftAP();
           wifiRetryStart = millis();
         } else if (millis() - wifiRetryStart >= wifiRetryDelay) {
@@ -3922,17 +3183,40 @@ void loop() {
   if (wsConnected && millis() - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
     lastStatusUpdate = millis();
 
-    // Send status update via WebSocket (non-blocking)
-    String statusMsg =
-        "{\"type\":\"status-update\",\"deviceId\":\"" + deviceId + "\"}";
+    // Send status update via WebSocket (non-blocking) with full state sync
+    String statusMsg = "{\"type\":\"status-update\",\"deviceId\":\"" +
+                       deviceId +
+                       "\",\"camSynced\":" + (camSynced ? "true" : "false") +
+                       ",\"camDeviceId\":\"" + camDeviceId +
+                       "\",\"isPaired\":" + (isPaired ? "true" : "false") + "}";
     webSocket.sendTXT(statusMsg);
-    // Silent - keep-alive doesn't need logging
+
+    // PERIODIC SYNC: Every 30 seconds, resend subscription and sync status
+    // This heals desyncs if the server restarts or a client joins late.
+    static unsigned long lastForceSync = 0;
+    if (millis() - lastForceSync >= 30000) {
+      lastForceSync = millis();
+
+      // Resend subscribe
+      String subMsg =
+          "{\"type\":\"subscribe\",\"deviceId\":\"" + deviceId + "\"}";
+      webSocket.sendTXT(subMsg);
+
+      // Resend CAM sync status (so UI knows if CAM is ready)
+      String syncMsg = "{\"type\":\"cam-sync-status\",\"deviceId\":\"" +
+                       deviceId +
+                       "\",\"camSynced\":" + (camSynced ? "true" : "false") +
+                       ",\"camDeviceId\":\"" + camDeviceId + "\"}";
+      webSocket.sendTXT(syncMsg);
+
+    }
   }
 
   /* ================= SENSOR READINGS (BLOCKING) ================= */
-  // Skip sensor readings when steppers are moving to prevent motor stuttering
-  // pulseIn() blocks up to 30ms per ultrasonic, DHT22 blocks ~250ms
-  if (!stepper1Moving && !stepper2Moving) {
+  // Skip sensor readings when steppers are moving to prevent motor stuttering.
+  // ALSO SKIP if not connected to WebSocket — no point reading if we can't
+  // send. pulseIn() blocks up to 30ms per ultrasonic, DHT22 blocks ~250ms.
+  if (wsConnected && !stepper1Moving && !stepper2Moving) {
 
     /* ================= DHT22 AUTOMATIC READING ================= */
     // Only read sensors if device is paired
@@ -3959,10 +3243,6 @@ void loop() {
 
       // Log combined reading
       if (atomizerSuccess || foamSuccess) {
-#if SSCM_DEBUG
-        Serial.println("[Level] Atomizer: " + String(currentAtomizerDistance) +
-                       " cm | Foam: " + String(currentFoamDistance) + " cm");
-#endif
       }
 
       // Send data via WebSocket if at least one reading was successful

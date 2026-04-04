@@ -1,7 +1,4 @@
-// Set to 0 to disable Serial logging in production builds
-#define SSCM_DEBUG 1
-
-#define FIRMWARE_VERSION "1.0.1"
+#define FIRMWARE_VERSION "1.0.2"
 #define BOARD_NAME "SSCM-CAM"
 
 /*
@@ -225,25 +222,11 @@ void sendPairingAck(uint8_t *targetMac) {
 
   addPeerIfNeeded(targetMac);
   esp_err_t res = esp_now_send(targetMac, (uint8_t *)&ack, sizeof(ack));
-
-#if SSCM_DEBUG
-  Serial.println("[ESP-NOW] Sent PairingAck (" +
-                 String(res == ESP_OK ? "OK" : "FAIL") + ")");
-  if (camIp.length() > 0) {
-    Serial.println("[ESP-NOW] Reported CAM IP: " + camIp);
-  } else {
-    Serial.println(
-        "[ESP-NOW] WiFi not connected yet — IP will be sent when connected");
-  }
-#endif
 }
 
 /* ===================== ESP-NOW SEND CALLBACK ===================== */
 void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
   if (status != ESP_NOW_SEND_SUCCESS) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Send failed");
-#endif
   }
 }
 
@@ -263,40 +246,23 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
   // ============================================================
   if (msgType == CAM_MSG_PAIR_REQUEST) {
     if (len < (int)sizeof(PairingBroadcast)) {
-#if SSCM_DEBUG
-      Serial.println("[ESP-NOW] PairingBroadcast too small: " + String(len));
-#endif
       return;
     }
 
     PairingBroadcast pb;
     memcpy(&pb, data, sizeof(PairingBroadcast));
 
-#if SSCM_DEBUG
-    Serial.println("\n[ESP-NOW] Pairing request from: " + String(pb.deviceId));
-#endif
-
     if (mainBoardPaired) {
       bool sameBoard = (memcmp(senderMac, mainBoardMac, 6) == 0);
       if (!sameBoard) {
-#if SSCM_DEBUG
-        Serial.println("[ESP-NOW] Already paired to different board — ignored");
-#endif
         return;
       }
-#if SSCM_DEBUG
-      Serial.println(
-          "[ESP-NOW] Re-pair from known board — updating credentials");
-#endif
     }
 
     pb.groupToken[sizeof(pb.groupToken) - 1] = '\0';
     String token = String(pb.groupToken);
     token.toUpperCase();
     if (token.length() != 8) {
-#if SSCM_DEBUG
-      Serial.println("[ESP-NOW] Invalid groupToken length: '" + token + "'");
-#endif
       return;
     }
     bool tokenValid = true;
@@ -308,9 +274,6 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
       }
     }
     if (!tokenValid) {
-#if SSCM_DEBUG
-      Serial.println("[ESP-NOW] Invalid groupToken chars: '" + token + "'");
-#endif
       return;
     }
 
@@ -327,22 +290,11 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
     prefs.putBytes("mainMac", mainBoardMac, 6);
     mainBoardPaired = true;
 
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Paired with main board: " + String(pb.deviceId));
-    Serial.println("[ESP-NOW] GroupToken: " + storedGroupToken);
-    Serial.printf("[ESP-NOW] Main board MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                  mainBoardMac[0], mainBoardMac[1], mainBoardMac[2],
-                  mainBoardMac[3], mainBoardMac[4], mainBoardMac[5]);
-#endif
-
     String ssid = String(pb.ssid);
     String pass = String(pb.password);
     if (ssid.length() > 0) {
       WiFi.begin(ssid.c_str(), pass.c_str());
       wifiConnectStartMs = millis();
-#if SSCM_DEBUG
-      Serial.println("[WiFi] Connecting to: " + ssid);
-#endif
     }
 
     pairingAckPending = true;
@@ -355,24 +307,14 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
   // RUNTIME MESSAGES: Must come from the paired main board
   // ============================================================
   if (!mainBoardPaired) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Not paired — ignoring runtime message type " +
-                   String(msgType));
-#endif
     return;
   }
 
   if (memcmp(senderMac, mainBoardMac, 6) != 0) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Message from unknown MAC — ignored");
-#endif
     return;
   }
 
   if (len < (int)sizeof(CamMessage)) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] CamMessage too small: " + String(len));
-#endif
     return;
   }
 
@@ -382,9 +324,6 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
   switch (msg.type) {
 
   case CAM_MSG_CLASSIFY_REQUEST:
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] CLASSIFY_REQUEST received");
-#endif
     if (!is_initialised) {
       sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_NOT_READY, "", 0.0f);
     } else if (classificationInProgress) {
@@ -395,38 +334,22 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
     break;
 
   case CAM_MSG_STATUS_PING:
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] STATUS_PING received");
-#endif
     sendCamMessage(CAM_MSG_STATUS_PONG,
                    is_initialised ? CAM_STATUS_OK : CAM_STATUS_NOT_READY, "",
                    0.0f);
     break;
 
   case CAM_MSG_LED_ENABLE:
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] LED_ENABLE (classification lighting)");
-#endif
     break;
 
   case CAM_MSG_LED_DISABLE:
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] LED_DISABLE");
-#endif
     break;
 
   case CAM_MSG_FACTORY_RESET:
-#if SSCM_DEBUG
-    Serial.println(
-        "[ESP-NOW] FACTORY_RESET received — will reset after callback");
-#endif
     factoryResetRequested = true;
     break;
 
   default:
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Unknown message type: " + String(msg.type));
-#endif
     break;
   }
 }
@@ -443,18 +366,12 @@ void handleStream() {
   client.print("Cache-Control: no-cache\r\n");
   client.print("Connection: keep-alive\r\n\r\n");
 
-#if SSCM_DEBUG
-  Serial.println("[Stream] Client connected");
-#endif
   int frameCount = 0;
 
   while (client.connected()) {
     yield();
 
     if (classificationRequested) {
-#if SSCM_DEBUG
-      Serial.println("[Stream] Classification requested — ending stream");
-#endif
       break;
     }
 
@@ -474,11 +391,6 @@ void handleStream() {
 
     delay(50); // ~20 FPS max
   }
-
-#if SSCM_DEBUG
-  Serial.println("[Stream] Client disconnected after " + String(frameCount) +
-                 " frames");
-#endif
 }
 
 void handleSnapshot() {
@@ -495,9 +407,6 @@ void handleSnapshot() {
   httpServer.send_P(200, "image/jpeg", (const char *)fb->buf, frameLen);
 
   esp_camera_fb_return(fb);
-#if SSCM_DEBUG
-  Serial.println("[Snapshot] Served " + String(frameLen) + " bytes");
-#endif
 }
 
 void handleRoot() {
@@ -524,25 +433,15 @@ void setupHTTPServer() {
   httpServer.begin();
   httpServerStarted = true;
   camIp = WiFi.localIP().toString();
-#if SSCM_DEBUG
-  Serial.println("[HTTP] Server started at: http://" + camIp);
-#endif
 }
 
 /* ===================== WIFI EVENT HANDLERS ===================== */
 
-void onWiFiConnected(WiFiEvent_t event, WiFiEventInfo_t info) {
-#if SSCM_DEBUG
-  Serial.println("[WiFi] Connected to AP");
-#endif
-}
+void onWiFiConnected(WiFiEvent_t event, WiFiEventInfo_t info) {}
 
 void onWiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info) {
   wifiConnected = true;
   camIp = WiFi.localIP().toString();
-#if SSCM_DEBUG
-  Serial.println("[WiFi] Got IP: " + camIp);
-#endif
 }
 
 void onWiFiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info) {
@@ -550,23 +449,14 @@ void onWiFiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info) {
   httpServerStarted = false;
   camIp = "";
   wifiReconnectRequested = true;
-#if SSCM_DEBUG
-  Serial.println("[WiFi] Disconnected — reconnect requested from loop...");
-#endif
 }
 
 /* ===================== CLASSIFICATION — Gemini HTTP path =====================
  */
 
 void captureAndPostToBackend() {
-#if SSCM_DEBUG
-  Serial.println("\n=== Capturing JPEG for Gemini classification ===");
-#endif
 
   if (!is_initialised) {
-#if SSCM_DEBUG
-    Serial.println("[Classify] Camera not initialized");
-#endif
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_NOT_READY, "", 0.0f);
     return;
   }
@@ -583,16 +473,9 @@ void captureAndPostToBackend() {
   // Capture the actual frame
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
-#if SSCM_DEBUG
-    Serial.println("[Classify] Camera capture failed");
-#endif
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_ERROR, "", 0.0f);
     return;
   }
-
-#if SSCM_DEBUG
-  Serial.printf("[Classify] Captured %u bytes\n", fb->len);
-#endif
 
   // Read backend connection info from prefs
   String wsHost = prefs.getString("wsHost", "");
@@ -601,10 +484,6 @@ void captureAndPostToBackend() {
   String token = storedGroupToken;
 
   if (wsHost.isEmpty() || mainId.isEmpty() || token.isEmpty()) {
-#if SSCM_DEBUG
-    Serial.println(
-        "[Classify] Missing prefs (wsHost/mainId/groupToken) — not paired?");
-#endif
     esp_camera_fb_return(fb);
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_ERROR, "", 0.0f);
     return;
@@ -612,9 +491,6 @@ void captureAndPostToBackend() {
 
   String url = "http://" + wsHost + ":" + String(wsPort) + "/api/device/" +
                mainId + "/classify";
-#if SSCM_DEBUG
-  Serial.println("[Classify] POST → " + url);
-#endif
 
   HTTPClient http;
   http.begin(url);
@@ -625,42 +501,19 @@ void captureAndPostToBackend() {
   int httpCode = http.sendRequest("POST", fb->buf, fb->len);
   esp_camera_fb_return(fb); // Free buffer immediately after POST
 
-#if SSCM_DEBUG
-  if (httpCode > 0) {
-    Serial.printf("[Classify] HTTP %d\n", httpCode);
-  } else {
-    Serial.println("[Classify] HTTP request failed: " +
-                   http.errorToString(httpCode));
-  }
-#endif
-
   http.end();
 
   // ACK the main board: API_HANDLED only on HTTP 2xx, ERROR otherwise
   if (httpCode >= 200 && httpCode < 300) {
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_API_HANDLED, "", 0.0f);
-#if SSCM_DEBUG
-    Serial.println(
-        "=== Classification POST complete — backend handles result ===\n");
-#endif
   } else {
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_ERROR, "", 0.0f);
-#if SSCM_DEBUG
-    Serial.println(
-        "=== Classification POST FAILED — sent ERROR ACK to main board ===\n");
-#endif
   }
 }
 
 /* ===================== FACTORY RESET ===================== */
 void factoryReset() {
-#if SSCM_DEBUG
-  Serial.println("[FactoryReset] Clearing all preferences...");
-#endif
   prefs.clear();
-#if SSCM_DEBUG
-  Serial.println("[FactoryReset] Done. Restarting...");
-#endif
   delay(500);
   ESP.restart();
 }
@@ -673,22 +526,13 @@ bool camera_init(void) {
 
   esp_err_t err = esp_camera_init(&camera_config);
   if (err != ESP_OK) {
-#if SSCM_DEBUG
-    Serial.printf("Camera init failed with error 0x%x\n", err);
-#endif
     return false;
   }
 
   sensor_t *s = esp_camera_sensor_get();
-#if SSCM_DEBUG
-  Serial.printf("[Camera] Sensor PID: 0x%04X\n", s->id.PID);
-#endif
 
   // OV5640 — 5MP sensor on Aideepen ESP32-S3-CAM
   if (s->id.PID == OV5640_PID) {
-#if SSCM_DEBUG
-    Serial.println("[Camera] OV5640 detected");
-#endif
     s->set_vflip(s, 1); // Flip vertically (camera mounted upside down)
     s->set_hmirror(s, 0);
 
@@ -764,25 +608,10 @@ void setupOTA() {
              mac[4], mac[5]);
     ArduinoOTA.setPassword(fallback);
   }
-  ArduinoOTA.onStart([]() {
-#if SSCM_DEBUG
-    Serial.println("[OTA] Starting...");
-#endif
-  });
-  ArduinoOTA.onEnd([]() {
-#if SSCM_DEBUG
-    Serial.println("[OTA] Done.");
-#endif
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-#if SSCM_DEBUG
-    Serial.printf("[OTA] Error [%u]\n", error);
-#endif
-  });
+  ArduinoOTA.onStart([]() {});
+  ArduinoOTA.onEnd([]() {});
+  ArduinoOTA.onError([](ota_error_t error) {});
   ArduinoOTA.begin();
-#if SSCM_DEBUG
-  Serial.println("[OTA] Ready. Hostname: " + String(hostname));
-#endif
 }
 
 /* ===================== SETUP ===================== */
@@ -791,38 +620,18 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-#if SSCM_DEBUG
-  Serial.println("\n=================================");
-  Serial.printf("  %s\n", BOARD_NAME);
-  Serial.printf("  Firmware v%s\n", FIRMWARE_VERSION);
-  Serial.println("=================================\n");
-#endif
-
   prefs.begin("cam", false);
 
   // Factory reset via BOOT button (GPIO0) held at power-on for 3s
   pinMode(0, INPUT_PULLUP);
   if (digitalRead(0) == LOW) {
-#if SSCM_DEBUG
-    Serial.println(
-        "[Setup] BOOT button held — hold 3s to confirm factory reset...");
-#endif
     delay(3000);
     if (digitalRead(0) == LOW) {
-#if SSCM_DEBUG
-      Serial.println("[Setup] Confirmed — triggering factory reset!");
-#endif
       factoryReset();
     }
-#if SSCM_DEBUG
-    Serial.println("[Setup] BOOT button released — factory reset cancelled");
-#endif
   }
 
   camOwnDeviceId = generateCamOwnDeviceId();
-#if SSCM_DEBUG
-  Serial.println("[Startup] CAM Device ID: " + camOwnDeviceId);
-#endif
 
   size_t macLen = prefs.getBytes("mainMac", mainBoardMac, 6);
   bool macValid = (macLen == 6 &&
@@ -835,25 +644,12 @@ void setup() {
 
   if (macValid) {
     mainBoardPaired = true;
-#if SSCM_DEBUG
-    Serial.printf(
-        "[Startup] Paired to main board MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
-        mainBoardMac[0], mainBoardMac[1], mainBoardMac[2], mainBoardMac[3],
-        mainBoardMac[4], mainBoardMac[5]);
-#endif
   } else {
     memset(mainBoardMac, 0xFF, 6); // broadcast
-#if SSCM_DEBUG
-    Serial.println(
-        "[Startup] Not paired — waiting for main board pairing broadcast");
-#endif
   }
 
   storedGroupToken = prefs.getString("groupToken", "");
   if (storedGroupToken.length() > 0) {
-#if SSCM_DEBUG
-    Serial.println("[Startup] GroupToken: " + storedGroupToken);
-#endif
   }
 
   WiFi.onEvent(onWiFiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
@@ -862,20 +658,11 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   delay(200);
-#if SSCM_DEBUG
-  Serial.println("[WiFi] Mode: STA | MAC: " + WiFi.macAddress());
-#endif
 
   if (esp_now_init() != ESP_OK) {
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Init FAILED!");
-#endif
   } else {
     esp_now_register_send_cb(onDataSent);
     esp_now_register_recv_cb(onDataRecv);
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Initialized — listening for pairing broadcast");
-#endif
   }
 
   if (mainBoardPaired) {
@@ -885,9 +672,6 @@ void setup() {
     peer.channel = 0;
     peer.encrypt = false;
     esp_now_add_peer(&peer);
-#if SSCM_DEBUG
-    Serial.println("[ESP-NOW] Added main board as peer");
-#endif
   }
 
   String ssid = prefs.getString("ssid", "");
@@ -895,34 +679,12 @@ void setup() {
   if (ssid.length() > 0) {
     WiFi.begin(ssid.c_str(), pass.c_str());
     wifiConnectStartMs = millis();
-#if SSCM_DEBUG
-    Serial.println("[WiFi] Connecting to: " + ssid);
-#endif
   } else {
-#if SSCM_DEBUG
-    Serial.println("[WiFi] No credentials — waiting for pairing broadcast");
-#endif
   }
 
   if (!camera_init()) {
-#if SSCM_DEBUG
-    Serial.println("[Camera] Init FAILED");
-#endif
   } else {
-#if SSCM_DEBUG
-    Serial.println("[Camera] Initialized");
-#endif
   }
-
-#if SSCM_DEBUG
-  Serial.println("\n--- Serial Commands ---");
-  Serial.println("CLASSIFY      - Capture and POST to backend (Gemini)");
-  Serial.println("STATUS        - Show device status");
-  Serial.println("UNPAIR        - Clear MAC pairing and groupToken");
-  Serial.println("CLEAR         - Clear all stored data (restart required)");
-  Serial.println("FACTORY_RESET - Wipe all prefs and restart");
-  Serial.println("-----------------------\n");
-#endif
 }
 
 /* ===================== LOOP ===================== */
@@ -946,9 +708,6 @@ void loop() {
     if (ssid.length() > 0) {
       WiFi.begin(ssid.c_str(), pass.c_str());
       wifiConnectStartMs = millis();
-#if SSCM_DEBUG
-      Serial.println("[WiFi] Reconnecting to: " + ssid);
-#endif
     }
   }
 
@@ -969,9 +728,6 @@ void loop() {
 
     if (wifiReady || timedOut) {
       if (timedOut && !wifiReady) {
-#if SSCM_DEBUG
-        Serial.println("[Pairing] WiFi timeout — sending ack without IP");
-#endif
       }
       sendPairingAck(mainBoardMac);
       pairingAckPending = false;
@@ -1008,41 +764,13 @@ void loop() {
 
     if (cmd == "CLASSIFY" || cmd == "TEST") {
       if (!is_initialised) {
-#if SSCM_DEBUG
-        Serial.println("[Classify] Camera not initialized");
-#endif
       } else if (classificationInProgress) {
-#if SSCM_DEBUG
-        Serial.println("[Classify] Already in progress");
-#endif
       } else {
         classificationInProgress = true;
         captureAndPostToBackend();
         classificationInProgress = false;
       }
     } else if (cmd == "STATUS") {
-#if SSCM_DEBUG
-      Serial.println("\n=== CAM Status ===");
-      Serial.println("Device ID:   " + camOwnDeviceId);
-      Serial.println("Camera:      " +
-                     String(is_initialised ? "Ready" : "Not initialized"));
-      Serial.println("WiFi:        " +
-                     String(wifiConnected ? camIp : "Disconnected"));
-      Serial.println("HTTP Server: " + String(httpServerStarted
-                                                  ? "Running at http://" + camIp
-                                                  : "Stopped"));
-      Serial.println("GroupToken:  " + (storedGroupToken.length() > 0
-                                            ? storedGroupToken
-                                            : "none"));
-      Serial.println("Paired:      " + String(mainBoardPaired ? "YES" : "NO"));
-      if (mainBoardPaired) {
-        Serial.printf("Main MAC:    %02X:%02X:%02X:%02X:%02X:%02X\n",
-                      mainBoardMac[0], mainBoardMac[1], mainBoardMac[2],
-                      mainBoardMac[3], mainBoardMac[4], mainBoardMac[5]);
-        Serial.println("Main ID:     " + prefs.getString("mainId", "?"));
-      }
-      Serial.println("==================\n");
-#endif
     } else if (cmd == "UNPAIR") {
       prefs.remove("mainMac");
       prefs.remove("groupToken");
@@ -1050,19 +778,9 @@ void loop() {
       mainBoardPaired = false;
       storedGroupToken = "";
       memset(mainBoardMac, 0xFF, 6);
-#if SSCM_DEBUG
-      Serial.println(
-          "[UNPAIR] MAC and groupToken cleared. Restart to take effect.");
-#endif
     } else if (cmd == "CLEAR") {
       prefs.clear();
-#if SSCM_DEBUG
-      Serial.println("[CLEAR] All NVS data cleared. Restart required.");
-#endif
     } else if (cmd == "FACTORY_RESET") {
-#if SSCM_DEBUG
-      Serial.println("[Serial] Factory reset command received!");
-#endif
       factoryReset();
     }
   }

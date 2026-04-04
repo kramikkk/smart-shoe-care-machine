@@ -9,9 +9,40 @@ import prisma from './prisma'
 declare global {
   // eslint-disable-next-line no-var
   var _deviceConnections: Map<string, Set<WebSocket>> | undefined
+  // eslint-disable-next-line no-var
+  var _deviceLiveConnections: Map<string, WebSocket> | undefined
+  // eslint-disable-next-line no-var
+  var _deviceLastStatusTime: Map<string, number> | undefined
+  // eslint-disable-next-line no-var
+  var _deviceLastDbUpdateTime: Map<string, number> | undefined
+  // eslint-disable-next-line no-var
+  var _deviceCachedPairedStatus: Map<string, boolean> | undefined
 }
 const deviceConnections: Map<string, Set<WebSocket>> =
   global._deviceConnections ?? (global._deviceConnections = new Map())
+
+// Tracks the live WebSocket of the ESP32 device itself (set when status-update is received).
+// Used to check real-time online status rather than relying on the stale lastSeen timestamp.
+const deviceLiveConnections: Map<string, WebSocket> =
+  global._deviceLiveConnections ?? (global._deviceLiveConnections = new Map())
+
+// Tracks the last time each device sent a status-update message.
+// Used by the application-level timeout to detect ungraceful disconnects (e.g. power cut)
+// faster than the TCP heartbeat can.
+const deviceLastStatusTime: Map<string, number> =
+  global._deviceLastStatusTime ?? (global._deviceLastStatusTime = new Map())
+
+const deviceLastDbUpdateTime: Map<string, number> =
+  global._deviceLastDbUpdateTime ?? (global._deviceLastDbUpdateTime = new Map())
+
+const deviceCachedPairedStatus: Map<string, boolean> =
+  global._deviceCachedPairedStatus ?? (global._deviceCachedPairedStatus = new Map())
+
+// Offline after 3 missed status-update cycles (ESP32 sends every 5s → 15s threshold).
+// Using 3x the send interval prevents false offline events caused by normal network jitter.
+// A 1ms race between the timeout interval and an in-flight status-update was causing
+// the device to flicker offline every ~5s, clearing sensor data and disrupting sync.
+const DEVICE_STATUS_TIMEOUT_MS = 15_000
 
 // Token validation — requires WS_AUTH_TOKEN (enforced at startup in server.ts)
 function validateWebSocketToken(token: string | null): boolean {
@@ -26,7 +57,7 @@ export function createWebSocketServer(server: Server) {
     path: '/api/ws'
   })
 
-  // Heartbeat: ping every 30s, terminate connections that don't pong back.
+  // Heartbeat: ping every 15s, terminate connections that don't pong back.
   // This cleans up dead TCP connections (e.g. network drop without FIN) that
   // would otherwise accumulate in deviceConnections with readyState === OPEN.
   const heartbeatInterval = setInterval(() => {
@@ -38,30 +69,57 @@ export function createWebSocketServer(server: Server) {
       ws._isAlive = false
       ws.ping()
     })
-  }, 30_000)
+  }, 15_000)
   heartbeatInterval.unref()
   wss.on('close', () => clearInterval(heartbeatInterval))
+
+  // Application-level device timeout: detect when an ESP32 stops sending status-updates
+  // (e.g. power cut without a graceful TCP close). Faster than the TCP heartbeat because
+  // we know the device sends status-update every 5s — 3 missed cycles = offline.
+  const deviceTimeoutInterval = setInterval(() => {
+    const now = Date.now()
+    deviceLiveConnections.forEach((_, devId) => {
+      const lastSeen = deviceLastStatusTime.get(devId) ?? 0
+      if (now - lastSeen > DEVICE_STATUS_TIMEOUT_MS) {
+        console.log(`[WebSocket] Device ${devId} timed out (no status-update in ${DEVICE_STATUS_TIMEOUT_MS}ms) — marking offline`)
+        deviceLiveConnections.delete(devId)
+        deviceLastStatusTime.delete(devId)
+        broadcastToDevice(devId, { type: 'device-offline', deviceId: devId })
+      }
+    })
+  }, 5_000)
+  deviceTimeoutInterval.unref()
+  wss.on('close', () => clearInterval(deviceTimeoutInterval))
 
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const { pathname, searchParams } = new URL(request.url || '', `http://${request.headers.host}`)
 
     // Only handle our custom WebSocket endpoint
     if (pathname === '/api/ws') {
-      // Origin validation — allow device connections (no Origin header) and trusted origins
       const origin = request.headers.origin
       const serverHost = request.headers.host // e.g. "192.168.43.147:3000"
+
+      // Normalize origins: lowercase and remove ALL trailing slashes. 
+      // Turns 'file://' or 'file:/' into 'file:', and 'http://host/' into 'http://host'.
+      const normalizedOrigin = origin ? origin.toLowerCase().replace(/\/+$/, '') : null
       const allowedOrigins = [
         'http://localhost:3000',
-        'file://',
+        'https://localhost:3000',
+        'file:',
         // TRUSTED_ORIGINS env var (comma-separated) — same variable used by Better Auth
-        ...(process.env.TRUSTED_ORIGINS ? process.env.TRUSTED_ORIGINS.split(',').map(s => s.trim()) : []),
+        ...(process.env.TRUSTED_ORIGINS ? process.env.TRUSTED_ORIGINS.split(',').map(s => s.trim().toLowerCase().replace(/\/+$/, '')) : []),
       ].filter(Boolean)
 
-      // Also allow same-host connections (tablet accessing via LAN IP)
-      const isSameHost = origin && serverHost && origin === `http://${serverHost}`
+      // Also allow same-host connections (tablet accessing via LAN IP).
+      // must allow both http and https origins for the same-host check.
+      const isSameHost = normalizedOrigin && serverHost && (
+        normalizedOrigin === `http://${serverHost}` || 
+        normalizedOrigin === `https://${serverHost}`
+      )
 
-      if (origin && !allowedOrigins.includes(origin) && !isSameHost) {
-        console.warn(`[WebSocket] Rejected connection from origin: ${origin}`)
+      if (origin && !allowedOrigins.includes(normalizedOrigin!) && !isSameHost) {
+        console.warn(`[WebSocket] Rejected connection from origin: ${origin} (Normalized: ${normalizedOrigin})`)
+        console.warn(`[WebSocket] Allowed origins: ${allowedOrigins.join(', ')}`)
         socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
         socket.destroy()
         return
@@ -74,9 +132,17 @@ export function createWebSocketServer(server: Server) {
       const deviceId = searchParams.get('deviceId')
       const isDeviceConnection = deviceId && deviceId.startsWith('SSCM-')
 
-      // Allow if: has valid token (web clients) OR is ESP32 device connection
-      if (!validateWebSocketToken(token) && !isDeviceConnection) {
-        console.log('[WebSocket] Unauthorized connection attempt')
+      // Allow if:
+      // 1. Valid X-Auth-Token/Cookie (admin dashboard login)
+      // 2. Or it's a browser context (Kiosk/Dashboard) — relax requirement for deviceId 
+      //    so we don't reject initial connections before choice is made. 
+      // 3. Or it's the ESP32 itself (detected by SSCM- prefix and no token)
+      const source = searchParams.get('source')
+      const isBrowserClient = source === 'kiosk' || source === 'dashboard'
+      const isESP32 = isDeviceConnection && !token
+
+      if (!validateWebSocketToken(token) && !isBrowserClient && !isESP32) {
+        console.warn(`[WebSocket] Unauthorized connection attempt from ${origin || 'unknown'} (deviceId: ${deviceId || 'none'}, source: ${source || 'none'})`)
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
         socket.destroy()
         return
@@ -93,17 +159,91 @@ export function createWebSocketServer(server: Server) {
   wss.on('connection', (ws: WebSocket & { _isAlive?: boolean }, request: IncomingMessage) => {
     ws._isAlive = true
     ws.on('pong', () => { ws._isAlive = true })
-    console.log('[WebSocket] New connection')
 
     const connUrl = new URL(request.url || '', `http://${request.headers.host}`)
+    const connDeviceId = connUrl.searchParams.get('deviceId')
+    const connSourceParam = connUrl.searchParams.get('source') // 'kiosk' | 'dashboard' | null (ESP32)
+    // Both browser and ESP32 connect with deviceId=SSCM-xxx. Browser contexts
+    // include a 'source' param; ESP32 firmware does not — use that to label them.
+    const connLabel = connSourceParam ?? (connDeviceId ? 'esp32' : 'unknown')
+    const connSource = connDeviceId ? `${connLabel} for ${connDeviceId}` : `${connLabel} client`
+    console.log(`[WebSocket] New connection from ${connSource}`)
     // Set to true only when a status-update message is received.
     // Browser clients (kiosk, dashboard) also pass deviceId in the URL but never send
     // status-update, so they are NOT treated as device connections. Detecting client type
     // from URL params alone would misclassify browser tabs as ESP32 devices because both
     // connect without a valid WS_AUTH_TOKEN in the browser context.
     let isDeviceWsClient = false
+    let deviceId: string | null = connDeviceId
 
-    let deviceId: string | null = null
+    // AUTO-SUBSCRIBE: If deviceId is provided in URL, add to connections set immediately.
+    // This ensures that even if the client's first 'subscribe' message is delayed or 
+    // the server restarts, the connection is already 'in the room'.
+    if (deviceId) {
+      let connections = deviceConnections.get(deviceId)
+      if (!connections) {
+        connections = new Set<WebSocket>()
+        deviceConnections.set(deviceId, connections)
+      }
+      connections.add(ws)
+      console.log(`[WebSocket] [${connLabel}] auto-subscribed to device: ${deviceId}`);
+
+      // IMMEDIATE: Tell the joining client if the device is live right now.
+      // deviceLiveConnections and deviceCachedPairedStatus are in-memory — no DB wait needed.
+      // This fires synchronously so kiosk/dashboard know the device is online instantly on connect,
+      // without waiting 1-3s for the Neon DB round-trip below.
+      const autoLiveWs = deviceLiveConnections.get(deviceId)
+      if (autoLiveWs && autoLiveWs.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'device-online',
+          deviceId: deviceId,
+          paired: deviceCachedPairedStatus.get(deviceId) ?? false,
+          lastSeen: new Date().toISOString()
+        }))
+      }
+
+      // EAGER PUSH: Async DB lookup for full pairing state (pairingCode, groupToken, camSynced).
+      // device-online was already sent above; this only sends device-update.
+      ;(async () => {
+        try {
+          // Implement 8s race timeout
+          const timeoutPromise = new Promise<null>((_, reject) => 
+            setTimeout(() => reject(new Error('QUERY_TIMEOUT')), 8000)
+          )
+
+          const fetchState = prisma.device.findUnique({
+            where: { deviceId: deviceId as string },
+            select: { paired: true, pairedAt: true, name: true, pairingCode: true, groupToken: true, lastSeen: true, camSynced: true, camDeviceId: true },
+          })
+
+          const device = await Promise.race([fetchState, timeoutPromise])
+
+          if (device && ws.readyState === WebSocket.OPEN) {
+            // Warmup the in-memory cache with the value from DB
+            deviceCachedPairedStatus.set(deviceId, device.paired)
+            
+            ws.send(JSON.stringify({
+              type: 'device-update',
+              deviceId: deviceId,
+              data: {
+                paired: device.paired,
+                pairedAt: device.pairedAt,
+                deviceName: device.name,
+                pairingCode: device.paired ? null : device.pairingCode,
+                groupToken: device.paired ? device.groupToken : null,
+                camSynced: device.camSynced,
+                camDeviceId: device.camDeviceId,
+              }
+            }))
+          } else if (!device) {
+             console.log(`[WebSocket] New device identified (not in DB): ${deviceId}`)
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : 'Unknown error'
+          console.warn(`[WebSocket] Eager push failed for ${deviceId}: ${errMsg}`)
+        }
+      })()
+    }
 
     ws.on('message', async (data: Buffer) => {
       try {
@@ -134,51 +274,74 @@ export function createWebSocketServer(server: Server) {
           }
           connections.add(ws)
 
-          console.log(`[WebSocket] Client subscribed to device: ${subscribeDeviceId}`)
+          console.log(`[WebSocket] [${connLabel}] subscribed to device: ${subscribeDeviceId}`)
 
           ws.send(JSON.stringify({
             type: 'subscribed',
             deviceId: subscribeDeviceId
           }))
 
-          // Push current device state immediately for reconnecting clients
-          try {
-            const device = await prisma.device.findUnique({
-              where: { deviceId: subscribeDeviceId },
-              select: { paired: true, pairedAt: true, name: true, pairingCode: true, groupToken: true, lastSeen: true }
-            })
-            if (device) {
-              ws.send(JSON.stringify({
-                type: 'device-update',
-                deviceId: subscribeDeviceId,
-                data: {
-                  paired: device.paired,
-                  pairedAt: device.pairedAt,
-                  deviceName: device.name,
-                  pairingCode: device.paired ? null : device.pairingCode,
-                  groupToken: device.paired ? device.groupToken : null,
-                }
-              }))
-
-              // If device was seen recently, it's already online — tell the client immediately.
-              // Use 15s so a stale lastSeen doesn't falsely report the device as online
-              // after it has physically disconnected.
-              const secondsSinceLastSeen = device.lastSeen
-                ? (Date.now() - new Date(device.lastSeen).getTime()) / 1000
-                : Infinity
-              if (secondsSinceLastSeen < 10) {
-                ws.send(JSON.stringify({
-                  type: 'device-online',
-                  deviceId: subscribeDeviceId,
-                  paired: device.paired,
-                  lastSeen: device.lastSeen?.toISOString()
-                }))
-              }
-            }
-          } catch (err) {
-            // Non-critical — client will fall back to REST polling
-            console.warn(`[WebSocket] Could not push initial device state for ${subscribeDeviceId}:`, err)
+          // IMMEDIATE: Send device-online synchronously from in-memory state (no DB wait).
+          const subLiveWs = deviceLiveConnections.get(subscribeDeviceId)
+          if (subLiveWs && subLiveWs.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'device-online',
+              deviceId: subscribeDeviceId,
+              paired: deviceCachedPairedStatus.get(subscribeDeviceId) ?? false,
+              lastSeen: new Date().toISOString()
+            }))
           }
+
+          // Push full pairing state async (pairingCode, groupToken, camSynced need DB).
+          // Also send device-online from DB lastSeen as a fallback for the case where
+          // the server just cold-started and deviceLiveConnections is empty but the
+          // ESP32 was recently active (e.g. Render cold start, brief server restart).
+          ;(async () => {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+
+            try {
+              const device = await prisma.device.findUnique({
+                where: { deviceId: subscribeDeviceId },
+                select: { paired: true, pairedAt: true, name: true, pairingCode: true, groupToken: true, lastSeen: true, camSynced: true, camDeviceId: true },
+              })
+              if (device && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'device-update',
+                  deviceId: subscribeDeviceId,
+                  data: {
+                    paired: device.paired,
+                    pairedAt: device.pairedAt,
+                    deviceName: device.name,
+                    pairingCode: device.paired ? null : device.pairingCode,
+                    groupToken: device.paired ? device.groupToken : null,
+                    camSynced: device.camSynced,
+                    camDeviceId: device.camDeviceId,
+                  }
+                }))
+
+                // DB-based device-online fallback: if the in-memory live connection map
+                // is empty (server just cold-started) but the device was seen recently,
+                // tell the joining client the device is likely online. Use a 30s window —
+                // wide enough to survive a Render cold start + ESP32 reconnect cycle.
+                const secondsSinceLastSeen = device.lastSeen
+                  ? (Date.now() - new Date(device.lastSeen).getTime()) / 1000
+                  : Infinity
+                if (secondsSinceLastSeen < 30 && !deviceLiveConnections.has(subscribeDeviceId)) {
+                  ws.send(JSON.stringify({
+                    type: 'device-online',
+                    deviceId: subscribeDeviceId,
+                    paired: device.paired,
+                    lastSeen: device.lastSeen?.toISOString()
+                  }))
+                }
+              }
+            } catch (err) {
+              console.warn(`[WebSocket] Could not push initial device state for ${subscribeDeviceId}`)
+            } finally {
+              clearTimeout(timeout)
+            }
+          })()
         }
 
         // Handle device status update from ESP32
@@ -187,39 +350,85 @@ export function createWebSocketServer(server: Server) {
 
           // Mark this connection as an actual ESP32 device — only firmware sends status-update.
           // This is used by the close handler to decide whether to broadcast device-offline.
-          isDeviceWsClient = true
+          if (!isDeviceWsClient) {
+            console.log(`[WebSocket] ESP32 identified: ${updateDeviceId}`)
+          }
+          // Track whether this device was already considered online before this message.
+          // Used below to decide whether to broadcast device-online (only on transition).
+          const wasAlreadyLive = deviceLiveConnections.has(updateDeviceId)
 
-          // Only the device itself may send status-update for its own deviceId
-          if (deviceId && deviceId.startsWith('SSCM-') && deviceId !== updateDeviceId) {
-            console.warn(`[WebSocket] Device ${deviceId} attempted status-update for ${updateDeviceId} — rejected`)
-            return
+          isDeviceWsClient = true
+          deviceLiveConnections.set(updateDeviceId, ws)
+
+          // CRITICAL: Ensure the device is in the subscription set so it can receive commands.
+          // If the server restarted, the ESP32 might still be connected but forgotten by memory.
+          let connections = deviceConnections.get(updateDeviceId)
+          if (!connections) {
+            connections = new Set<WebSocket>()
+            deviceConnections.set(updateDeviceId, connections)
+          }
+          if (!connections.has(ws)) {
+            connections.add(ws)
+            console.log(`[WebSocket] Auto-resubscribed device: ${updateDeviceId}`)
           }
 
-          console.log(`[WebSocket] Status update from device: ${updateDeviceId}`)
+          const now = Date.now()
+          const lastDbUpdate = deviceLastDbUpdateTime.get(updateDeviceId) || 0;
+          deviceLastStatusTime.set(updateDeviceId, now)
+
+          // Silence status-update logging unless there's a change or it's the first time
+          if (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId)) {
+            console.log(`[WebSocket] Status heartbeat from device: ${updateDeviceId}`)
+          }
 
           // Update lastSeen in database and get current paired status
-          try {
-            const updatedDevice = await prisma.device.update({
-              where: { deviceId: updateDeviceId },
-              data: { lastSeen: new Date() }
+          // Throttle database writes to once every 60 seconds to prevent connection pool exhaustion
+          let isPaired = deviceCachedPairedStatus.get(updateDeviceId) ?? false;
+
+          // Only broadcast device-online on the transition from offline→online.
+          // Skipping the broadcast on every 5s heartbeat prevents React re-renders and
+          // spurious state updates in all subscribed browser clients.
+          if (!wasAlreadyLive) {
+            broadcastToDevice(updateDeviceId, {
+              type: 'device-online',
+              deviceId: updateDeviceId,
+              paired: isPaired,
+              camSynced: message.camSynced,
+              camDeviceId: message.camDeviceId,
+              lastSeen: new Date().toISOString()
             })
+          }
+
+          try {
+            if (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId)) {
+              const updatedDevice = await prisma.device.upsert({
+                where: { deviceId: updateDeviceId },
+                create: { deviceId: updateDeviceId, lastSeen: new Date(), camSynced: message.camSynced, camDeviceId: message.camDeviceId },
+                update: { lastSeen: new Date(), camSynced: message.camSynced, camDeviceId: message.camDeviceId }
+              })
+              isPaired = updatedDevice.paired;
+              deviceCachedPairedStatus.set(updateDeviceId, isPaired);
+              deviceLastDbUpdateTime.set(updateDeviceId, now);
+
+              // Re-broadcast with confirmed paired status from DB only if this was a
+              // transition (first status-update after coming online or after cold start).
+              if (!wasAlreadyLive) {
+                broadcastToDevice(updateDeviceId, {
+                  type: 'device-online',
+                  deviceId: updateDeviceId,
+                  paired: isPaired,
+                  lastSeen: new Date().toISOString()
+                })
+              }
+            }
 
             // Send acknowledgment with current paired status for sync
             ws.send(JSON.stringify({
               type: 'status-ack',
               deviceId: updateDeviceId,
               success: true,
-              paired: updatedDevice.paired
+              paired: isPaired
             }))
-
-            // Broadcast device online status to all subscribed clients (tablets)
-            // This ensures tablets know the ESP32 is connected/alive
-            broadcastToDevice(updateDeviceId, {
-              type: 'device-online',
-              deviceId: updateDeviceId,
-              paired: updatedDevice.paired,
-              lastSeen: new Date().toISOString()
-            })
           } catch (error) {
             console.error(`[WebSocket] Failed to update device ${updateDeviceId}:`, error)
             ws.send(JSON.stringify({
@@ -276,18 +485,22 @@ export function createWebSocketServer(server: Server) {
           const sensorDeviceId = message.deviceId as string
           console.log(`[WebSocket] Sensor data from ${sensorDeviceId}: Temp ${message.temperature}°C, Humidity ${message.humidity}%, CAM Synced: ${message.camSynced}, CAM ID: ${message.camDeviceId || 'NOT PROVIDED'}`)
 
-          // Update camSynced and camDeviceId in database if provided
+          // Update camSynced and camDeviceId in database only if they changed
           if (message.camSynced !== undefined || message.camDeviceId) {
             try {
-              const updateData: { camSynced?: boolean; camDeviceId?: string } = {}
-              if (message.camSynced !== undefined) updateData.camSynced = message.camSynced
+              const existing = await prisma.device.findUnique({
+                where: { deviceId: sensorDeviceId },
+                select: { camDeviceId: true, camSynced: true }
+              })
 
-              if (message.camDeviceId) {
-                const existing = await prisma.device.findUnique({
-                  where: { deviceId: sensorDeviceId },
-                  select: { camDeviceId: true }
-                })
-                if (existing?.camDeviceId !== message.camDeviceId) {
+              const updateData: { camSynced?: boolean; camDeviceId?: string } = {}
+              
+              if (existing) {
+                if (message.camSynced !== undefined && existing.camSynced !== message.camSynced) {
+                  updateData.camSynced = message.camSynced
+                }
+
+                if (message.camDeviceId && existing.camDeviceId !== message.camDeviceId) {
                   updateData.camDeviceId = message.camDeviceId as string
                   console.log(`[WebSocket] ✅ Saved CAM Device ID to database: ${message.camDeviceId}`)
                 }
@@ -313,17 +526,28 @@ export function createWebSocketServer(server: Server) {
           const syncDeviceId = message.deviceId as string
           console.log(`[WebSocket] CAM sync status from ${syncDeviceId}: ${message.camSynced ? 'SYNCED' : 'NOT_SYNCED'}${message.camDeviceId ? `, CAM ID: ${message.camDeviceId}` : ''}`)
 
-          // Update camSynced and camDeviceId in database
-          try {
-            const updateData: { camSynced?: boolean; camDeviceId?: string } = { camSynced: message.camSynced }
-            if (message.camDeviceId) updateData.camDeviceId = message.camDeviceId as string
+          // Update camSynced and camDeviceId in database - throttle to once per 60s
+          const now = Date.now()
+          const lastDbUpdate = deviceLastDbUpdateTime.get(syncDeviceId) || 0
+          if (now - lastDbUpdate > 60_000) {
+            ;(async () => {
+               const controller = new AbortController();
+               const timeout = setTimeout(() => controller.abort(), 10000);
+              try {
+                const updateData: { camSynced?: boolean; camDeviceId?: string } = { camSynced: message.camSynced }
+                if (message.camDeviceId) updateData.camDeviceId = message.camDeviceId as string
 
-            await prisma.device.update({
-              where: { deviceId: syncDeviceId },
-              data: updateData
-            })
-          } catch (error) {
-            // Device might not exist yet, ignore
+                await prisma.device.update({
+                  where: { deviceId: syncDeviceId },
+                  data: updateData
+                })
+                deviceLastDbUpdateTime.set(syncDeviceId, now)
+              } catch (error) {
+                // Device might not exist yet, ignore
+              } finally {
+                clearTimeout(timeout)
+              }
+            })()
           }
 
           // Broadcast to all clients subscribed to this device
@@ -532,12 +756,23 @@ export function createWebSocketServer(server: Server) {
             deviceConnections.delete(deviceId)
           }
         }
-        // If the ESP32 device itself disconnected, notify browser subscribers
+        // If the ESP32 device itself disconnected, clean up live connection tracking.
+        // Do NOT broadcast device-offline here — let the deviceTimeoutInterval handle it
+        // after DEVICE_STATUS_TIMEOUT_MS of silence. This prevents false offline flashes
+        // when the ESP32 briefly drops and reconnects within its 5s reconnect window:
+        // the timeout won't fire if a fresh status-update arrives before the threshold.
         if (isDeviceWsClient) {
-          console.log(`[WebSocket] ESP32 device disconnected: ${deviceId} — broadcasting device-offline`)
-          broadcastToDevice(deviceId, { type: 'device-offline', deviceId })
+          if (deviceLiveConnections.get(deviceId) === ws) {
+            deviceLiveConnections.delete(deviceId)
+            // Leave deviceLastStatusTime intact — the timeout uses it to decide when to
+            // actually fire device-offline. If the ESP32 reconnects quickly, it will
+            // overwrite deviceLastStatusTime via status-update before the threshold.
+            console.log(`[WebSocket] ESP32 device disconnected: ${deviceId} — waiting for timeout or reconnect`)
+          } else {
+            console.log(`[WebSocket] Stale ESP32 connection closed: ${deviceId} — ignoring since a newer connection exists`)
+          }
         }
-        console.log(`[WebSocket] Client unsubscribed from device: ${deviceId}`)
+        console.log(`[WebSocket] [${isDeviceWsClient ? 'esp32' : connLabel}] unsubscribed from device: ${deviceId}`)
       }
     })
 
@@ -555,6 +790,14 @@ function broadcastToDevice(deviceId: string, message: any) {
   if (connections && connections.size > 0) {
     const messageStr = JSON.stringify(message)
     connections.forEach((ws) => {
+      // PROACTIVELY PRUNE ZOMBIE CONNECTIONS
+      // If a socket is closed but somehow still in our Set, remove it now.
+      // This prevents the memory leak that leads to Render "exceeded memory limit" crashes.
+      if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        connections.delete(ws)
+        return
+      }
+
       if (ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(messageStr)
@@ -565,6 +808,14 @@ function broadcastToDevice(deviceId: string, message: any) {
       }
     })
   }
+}
+
+// Returns true if the device has an open live WebSocket connection right now.
+// Used by the status REST endpoint to report real-time online state without
+// relying on the stale lastSeen DB timestamp.
+export function isDeviceLive(deviceId: string): boolean {
+  const liveWs = deviceLiveConnections.get(deviceId)
+  return !!liveWs && liveWs.readyState === WebSocket.OPEN
 }
 
 // Broadcast restart command to ESP32
@@ -583,6 +834,11 @@ export function broadcastDeviceUpdate(deviceId: string, data: {
   pairingCode?: string | null
   groupToken?: string | null
 }) {
+  // Sync the local cache immediately so the next status-update 
+  // from the device gets the correct value without waiting for DB throttle
+  deviceCachedPairedStatus.set(deviceId, data.paired);
+  deviceLastDbUpdateTime.set(deviceId, Date.now());
+
   broadcastToDevice(deviceId, {
     type: 'device-update',
     deviceId,

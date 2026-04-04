@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { rateLimit } from '@/lib/rate-limit'
+import { isDeviceLive } from '@/lib/websocket'
 
 export const dynamic = 'force-dynamic'
 
@@ -56,6 +57,7 @@ export async function GET(
       pairedAt: device.pairedAt,
       pairingCode: device.paired ? null : device.pairingCode,
       groupToken: device.paired ? device.groupToken : null,
+      online: isDeviceLive(deviceId),
     })
   } catch (error) {
     console.error('Device status check error:', error)

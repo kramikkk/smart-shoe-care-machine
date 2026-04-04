@@ -51,9 +51,6 @@
     "ws": "^8.18.3",
     "zod": "^4.2.1"
   },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
-  },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",

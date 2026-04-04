@@ -2,6 +2,8 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react'
 
+export const SELECTED_DEVICE_KEY = 'dashboard_selected_device'
+
 type DeviceFilterContextType = {
   selectedDevice: string // deviceId
   setSelectedDevice: (deviceId: string) => void
@@ -13,10 +15,22 @@ type DeviceFilterContextType = {
 const DeviceFilterContext = createContext<DeviceFilterContextType | undefined>(undefined)
 
 export function DeviceFilterProvider({ children }: { children: React.ReactNode }) {
-  const [selectedDevice, setSelectedDevice] = useState<string>('')
+  // Initialise from localStorage so DashboardWebSocketContext can start its WS connection
+  // immediately on return visits, without waiting for the device list fetch.
+  const [selectedDevice, setSelectedDeviceState] = useState<string>(() => {
+    if (typeof window === 'undefined') return ''
+    return localStorage.getItem(SELECTED_DEVICE_KEY) ?? ''
+  })
   const [devices, setDevices] = useState<Array<{ deviceId: string }>>([])
   const [isLoading, setIsLoading] = useState(true)
   const fetchingRef = useRef(false)
+
+  const setSelectedDevice = (deviceId: string) => {
+    setSelectedDeviceState(deviceId)
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(SELECTED_DEVICE_KEY, deviceId)
+    }
+  }
 
   const fetchDevices = async () => {
     if (fetchingRef.current) return
@@ -33,8 +47,9 @@ export function DeviceFilterProvider({ children }: { children: React.ReactNode }
           }))
         setDevices(deviceList)
 
-        // Auto-select first device if not already selected
-        if (deviceList.length > 0 && !selectedDevice) {
+        // If the cached device is no longer in the paired list, fall back to first
+        const cachedStillValid = deviceList.some((d: { deviceId: string }) => d.deviceId === selectedDevice)
+        if (deviceList.length > 0 && !cachedStillValid) {
           setSelectedDevice(deviceList[0].deviceId)
         }
       }

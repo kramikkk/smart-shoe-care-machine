@@ -5,7 +5,7 @@ import { Settings } from "lucide-react"
 import PageLoader from "@/components/ui/PageLoader"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
-import { useSensorData } from "@/contexts/SensorDataContext"
+import { useDashboardWebSocket } from "@/contexts/DashboardWebSocketContext"
 import { DevicePairingCard } from "@/components/settings/DevicePairingCard"
 import { ServicePricingCard } from "@/components/settings/ServicePricingCard"
 import { ServiceDurationCard } from "@/components/settings/ServiceDurationCard"
@@ -32,7 +32,7 @@ const itemVariants = {
 
 export default function SettingsPage() {
   const { selectedDevice } = useDeviceFilter()
-  const { isConnected } = useSensorData()
+  const { isConnected } = useDashboardWebSocket()
   const pairing = useDevicePairing()
   const pricing = useServicePricing(selectedDevice)
   const duration = useServiceDuration(selectedDevice)
@@ -61,11 +61,7 @@ export default function SettingsPage() {
 
       <motion.div variants={itemVariants}>
         <DevicePairingCard
-          devices={pairing.devices.map(d =>
-            d.deviceId === selectedDevice
-              ? { ...d, status: isConnected ? 'connected' as const : 'disconnected' as const }
-              : d
-          )}
+          devices={pairing.devices}
           isPairing={pairing.isPairing}
           pairingDialogOpen={pairing.pairingDialogOpen}
           pairingDeviceId={pairing.pairingDeviceId}

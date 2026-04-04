@@ -5,7 +5,7 @@ import { debug } from '@/lib/debug'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Progress } from "@/components/ui/progress"
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useWebSocket } from '@/contexts/WebSocketContext'
+import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 import { useDurations } from '@/hooks/useDurations'
 
 // Recommended care types for each shoe type and service
@@ -84,7 +84,7 @@ const Auto = () => {
   }
 
   // Use centralized WebSocket context
-  const { isConnected, deviceId, sendMessage, onMessage } = useWebSocket()
+  const { isConnected, deviceId, sendMessage, onMessage, camSynced } = useKioskWebSocket()
   const lastSentStageRef = useRef<string>('')
   const sendMessageRef = useRef(sendMessage)
   const deviceIdRef = useRef(deviceId)

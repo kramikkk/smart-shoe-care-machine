@@ -7,7 +7,7 @@ import StatsCard from "@/components/dashboard/StatsCard"
 import RecentTransactionTable from "@/components/dashboard/RecentTransactionTable"
 import SystemAlertCard from "@/components/monitoring/SystemAlertCard"
 import SensorCard from "@/components/monitoring/SensorCard"
-import { SensorDataProvider } from "@/contexts/SensorDataContext"
+import { DashboardWebSocketProvider } from "@/contexts/DashboardWebSocketContext"
 import { TimeRangeProvider, useTimeRange, type TimeRange } from "@/contexts/TimeRangeContext"
 import { useSession } from "@/lib/auth-client"
 import {
@@ -108,10 +108,10 @@ function DashboardInner() {
 
 export default function DashboardPage() {
     return (
-        <SensorDataProvider>
+        <DashboardWebSocketProvider>
             <TimeRangeProvider>
                 <DashboardInner />
             </TimeRangeProvider>
-        </SensorDataProvider>
+        </DashboardWebSocketProvider>
     )
 }

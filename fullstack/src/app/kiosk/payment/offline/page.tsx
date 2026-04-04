@@ -9,7 +9,7 @@ import { AlertTriangle, Loader2, ArrowLeft } from 'lucide-react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { DEFAULT_SERVICES, Service, ServiceType } from '@/lib/kiosk-constants'
 import { usePricing } from '@/hooks/usePricing'
-import { useWebSocket } from '@/contexts/WebSocketContext'
+import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 
 const Offline = () => {
   const searchParams = useSearchParams()
@@ -36,7 +36,7 @@ const Offline = () => {
 
   const [showExitWarning, setShowExitWarning] = useState(false)
 
-  const { isConnected, sendMessage, onMessage } = useWebSocket()
+  const { isConnected, sendMessage, onMessage } = useKioskWebSocket()
 
   // Stable refs for cleanup
   const sendMessageRef = useRef(sendMessage)
