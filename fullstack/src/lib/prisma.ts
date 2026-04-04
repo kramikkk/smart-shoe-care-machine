@@ -1,12 +1,18 @@
 import { PrismaClient } from "@/generated/prisma";
-import { withAccelerate } from "@prisma/extension-accelerate";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
 
 const globalForPrisma = global as unknown as {
   prisma: ReturnType<typeof createPrismaClient>;
 };
 
 function createPrismaClient() {
-  return new PrismaClient().$extends(withAccelerate());
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: true },
+  });
+  const adapter = new PrismaPg(pool);
+  return new PrismaClient({ adapter });
 }
 
 const prisma = globalForPrisma.prisma ?? createPrismaClient();

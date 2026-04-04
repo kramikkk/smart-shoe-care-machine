@@ -3,7 +3,7 @@ import { requireAdminAuth } from '@/lib/auth-middleware'
 import { auth } from '@/lib/auth'
 import prisma from '@/lib/prisma'
 import { headers } from 'next/headers'
-import { transporter } from '@/lib/mailer'
+import { sendMail } from '@/lib/mailer'
 import { SignJWT } from 'jose'
 
 export async function GET(request: NextRequest) {
@@ -101,9 +101,10 @@ export async function POST(request: NextRequest) {
 
     const verifyUrl = `${process.env.BETTER_AUTH_URL}/api/auth/verify-email?token=${encodeURIComponent(token)}&callbackURL=%2Fclient%2Flogin`
 
-    await transporter.sendMail({
+    await sendMail({
       from: `"SSCM" <${process.env.GMAIL_USER}>`,
       to: email,
+      replyTo: process.env.GMAIL_USER!,
       subject: 'Verify your Smart Shoe Care Machine account',
       html: `
 <!DOCTYPE html>

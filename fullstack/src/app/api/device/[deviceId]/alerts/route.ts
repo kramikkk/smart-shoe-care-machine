@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth-middleware'
-import { transporter } from '@/lib/mailer'
+import { sendMail } from '@/lib/mailer'
 
 export const dynamic = 'force-dynamic'
 
@@ -104,7 +104,7 @@ async function sendAlertEmail({
   description: string
   severity: string
 }) {
-  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) return // mailer not configured — skip silently
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) return // mailer not configured — skip silently
 
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } })
   if (!user?.email) return
@@ -126,9 +126,10 @@ async function sendAlertEmail({
     timeZoneName: 'short',
   })
 
-  await transporter.sendMail({
+  await sendMail({
     from: `"SSCM" <${process.env.GMAIL_USER}>`,
     to: user.email,
+    replyTo: process.env.GMAIL_USER!,
     subject: `[${severityLabel}] ${title} — Smart Shoe Care Machine`,
     html: `
 <!DOCTYPE html>

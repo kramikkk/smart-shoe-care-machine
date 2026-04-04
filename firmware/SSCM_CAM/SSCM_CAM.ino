@@ -1,10 +1,10 @@
-#define FIRMWARE_VERSION "1.0.2"
+#define FIRMWARE_VERSION "1.0.3"
 #define BOARD_NAME "SSCM-CAM"
 
 /*
  * SSCM CAM Firmware — Gemini HTTP Classification Edition
  *
- * Replaces Edge Impulse local inference with HTTP POST to backend.
+ * Replaces Edge Impulse local inference wi//th HTTP POST to backend.
  * CAM captures a JPEG and POSTs it to /api/device/[mainId]/classify.
  * Backend calls Gemini and broadcasts the result via WebSocket.
  * CAM ACKs the main board with CAM_STATUS_API_HANDLED (6) via ESP-NOW.
@@ -16,6 +16,7 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 
@@ -489,11 +490,19 @@ void captureAndPostToBackend() {
     return;
   }
 
-  String url = "http://" + wsHost + ":" + String(wsPort) + "/api/device/" +
+  bool useHttps = (wsPort == 443);
+  String scheme = useHttps ? "https" : "http";
+  String url = scheme + "://" + wsHost + ":" + String(wsPort) + "/api/device/" +
                mainId + "/classify";
 
   HTTPClient http;
-  http.begin(url);
+  WiFiClientSecure secureClient;
+  if (useHttps) {
+    secureClient.setInsecure(); // Skip cert verification — embedded device
+    http.begin(secureClient, url);
+  } else {
+    http.begin(url);
+  }
   http.addHeader("Content-Type", "image/jpeg");
   http.addHeader("X-Group-Token", token);
   http.setTimeout(20000); // 20s — Gemini can be slow on free tier

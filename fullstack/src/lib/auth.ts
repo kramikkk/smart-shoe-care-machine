@@ -3,7 +3,7 @@ import { prismaAdapter } from 'better-auth/adapters/prisma'
 import prisma from '@/lib/prisma'
 import { nextCookies } from 'better-auth/next-js'
 import { admin } from 'better-auth/plugins'
-import { transporter } from '@/lib/mailer'
+import { sendMail } from '@/lib/mailer'
 
 // Get trusted origins from environment variable or use defaults
 const getTrustedOrigins = () => {
@@ -28,9 +28,10 @@ export const auth = betterAuth({
     sendOnSignUp: true,
     callbackURL: '/client/login',
     sendVerificationEmail: async ({ user, url }) => {
-      await transporter.sendMail({
+      await sendMail({
         from: `"SSCM" <${process.env.GMAIL_USER}>`,
         to: user.email,
+        replyTo: process.env.GMAIL_USER!,
         subject: 'Verify your Smart Shoe Care Machine account',
         html: `
           <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;background:#0a0a0a;color:#ffffff;border-radius:8px;">

@@ -56,6 +56,9 @@ export default function ClassifyPage() {
     debug.log(`[Classify] Sending enable-classification — device: ${deviceId}, camSynced: ${camSynced}`)
     sendMessage({ type: 'enable-classification', deviceId: deviceId })
 
+    // Don't override success/error state with sync status updates
+    if (hasResultRef.current) return
+
     if (!hasReceivedSyncStatus) {
       setState('connecting')
       return

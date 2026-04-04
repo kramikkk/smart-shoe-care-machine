@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { transporter } from '@/lib/mailer'
+import { sendMail } from '@/lib/mailer'
 import { rateLimit } from '@/lib/rate-limit'
 
 function escapeHtml(str: string): string {
@@ -35,7 +35,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid email address.' }, { status: 400 })
     }
 
-    const contactEmail = process.env.GMAIL_USER!
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) {
+        console.error('[contact] Missing Gmail OAuth2 env vars')
+        return NextResponse.json({ error: 'Email service not configured.' }, { status: 500 })
+    }
+
+    const contactEmail = process.env.GMAIL_USER
 
     const safeName    = escapeHtml(`${firstName} ${lastName}`)
     const safeEmail   = escapeHtml(email)
@@ -52,7 +57,8 @@ export async function POST(req: NextRequest) {
         timeZoneName: 'short',
     })
 
-    const { messageId, rejected } = await transporter.sendMail({
+    try {
+      await sendMail({
         from: `"SSCM" <${process.env.GMAIL_USER}>`,
         to: contactEmail,
         replyTo: email,
@@ -166,11 +172,10 @@ export async function POST(req: NextRequest) {
 </body>
 </html>
         `,
-    })
-
-    if (rejected?.length) {
-        console.error('[contact] Email rejected:', rejected)
-        return NextResponse.json({ error: 'Failed to send email.' }, { status: 500 })
+      })
+    } catch (err) {
+      console.error('[contact] sendMail threw:', err)
+      return NextResponse.json({ error: 'Failed to send email.' }, { status: 500 })
     }
 
     return NextResponse.json({ success: true })

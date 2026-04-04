@@ -9,9 +9,11 @@ import { useDashboardWebSocket } from "@/contexts/DashboardWebSocketContext"
 import { DevicePairingCard } from "@/components/settings/DevicePairingCard"
 import { ServicePricingCard } from "@/components/settings/ServicePricingCard"
 import { ServiceDurationCard } from "@/components/settings/ServiceDurationCard"
+import { CleaningDistanceCard } from "@/components/settings/CleaningDistanceCard"
 import { useDevicePairing } from "@/hooks/useDevicePairing"
 import { useServicePricing } from "@/hooks/useServicePricing"
 import { useServiceDuration } from "@/hooks/useServiceDuration"
+import { useCleaningDistance } from "@/hooks/useCleaningDistance"
 
 const containerVariants = {
   hidden: { opacity: 0, y: 20 },
@@ -36,8 +38,9 @@ export default function SettingsPage() {
   const pairing = useDevicePairing()
   const pricing = useServicePricing(selectedDevice)
   const duration = useServiceDuration(selectedDevice)
+  const cleaningDist = useCleaningDistance(selectedDevice)
 
-  if (pricing.isLoading || duration.isLoading) {
+  if (pricing.isLoading || duration.isLoading || cleaningDist.isLoading) {
     return (
       <div className="flex flex-1 flex-col w-full">
         <PageLoader label="Loading settings" />
@@ -105,6 +108,18 @@ export default function SettingsPage() {
           onDurationChange={duration.handleDurationChange}
           hasDurationChanges={duration.hasDurationChanges}
           onSaveDuration={duration.handleSaveDuration}
+        />
+      </motion.div>
+
+      <motion.div variants={itemVariants}>
+        <CleaningDistanceCard
+          distances={cleaningDist.distances}
+          editedDistances={cleaningDist.editedDistances}
+          isSaving={cleaningDist.isSaving}
+          selectedDevice={selectedDevice}
+          onDistanceChange={cleaningDist.handleDistanceChange}
+          hasDistanceChanges={cleaningDist.hasDistanceChanges}
+          onSaveDistance={cleaningDist.handleSaveDistance}
         />
       </motion.div>
     </motion.div>

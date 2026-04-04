@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.2"
+#define FIRMWARE_VERSION "1.0.3"
 #define BOARD_NAME "SSCM-MAIN"
 
 /*
@@ -288,17 +288,15 @@ bool dryingExhaustOn = false;
 /* ===================== CLEANING SERVICE STATE ===================== */
 // Cleaning mode phases:
 // Phase 0: Not cleaning
-// Phase 1: RGB ON, Pump ON, Side linear moving — wait 3s for liquid to travel
-// Phase 2: Top linear moving forward to max position (pump ON)
-// Phase 3: Top linear returning to home (pump ON)
+// Phase 1: Side linear moving — top linear moving to 480mm start position
+// Phase 2: Top linear moving from 480 to home (0)
+// Phase 3: Top linear returning from home (0) to 480
 // Phase 4: Brushing clockwise — pump OFF at start of this phase
 // Phase 5: Brushing counter-clockwise
 // After 3 complete brush cycles, cleaning ends
 
 const long CLEANING_MAX_POSITION = 4800; // 480mm * 10 steps/mm = 4800 steps
 int cleaningPhase = 0;
-const unsigned long CLEANING_PUMP_DELAY_MS =
-    3000; // 3s delay before top linear starts
 
 // Brushing cycle state
 const unsigned long BRUSH_DURATION_MS =
@@ -372,7 +370,8 @@ int servoStepCounter = 0;                         // Counter for step interval
 // Forward declarations for functions defined later in the file
 void setServoPositions(int leftPos, bool fastMode = false);
 void startService(String shoeType, String serviceType, String careType,
-                  unsigned long customDurationSeconds = 0);
+                  unsigned long customDurationSeconds = 0,
+                  long customCleaningDistanceMm = -1);
 void stopService();
 
 /* ===================== DRV8871 DC MOTOR DRIVERS - DUAL MOTORS
@@ -545,7 +544,6 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
   uint8_t msgType = data[0];
   uint8_t *senderMac = recv_info->src_addr;
 
-
   // ============================================================
   // PAIRING ACK (type 2): CAM accepted our pairing broadcast
   // ============================================================
@@ -556,7 +554,6 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
 
     PairingAck ack;
     memcpy(&ack, data, sizeof(PairingAck));
-
 
     // Store/update CAM device ID
     pairedCamDeviceId = String(ack.camOwnDeviceId);
@@ -573,7 +570,6 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
       memcpy(camMacAddress, senderMac, 6);
       prefs.putBytes("camMac", camMacAddress, 6);
       camMacPaired = true;
-
 
       // Switch from broadcast peer to direct CAM MAC
       esp_now_del_peer(broadcastAddress);
@@ -656,7 +652,6 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
     lastCamHeartbeat = millis();
     return;
   }
-
 }
 
 // Initialize ESP-NOW (call after WiFi.mode is set)
@@ -1099,11 +1094,23 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         customDuration = message.substring(start, end).toInt();
       }
 
+      // Extract optional cleaning distance override (mm from backend DB)
+      long customCleaningDistanceMm = -1; // -1 = use firmware defaults
+      int distMmIndex = message.indexOf("\"cleaningDistanceMm\":");
+      if (distMmIndex != -1) {
+        int start = distMmIndex + 21;
+        int end = message.indexOf(",", start);
+        if (end == -1)
+          end = message.indexOf("}", start);
+        customCleaningDistanceMm = message.substring(start, end).toInt();
+      }
+
       // Start the service (handles all service types: cleaning, drying,
       // sterilizing)
       if (serviceType == "cleaning" || serviceType == "drying" ||
           serviceType == "sterilizing") {
-        startService(shoeType, serviceType, careType, customDuration);
+        startService(shoeType, serviceType, careType, customDuration,
+                     customCleaningDistanceMm);
         wsLog("info",
               "Service started: " + serviceType + " | shoe: " + shoeType +
                   " | care: " + careType +
@@ -1200,7 +1207,6 @@ void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid.c_str(), pass.c_str());
   wifiStartTime = millis();
-
 }
 
 /* ===================== RELAY CONTROL FUNCTIONS ===================== */
@@ -1264,7 +1270,6 @@ void setRelay(int channel, bool state) {
     servoLeft.write(currentLeftPosition);
     servoRight.write(currentRightPosition);
   }
-
 }
 
 void allRelaysOff() {
@@ -1275,7 +1280,8 @@ void allRelaysOff() {
 
 /* ===================== SERVICE FUNCTIONS ===================== */
 void startService(String shoeType, String serviceType, String careType,
-                  unsigned long customDurationSeconds) {
+                  unsigned long customDurationSeconds,
+                  long customCleaningDistanceMm) {
   // Turn OFF all service-related relays and RGB before starting new service
   // This ensures clean transition between services in auto mode
   if (serviceActive) {
@@ -1310,7 +1316,7 @@ void startService(String shoeType, String serviceType, String careType,
       setRelay(5, false); // Pump OFF
       cleaningPhase = 0;
       brushCurrentCycle = 0;
-      stepper1MoveTo(0);
+      stepper1MoveTo(CLEANING_MAX_POSITION); // Return to boot position (480mm)
       stepper2MoveTo(0);
       motorsCoast();
     }
@@ -1356,7 +1362,6 @@ void startService(String shoeType, String serviceType, String careType,
   serviceStartTime = millis();
   lastServiceStatusUpdate = millis();
 
-
   // Set RGB light color based on service type
   if (serviceType == "cleaning") {
     rgbBlue(); // Blue for cleaning
@@ -1368,11 +1373,15 @@ void startService(String shoeType, String serviceType, String careType,
 
   // Turn ON relays based on service type
   if (serviceType == "cleaning") {
-    setRelay(5, true); // Diaphragm Pump ON
-
     // Side linear moves to designated position immediately
+    // Use backend-configured distance if provided, otherwise fall back to
+    // firmware defaults
     long stepper2TargetSteps = 0;
-    if (careType == "strong") {
+    if (customCleaningDistanceMm > 0) {
+      stepper2TargetSteps = customCleaningDistanceMm * STEPPER2_STEPS_PER_MM;
+      if (stepper2TargetSteps > STEPPER2_MAX_POSITION)
+        stepper2TargetSteps = STEPPER2_MAX_POSITION;
+    } else if (careType == "strong") {
       stepper2TargetSteps = 20000; // 100mm (STEPPER2_MAX_POSITION)
     } else if (careType == "normal") {
       stepper2TargetSteps = 19600; // 98mm
@@ -1383,8 +1392,9 @@ void startService(String shoeType, String serviceType, String careType,
     }
     stepper2MoveTo(stepper2TargetSteps);
 
-    // Phase 1: 3s pump delay before top linear starts
+    // Phase 1: top linear moves to 480mm start position
     cleaningPhase = 1;
+    stepper1MoveTo(CLEANING_MAX_POSITION);
     brushPhaseStartTime = millis();
   } else if (serviceType == "drying") {
     setRelay(3, true); // Centrifugal Blower Fan ON (always on during drying)
@@ -1398,7 +1408,6 @@ void startService(String shoeType, String serviceType, String careType,
     setRelay(8, true); // UVC ON
     setRelay(7, true); // Atomizer + Mist Fan ON
   }
-
 
   // Send service started confirmation via WebSocket
   sendServiceStatusUpdate();
@@ -1418,7 +1427,7 @@ void stopService() {
     setRelay(5, false); // Diaphragm Pump (safety — may already be off)
     cleaningPhase = 0;
     brushCurrentCycle = 0;
-    stepper1MoveTo(0);
+    stepper1MoveTo(CLEANING_MAX_POSITION); // Return to boot position (480mm)
     stepper2MoveTo(0);
     // Stop brush motors
     motorsCoast();
@@ -1449,7 +1458,6 @@ void stopService() {
     purgeShoeType = currentShoeType;
     purgeCareType = currentCareType;
   }
-
 
   // Send service-complete immediately for all services — purge runs in
   // background
@@ -1531,27 +1539,26 @@ void handleService() {
   // Handle cleaning mode phases
   if (currentServiceType == "cleaning" && cleaningPhase > 0) {
 
-    // Phase 1: Pump ON + side linear moving — wait 3s then start top linear
+    // Phase 1: Top linear moving to 480mm start position
     if (cleaningPhase == 1) {
-      if (millis() - brushPhaseStartTime >= CLEANING_PUMP_DELAY_MS) {
+      if (!stepper1Moving) {
         cleaningPhase = 2;
-        stepper1MoveTo(CLEANING_MAX_POSITION);
+        stepper1MoveTo(0); // 480 → 0
       }
     }
 
-    // Phase 2: Top linear moving forward to max
+    // Phase 2: Top linear moving from 480 to home (0)
     else if (cleaningPhase == 2) {
       if (!stepper1Moving) {
         cleaningPhase = 3;
-        stepper1MoveTo(0);
+        stepper1MoveTo(CLEANING_MAX_POSITION); // 0 → 480
       }
     }
 
-    // Phase 3: Top linear returning to home
+    // Phase 3: Top linear returning from home (0) to 480
     else if (cleaningPhase == 3) {
       if (!stepper1Moving) {
-        // Top linear home — pump OFF, start brushing
-        setRelay(5, false); // Diaphragm Pump OFF
+        // Top linear at 480 — start brushing
         cleaningPhase = 4;
         brushCurrentCycle = 1;
         brushPhaseStartTime = millis();
@@ -2260,33 +2267,24 @@ void setRGBColor(int red, int green, int blue) {
     strip.setPixelColor(i, color);
   }
   strip.show(); // Update the strip
-
 }
 
 // Preset colors
-void rgbWhite() {
-  setRGBColor(255, 255, 255);
-}
+void rgbWhite() { setRGBColor(255, 255, 255); }
 
-void rgbBlue() {
-  setRGBColor(0, 0, 255);
-}
+void rgbBlue() { setRGBColor(0, 0, 255); }
 
-void rgbGreen() {
-  setRGBColor(0, 255, 0);
-}
+void rgbGreen() { setRGBColor(0, 255, 0); }
 
 void rgbViolet() {
   setRGBColor(238, 130, 238); // Violet color
 }
 
 void rgbPink() {
-  setRGBColor(255, 20, 147); // Deep pink
+  setRGBColor(150, 0, 255); // #9600FF — sterilizing purple
 }
 
-void rgbOff() {
-  setRGBColor(0, 0, 0);
-}
+void rgbOff() { setRGBColor(0, 0, 0); }
 
 /* ===================== COIN SLOT INTERRUPT HANDLER ===================== */
 void IRAM_ATTR handleCoinPulse() {
@@ -2391,9 +2389,8 @@ void setupOTA() {
     allRelaysOff(); // Safety: turn off outputs before flashing
     wsLog("warn", "OTA firmware update started — device will restart");
   });
-  ArduinoOTA.onEnd([]() {
-    wsLog("info", "OTA update complete — restarting now");
-  });
+  ArduinoOTA.onEnd(
+      []() { wsLog("info", "OTA update complete — restarting now"); });
   ArduinoOTA.onError([](ota_error_t error) {
     wsLog("error", "OTA update failed — error code: " + String(error));
   });
@@ -2403,7 +2400,6 @@ void setupOTA() {
 /* ===================== SETUP ===================== */
 void setup() {
   Serial.begin(115200);
-
 
   prefs.begin("sscm", false);
 
@@ -2490,11 +2486,11 @@ void setup() {
   // Set initial speed
   setStepper2Speed(1500); // 1500 steps/second default (7.5mm/s)
 
-  // Auto-return to 0 on boot so the machine is always ready for cleaning
-  if (currentStepper1Position != 0) {
-    Serial.println("[Setup] S1 not at 0 (" + String(currentStepper1Position) +
-                   "), returning to home");
-    stepper1MoveTo(0);
+  // Auto-move to boot position (480mm) on startup
+  if (currentStepper1Position != CLEANING_MAX_POSITION) {
+    Serial.println("[Setup] S1 not at boot position (" +
+                   String(currentStepper1Position) + "), moving to 480mm");
+    stepper1MoveTo(CLEANING_MAX_POSITION);
   }
   if (currentStepper2Position != 0) {
     Serial.println("[Setup] S2 not at 0 (" + String(currentStepper2Position) +
@@ -2507,7 +2503,6 @@ void setup() {
   strip.setBrightness(
       100);     // Set moderate brightness to reduce power draw (0-255)
   strip.show(); // Initialize all pixels to 'off'
-
 
   // Initialize 8-channel relay
   pinMode(RELAY_1_PIN, OUTPUT);
@@ -2566,7 +2561,6 @@ void setup() {
   if (!isPaired) {
     pairingCode = generatePairingCode();
   }
-
 
   // Check if we have WiFi credentials
   String storedSSID = prefs.getString("ssid", "");
@@ -2783,10 +2777,10 @@ void handleSerialCommand(String cmd) {
       // Declare current physical position as zero (no movement)
       stepper1Home();
     } else if (subCmd == "RETURN") {
-      // Physically move back to position 0
-      wsLog("info", "S1 returning to zero (pos=" +
+      // Physically move back to boot position (480mm)
+      wsLog("info", "S1 returning to boot position 480mm (pos=" +
                         String(currentStepper1Position) + ")");
-      stepper1MoveTo(0);
+      stepper1MoveTo(CLEANING_MAX_POSITION);
     } else if (subCmd == "INFO") {
       wsLog("info", "S1 pos=" + String(currentStepper1Position) +
                         " spd=" + String(stepper1Speed) +
@@ -2978,7 +2972,6 @@ void loop() {
       totalsDirty =
           true; // Flush to NVS in periodic save (avoids blocking flash write)
 
-
       if (isPaired && wsConnected) {
         String coinMsg = "{\"type\":\"coin-inserted\",\"deviceId\":\"" +
                          deviceId + "\",\"coinValue\":" + String(coinValue) +
@@ -3010,7 +3003,6 @@ void loop() {
       totalPesos = totalCoinPesos + totalBillPesos;
       totalsDirty =
           true; // Flush to NVS in periodic save (avoids blocking flash write)
-
 
       if (isPaired && wsConnected) {
         String billMsg = "{\"type\":\"bill-inserted\",\"deviceId\":\"" +
@@ -3208,7 +3200,6 @@ void loop() {
                        "\",\"camSynced\":" + (camSynced ? "true" : "false") +
                        ",\"camDeviceId\":\"" + camDeviceId + "\"}";
       webSocket.sendTXT(syncMsg);
-
     }
   }
 

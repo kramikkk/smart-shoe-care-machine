@@ -5,7 +5,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -137,12 +136,27 @@ model Device {
   camSynced    Boolean           @default(false)
   groupToken   String?           @unique
   name         String?
-  durations    ServiceDuration[]
-  pricing      ServicePricing[]
-  transactions Transaction[]
-  alerts       DeviceAlert[]
+  durations         ServiceDuration[]
+  pricing           ServicePricing[]
+  transactions      Transaction[]
+  alerts            DeviceAlert[]
+  cleaningDistances CleaningDistance[]
 
   @@map("device")
+}
+
+model CleaningDistance {
+  id         String   @id @default(cuid())
+  careType   String   // gentle | normal | strong
+  distanceMm Int      // mm — firmware converts to steps (× 200)
+  deviceId   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  device     Device?  @relation(fields: [deviceId], references: [deviceId], onDelete: SetNull)
+
+  @@unique([deviceId, careType])
+  @@index([deviceId])
+  @@map("cleaning_distance")
 }
 
 model DeviceAlert {

@@ -298,7 +298,7 @@ export function DevicePairingCard({
                             {isActuallyConnected ? 'Online' : isActuallyPairing ? 'Pairing' : 'Offline'}
                           </Badge>
                           {isCurrentActive && isActuallyConnected && (
-                            <Badge variant="outline" className="text-[9px] h-3.5 px-1 bg-blue-500/10 text-blue-400 border-blue-500/20 animate-pulse">
+                            <Badge variant="outline" className="text-[9px] h-3.5 px-1 bg-blue-500/10 text-blue-400 border-blue-500/20">
                               LIVE
                             </Badge>
                           )}

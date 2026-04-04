@@ -592,8 +592,32 @@ export function createWebSocketServer(server: Server) {
         else if (message.type === 'start-service' && message.deviceId) {
           const serviceDeviceId = message.deviceId as string
           console.log(`[WebSocket] Start service on ${serviceDeviceId}: ${message.serviceType} (${message.careType})`)
-          // Forward to ESP32 device
-          broadcastToDevice(serviceDeviceId, message)
+
+          // Inject cleaning distance (mm) for cleaning service so firmware uses DB value
+          let enrichedMessage = message
+          if (message.serviceType === 'cleaning' && message.careType) {
+            try {
+              const { PrismaClient } = await import('@prisma/client')
+              const p = new PrismaClient()
+              const entry = await p.cleaningDistance.findFirst({
+                where: {
+                  careType: message.careType as string,
+                  deviceId: serviceDeviceId,
+                },
+              }) || await p.cleaningDistance.findFirst({
+                where: { careType: message.careType as string, deviceId: null },
+              })
+              await p.$disconnect()
+              if (entry) {
+                enrichedMessage = { ...message, cleaningDistanceMm: entry.distanceMm }
+                console.log(`[WebSocket] Injecting cleaningDistanceMm=${entry.distanceMm} for ${message.careType}`)
+              }
+            } catch (e) {
+              console.error('[WebSocket] Failed to fetch cleaning distance:', e)
+            }
+          }
+
+          broadcastToDevice(serviceDeviceId, enrichedMessage)
         }
 
         // Handle service status updates from ESP32

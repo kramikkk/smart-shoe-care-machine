@@ -22,6 +22,15 @@
     "better-auth": {
       "type": "http",
       "url": "https://mcp.chonkie.ai/better-auth/better-auth-builder/mcp"
+    },
+    "prisma": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.prisma.io/mcp"
+      ]
     }
   }
 }

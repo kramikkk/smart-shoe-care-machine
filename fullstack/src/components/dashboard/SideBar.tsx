@@ -66,7 +66,7 @@ const SideBar = () => {
         <SidebarHeader className="py-8 px-4">
             <Link href="/client/dashboard" className="flex items-center gap-3 transition-all group">
                 <div className="relative p-2 rounded-xl bg-primary/20 border border-primary/20 group-hover:bg-primary/30 transition-all shadow-[0_0_20px_rgba(var(--primary),0.2)]">
-                  <Image src="/SSCMlogoTrans.webp" alt="Logo" width={28} height={28} priority className="w-7 h-7 object-contain drop-shadow-2xl"/>
+                  <Image src="/SSCMlogoTrans.webp" alt="Logo" width={28} height={28} priority className="object-contain drop-shadow-2xl"/>
                 </div>
                 <div className="flex flex-col">
                     <span className="text-sm font-black tracking-wider uppercase leading-none text-white/90">Smart Shoe <span className="text-primary text-nowrap">Care Machine</span></span>
