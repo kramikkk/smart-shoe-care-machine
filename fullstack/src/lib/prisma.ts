@@ -7,9 +7,14 @@ const globalForPrisma = global as unknown as {
 };
 
 function createPrismaClient() {
+  const dbUrl = new URL(process.env.DATABASE_URL!);
+  dbUrl.searchParams.set('sslmode', 'verify-full');
   const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString: dbUrl.toString(),
     ssl: { rejectUnauthorized: true },
+    max: 2,                    // keep footprint small on memory-constrained hosts
+    idleTimeoutMillis: 30_000, // release idle connections after 30s
+    connectionTimeoutMillis: 5_000,
   });
   const adapter = new PrismaPg(pool);
   return new PrismaClient({ adapter });

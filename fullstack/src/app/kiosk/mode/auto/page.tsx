@@ -20,11 +20,11 @@ interface ShoeRecommendations {
 }
 
 const SHOE_CARE_RECOMMENDATIONS: Record<string, ShoeRecommendations> = {
-  // Mesh: Delicate, breathable - gentle cleaning, normal drying, gentle sterilizing
-  mesh: { cleaning: 'gentle', drying: 'normal', sterilizing: 'gentle' },
-  // Canvas: Durable fabric - strong cleaning, normal drying, normal sterilizing
-  canvas: { cleaning: 'strong', drying: 'normal', sterilizing: 'normal' },
-  // Rubber: Very durable, waterproof - strong cleaning, normal drying, strong sterilizing
+  // Mesh: Delicate synthetic fibers, soft foam interior — gentle clean & dry (heat/pressure damages synthetics), gentle sterilize (UV/mist degrades foam and adhesives)
+  mesh: { cleaning: 'gentle', drying: 'gentle', sterilizing: 'gentle' },
+  // Canvas: Absorbent cotton, heavy sweat retention — normal clean, strong dry (absorbs water heavily), normal sterilize (moderate disinfection for cotton lining)
+  canvas: { cleaning: 'normal', drying: 'strong', sterilizing: 'normal' },
+  // Rubber: Durable, waterproof, smooth interior — strong clean (hard surface), normal dry (repels water; strong heat warps rubber), strong sterilize (UV/mist-resistant; thorough treatment safe)
   rubber: { cleaning: 'strong', drying: 'normal', sterilizing: 'strong' },
 }
 

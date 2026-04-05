@@ -297,9 +297,6 @@ export function createWebSocketServer(server: Server) {
           // the server just cold-started and deviceLiveConnections is empty but the
           // ESP32 was recently active (e.g. Render cold start, brief server restart).
           ;(async () => {
-            const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 10000);
-
             try {
               const device = await prisma.device.findUnique({
                 where: { deviceId: subscribeDeviceId },
@@ -338,8 +335,6 @@ export function createWebSocketServer(server: Server) {
               }
             } catch (err) {
               console.warn(`[WebSocket] Could not push initial device state for ${subscribeDeviceId}`)
-            } finally {
-              clearTimeout(timeout)
             }
           })()
         }
@@ -531,8 +526,6 @@ export function createWebSocketServer(server: Server) {
           const lastDbUpdate = deviceLastDbUpdateTime.get(syncDeviceId) || 0
           if (now - lastDbUpdate > 60_000) {
             ;(async () => {
-               const controller = new AbortController();
-               const timeout = setTimeout(() => controller.abort(), 10000);
               try {
                 const updateData: { camSynced?: boolean; camDeviceId?: string } = { camSynced: message.camSynced }
                 if (message.camDeviceId) updateData.camDeviceId = message.camDeviceId as string
@@ -544,8 +537,6 @@ export function createWebSocketServer(server: Server) {
                 deviceLastDbUpdateTime.set(syncDeviceId, now)
               } catch (error) {
                 // Device might not exist yet, ignore
-              } finally {
-                clearTimeout(timeout)
               }
             })()
           }
@@ -597,17 +588,14 @@ export function createWebSocketServer(server: Server) {
           let enrichedMessage = message
           if (message.serviceType === 'cleaning' && message.careType) {
             try {
-              const { PrismaClient } = await import('@prisma/client')
-              const p = new PrismaClient()
-              const entry = await p.cleaningDistance.findFirst({
+              const entry = await prisma.cleaningDistance.findFirst({
                 where: {
                   careType: message.careType as string,
                   deviceId: serviceDeviceId,
                 },
-              }) || await p.cleaningDistance.findFirst({
+              }) || await prisma.cleaningDistance.findFirst({
                 where: { careType: message.careType as string, deviceId: null },
               })
-              await p.$disconnect()
               if (entry) {
                 enrichedMessage = { ...message, cleaningDistanceMm: entry.distanceMm }
                 console.log(`[WebSocket] Injecting cleaningDistanceMm=${entry.distanceMm} for ${message.careType}`)
@@ -795,6 +783,14 @@ export function createWebSocketServer(server: Server) {
           } else {
             console.log(`[WebSocket] Stale ESP32 connection closed: ${deviceId} — ignoring since a newer connection exists`)
           }
+        }
+        // When no subscribers remain for a device (ESP32 + all browser clients gone),
+        // clean up caches that the deviceTimeoutInterval won't reach for graceful disconnects.
+        const remainingConnections = deviceConnections.get(deviceId)
+        if (!remainingConnections || remainingConnections.size === 0) {
+          deviceCachedPairedStatus.delete(deviceId)
+          deviceLastDbUpdateTime.delete(deviceId)
+          deviceLastStatusTime.delete(deviceId)
         }
         console.log(`[WebSocket] [${isDeviceWsClient ? 'esp32' : connLabel}] unsubscribed from device: ${deviceId}`)
       }

@@ -42,6 +42,26 @@ export async function GET(
   return NextResponse.json(alerts)
 }
 
+// DELETE /api/device/[deviceId]/alerts
+// Deletes all resolved alerts for the device
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ deviceId: string }> }
+) {
+  const authResult = await requireAuth(req)
+  if (authResult instanceof NextResponse) return authResult
+
+  const { deviceId } = await params
+  const owned = await verifyOwnership(deviceId, authResult.user.id)
+  if (!owned) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+  const { count } = await prisma.deviceAlert.deleteMany({
+    where: { deviceId, resolvedAt: { not: null } },
+  })
+
+  return NextResponse.json({ deleted: count })
+}
+
 // POST /api/device/[deviceId]/alerts
 // Body: { alertKey, severity, title, description }
 // Dedup: if unresolved alert with same alertKey exists, return it (no duplicate)

@@ -18,7 +18,7 @@ setInterval(() => {
       rateLimitStore.delete(key)
     }
   }
-}, 10 * 60 * 1000).unref()
+}, 60 * 1000).unref()
 
 export interface RateLimitConfig {
   maxRequests: number // Maximum requests allowed

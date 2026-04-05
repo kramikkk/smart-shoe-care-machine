@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { format } from 'date-fns'
-import { AlertCircle, AlertTriangle, Bell, Check, CheckCheck, CheckCircle2, Info, Loader2 } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Bell, Check, CheckCheck, CheckCircle2, Info, Loader2, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -66,6 +66,7 @@ const SystemAlertCard = ({ className }: { className?: string }) => {
   const [fetching, setFetching] = useState(true)
   const [markingId, setMarkingId] = useState<string | null>(null)
   const [markingAll, setMarkingAll] = useState(false)
+  const [clearingHistory, setClearingHistory] = useState(false)
 
   const fetchAlerts = useCallback(async () => {
     if (!selectedDevice) return
@@ -177,6 +178,25 @@ const SystemAlertCard = ({ className }: { className?: string }) => {
     }
   }
 
+  const handleClearHistory = async () => {
+    if (!selectedDevice || clearingHistory) return
+    setClearingHistory(true)
+    try {
+      const res = await fetch(`/api/device/${selectedDevice}/alerts`, { method: 'DELETE' })
+      if (res.ok) {
+        const { deleted } = await res.json()
+        setResolvedAlerts([])
+        toast.success(`Cleared ${deleted} resolved alert${deleted !== 1 ? 's' : ''}`)
+      } else {
+        toast.error('Could not clear history. Please try again.')
+      }
+    } catch {
+      toast.error('Network error. Please try again.')
+    } finally {
+      setClearingHistory(false)
+    }
+  }
+
   const displayedAlerts = activeTab === 'current' ? currentAlerts : resolvedAlerts
   const criticalCount = currentAlerts.filter(a => a.severity === 'critical').length
 
@@ -214,6 +234,20 @@ const SystemAlertCard = ({ className }: { className?: string }) => {
                 ? <Loader2 className="h-3 w-3 animate-spin" />
                 : <CheckCheck className="h-3 w-3" />}
               Mark All Solved
+            </Button>
+          )}
+          {activeTab === 'resolved' && resolvedAlerts.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={clearingHistory}
+              onClick={handleClearHistory}
+              className="h-7 px-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground hover:text-red-400 hover:bg-red-500/10 gap-1"
+            >
+              {clearingHistory
+                ? <Loader2 className="h-3 w-3 animate-spin" />
+                : <Trash2 className="h-3 w-3" />}
+              Clear History
             </Button>
           )}
         </div>

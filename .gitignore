@@ -20,6 +20,7 @@ fullstack/out/
 # production
 /build
 fullstack/build
+fullstack/dist
 
 # misc
 .DS_Store
