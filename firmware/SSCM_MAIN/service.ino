@@ -1,4 +1,20 @@
-/* ===================== SERVICE FUNCTIONS ===================== */
+/**
+ * ===================== SERVICE FUNCTIONS =====================
+ *
+ * Manages the three shoe care service types:
+ *   1. Cleaning    — Foam dispense → linear slide → motorized brush cycles
+ *   2. Drying      — PTC heater + blower with closed-loop temp (35–40°C)
+ *   3. Sterilizing — UV-C light + ultrasonic atomizer mist
+ *
+ * Service lifecycle:
+ *   startService() → hardware ON → handleService() [called every loop] →
+ *   duration reached → stopService() → purge exhaust fan → service-complete WS
+ *
+ * Cleaning state machine (cleaningPhase):
+ *   1 → Extend slide to max  →  2 → Retract to 0  →  3 → Extend again  →
+ *   4 → Brush CW  →  6 → Coast  →  5 → Brush CCW  →  6 → Coast  →
+ *   (repeat 4↔5 for BRUSH_TOTAL_CYCLES)  →  stopService()
+ */
 
 void startService(String shoeType, String serviceType, String careType,
                   unsigned long customDurationSeconds,
@@ -37,7 +53,7 @@ void startService(String shoeType, String serviceType, String careType,
   } else if (serviceType == "drying" || serviceType == "sterilizing") {
     if      (careType == "gentle") serviceDuration = 60000;
     else if (careType == "strong") serviceDuration = 300000;
-    else                           serviceDuration = 180000; // normal / default
+    else                           serviceDuration = 180000;
   } else {
     serviceDuration = 180000;
   }
@@ -52,6 +68,8 @@ void startService(String shoeType, String serviceType, String careType,
   serviceActive      = true;
   serviceStartTime   = millis();
   lastServiceStatusUpdate = millis();
+
+  LOG("[Service] Start: " + serviceType + " | " + shoeType + " | " + careType + " | " + String(serviceDuration / 1000) + "s");
 
   // RGB color per service type
   if      (serviceType == "cleaning")    rgbBlue();
@@ -70,7 +88,7 @@ void startService(String shoeType, String serviceType, String careType,
     } else if (careType == "gentle") {
       stepper2TargetSteps = 18600;
     } else {
-      stepper2TargetSteps = 19600; // normal / default
+      stepper2TargetSteps = 19600;
     }
     stepper2MoveTo(stepper2TargetSteps);
 
@@ -79,15 +97,15 @@ void startService(String shoeType, String serviceType, String careType,
     brushPhaseStartTime = millis();
 
   } else if (serviceType == "drying") {
-    setRelay(3, true); // Blower Fan
-    setRelay(4, true); // Left PTC Heater
-    setRelay(6, true); // Right PTC Heater
+    setRelay(3, true);
+    setRelay(4, true);
+    setRelay(6, true);
     dryingHeaterOn  = true;
     dryingExhaustOn = false;
 
   } else if (serviceType == "sterilizing") {
-    setRelay(8, true); // UVC
-    setRelay(7, true); // Atomizer + Mist Fan
+    setRelay(8, true);
+    setRelay(7, true);
   }
 
   sendServiceStatusUpdate();
@@ -115,7 +133,6 @@ void stopService() {
     setRelay(2, false);
     dryingHeaterOn  = false;
     dryingExhaustOn = false;
-    // Purge: exhaust ON for 15s to cool down chamber
     setRelay(2, true);
     purgeActive      = true;
     purgeStartTime   = millis();
@@ -126,7 +143,6 @@ void stopService() {
   } else if (currentServiceType == "sterilizing") {
     setRelay(7, false);
     setRelay(8, false);
-    // Purge: exhaust ON for 15s to clear residual mist
     setRelay(2, true);
     purgeActive      = true;
     purgeStartTime   = millis();
@@ -134,6 +150,8 @@ void stopService() {
     purgeShoeType    = currentShoeType;
     purgeCareType    = currentCareType;
   }
+
+  LOG("[Service] Stop: " + currentServiceType);
 
   if (wsConnected && isPaired) {
     String msg = "{\"type\":\"service-complete\",\"deviceId\":\"" + deviceId +
@@ -154,6 +172,7 @@ void handlePurge() {
   if (millis() - purgeStartTime >= PURGE_DURATION_MS) {
     purgeActive = false;
     setRelay(2, false);
+    LOG("[Purge] Complete");
     purgeServiceType = "";
     purgeShoeType    = "";
     purgeCareType    = "";
@@ -169,6 +188,7 @@ void handleDryingTemperature() {
       setRelay(4, true);
       setRelay(6, true);
       dryingHeaterOn = true;
+      LOG("[Drying] Heater ON (" + String(currentTemperature, 1) + "C)");
     }
     if (dryingExhaustOn) {
       setRelay(2, false);
@@ -179,13 +199,13 @@ void handleDryingTemperature() {
       setRelay(4, false);
       setRelay(6, false);
       dryingHeaterOn = false;
+      LOG("[Drying] Heater OFF (" + String(currentTemperature, 1) + "C)");
     }
     if (!dryingExhaustOn) {
       setRelay(2, true);
       dryingExhaustOn = true;
     }
   }
-  // Within 35–40°C band: hold current state (hysteresis)
 }
 
 void handleService() {
@@ -202,37 +222,35 @@ void handleService() {
   if (currentServiceType == "cleaning" && cleaningPhase > 0) {
 
     if (cleaningPhase == 1) {
-      // Top linear moving to 480mm start position
       if (!stepper1Moving) {
         cleaningPhase = 2;
         stepper1MoveTo(0);
+        LOG("[Cleaning] Phase 2: S1 retracting");
       }
 
     } else if (cleaningPhase == 2) {
-      // Top linear moving 480 → 0
       if (!stepper1Moving) {
         cleaningPhase = 3;
         stepper1MoveTo(CLEANING_MAX_POSITION);
+        LOG("[Cleaning] Phase 3: S1 extending");
       }
 
     } else if (cleaningPhase == 3) {
-      // Top linear returning 0 → 480, then start brushing
       if (!stepper1Moving) {
         cleaningPhase = 4;
         brushCurrentCycle = 1;
         brushPhaseStartTime = millis();
         setMotorsSameSpeed(BRUSH_MOTOR_SPEED);
 
-        // Sweep servos 0° → 180° over remaining service time
         unsigned long remainingMs = (elapsed < serviceDuration)
                                     ? serviceDuration - elapsed : 1;
         int dynInterval = max(1, (int)((remainingMs / 15UL) / 180UL));
         setServoPositions(180, false);
         servoStepInterval = dynInterval;
+        LOG("[Cleaning] Brushing started cycle 1");
       }
 
     } else if (cleaningPhase == 4) {
-      // Brushing CW
       if (millis() - brushPhaseStartTime >= BRUSH_DURATION_MS) {
         motorsCoast();
         cleaningPhase = 6;
@@ -241,13 +259,13 @@ void handleService() {
       }
 
     } else if (cleaningPhase == 5) {
-      // Brushing CCW
       if (millis() - brushPhaseStartTime >= BRUSH_DURATION_MS) {
         brushCurrentCycle++;
         if (brushCurrentCycle > BRUSH_TOTAL_CYCLES) {
           motorsCoast();
           cleaningPhase = 0;
           brushCurrentCycle = 0;
+          LOG("[Cleaning] All brush cycles complete");
           stopService();
           return;
         } else {
@@ -255,11 +273,11 @@ void handleService() {
           cleaningPhase = 6;
           brushNextPhase = 4;
           brushPhaseStartTime = millis();
+          LOG("[Cleaning] Brush cycle " + String(brushCurrentCycle));
         }
       }
 
     } else if (cleaningPhase == 6) {
-      // Coast transition between direction changes
       if (millis() - brushPhaseStartTime >= BRUSH_COAST_MS) {
         cleaningPhase = brushNextPhase;
         brushPhaseStartTime = millis();

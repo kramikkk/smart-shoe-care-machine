@@ -1,17 +1,35 @@
-/* ===================== FACTORY RESET ===================== */
+/**
+ * ===================== SYSTEM COMMANDS & OTA =====================
+ *
+ * factoryReset()      — Clears NVS (WiFi, pairing, totals) and reboots.
+ * setupOTA()          — Initializes Over-The-Air firmware updates.
+ * handleSerialCommand — Master parser for incoming text commands.
+ *
+ * Commands can originate from the physical USB Serial Monitor OR via
+ * the WebSocket 'serial-command' event from the dashboard / admin panel.
+ *
+ * Supported commands:
+ *   RESET_WIFI, RESET_PAIRING, RESET_MONEY, FACTORY_RESET, STATUS
+ *   RELAY_<channel>_<ON|OFF>, RELAY_ALL_OFF
+ *   SERVO_DEMO, SERVO_STATUS, SERVO_<angle>
+ *   MOTOR_<LEFT|RIGHT>_<SPEED|BRAKE|COAST>
+ *   STEPPER1_<HOME|RETURN|STOP|SPEED|MOVE|GOTO|MM>
+ *   RGB_<COLOR>
+ *   CAM_<BROADCAST|CLASSIFY>
+ */
 
 void factoryReset() {
+  LOG("[RESET] Factory reset triggered");
   allRelaysOff();
-  wsLog("warn", "Factory reset triggered — final totals: Coin ₱" +
-                String(totalCoinPesos) + ", Bill ₱" +
-                String(totalBillPesos) + ", Total ₱" + String(totalPesos));
+  wsLog("warn", "Factory reset triggered — final totals: Coin PHP" +
+                String(totalCoinPesos) + ", Bill PHP" +
+                String(totalBillPesos) + ", Total PHP" + String(totalPesos));
 
-  // Notify CAM before wiping our own prefs
   if (espNowInitialized && camMacPaired) {
     CamMessage msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = CAM_MSG_FACTORY_RESET;
-    for (int i = 0; i < 3; i++) { // Send 3× for reliability (fire-and-forget)
+    for (int i = 0; i < 3; i++) {
       esp_now_send(camMacAddress, (uint8_t *)&msg, sizeof(msg));
       delay(500);
     }
@@ -19,6 +37,7 @@ void factoryReset() {
   }
 
   prefs.clear();
+  LOG("[RESET] NVS cleared — restarting");
   delay(500);
   ESP.restart();
 }
@@ -35,15 +54,20 @@ void setupOTA() {
 
   ArduinoOTA.onStart([]() {
     allRelaysOff();
-    wsLog("warn", "OTA firmware update started — device will restart");
+    LOG("[OTA] Update started");
+    wsLog("warn", "OTA firmware update started");
   });
   ArduinoOTA.onEnd([]() {
-    wsLog("info", "OTA update complete — restarting now");
+    LOG("[OTA] Complete — restarting");
+    wsLog("info", "OTA update complete");
   });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {});
   ArduinoOTA.onError([](ota_error_t error) {
-    wsLog("error", "OTA update failed — error code: " + String(error));
+    LOG("[OTA] Error: " + String(error));
+    wsLog("error", "OTA failed: " + String(error));
   });
   ArduinoOTA.begin();
+  LOG("[OTA] Ready: " + String(hostname));
 }
 
 /* ===================== SERIAL / WS COMMAND HANDLER ===================== */
@@ -51,6 +75,8 @@ void setupOTA() {
 void handleSerialCommand(String cmd) {
   cmd.trim();
   if (cmd.length() == 0) return;
+
+  LOG(">> " + cmd);
 
   if (cmd == "RESET_WIFI") {
     prefs.remove("ssid");
@@ -73,20 +99,24 @@ void handleSerialCommand(String cmd) {
     currentBillPulses = 0;
     prefs.putUInt("totalCoinPesos", 0);
     prefs.putUInt("totalBillPesos", 0);
+    LOG("[CMD] Money reset");
 
   } else if (cmd == "FACTORY_RESET") {
     factoryReset();
 
   } else if (cmd == "STATUS") {
-    wsLog("info", "Device: " + deviceId);
-    wsLog("info", "WiFi: " + String(wifiConnected ? WiFi.localIP().toString() : "Disconnected"));
-    wsLog("info", "WS: " + String(wsConnected ? "OK" : "Down"));
-    wsLog("info", "Paired: " + String(isPaired ? "Yes" : pairingCode));
-    wsLog("info", "Money: " + String(totalPesos) + " PHP");
-    wsLog("info", "Temp: " + String(currentTemperature) + "C, Humidity: " + String(currentHumidity) + "%");
-    wsLog("info", "Stepper1: " + String(currentStepper1Position / 10.0) + "mm" + (stepper1Moving ? " (moving)" : ""));
-    wsLog("info", "Stepper2: " + String(currentStepper2Position / 200.0) + "mm" + (stepper2Moving ? " (moving)" : ""));
-    wsLog("info", "Heap: " + String(ESP.getFreeHeap() / 1024) + " KB (" + String(ESP.getMinFreeHeap() / 1024) + " KB min)");
+    LOG("=== STATUS ===");
+    LOG("Device:  " + deviceId);
+    LOG("WiFi:    " + String(wifiConnected ? WiFi.localIP().toString() : "Disconnected"));
+    LOG("WS:      " + String(wsConnected ? "Connected" : "Disconnected"));
+    LOG("Paired:  " + String(isPaired ? "Yes" : "No, code=" + pairingCode));
+    LOG("Money:   PHP" + String(totalPesos) + " (C:" + String(totalCoinPesos) + " B:" + String(totalBillPesos) + ")");
+    LOG("Temp:    " + String(currentTemperature, 1) + "C  Hum: " + String(currentHumidity, 1) + "%");
+    LOG("S1: " + String(currentStepper1Position) + (stepper1Moving ? " MOVING" : ""));
+    LOG("S2: " + String(currentStepper2Position) + (stepper2Moving ? " MOVING" : ""));
+    LOG("Heap:    " + String(ESP.getFreeHeap() / 1024) + "KB (min " + String(ESP.getMinFreeHeap() / 1024) + "KB)");
+    LOG("CAM:     " + String(camIsReady ? "Ready" : "Not Ready") + " MAC:" + String(camMacPaired ? "Y" : "N"));
+    LOG("==============");
 
   } else if (cmd.startsWith("RELAY")) {
     if (cmd == "RELAY_ALL_OFF") {
@@ -114,15 +144,11 @@ void handleSerialCommand(String cmd) {
         delay(1);
       }
     }
+    LOG("[CMD] Servo demo done");
 
   } else if (cmd == "SERVO_STATUS") {
-    Serial.println("[Servo] Left: " + String(currentLeftPosition) +
-                   "° Right: " + String(currentRightPosition) +
-                   "° | Moving: " + String(servosMoving) +
-                   " | Target L: " + String(targetLeftPosition) +
-                   "° R: " + String(targetRightPosition) + "°");
-    Serial.println("[Servo] Attached L:" + String(servoLeft.attached()) +
-                   " R:" + String(servoRight.attached()));
+    LOG("[Servo] L:" + String(currentLeftPosition) + " R:" + String(currentRightPosition) +
+        " Moving:" + String(servosMoving));
 
   } else if (cmd.startsWith("SERVO_DIRECT_")) {
     int angle = constrain(cmd.substring(13).toInt(), 0, 180);
@@ -133,7 +159,6 @@ void handleSerialCommand(String cmd) {
     targetLeftPosition   = angle;
     targetRightPosition  = 180 - angle;
     servosMoving = false;
-    Serial.println("[Servo] DIRECT write L:" + String(angle) + "° R:" + String(180 - angle) + "°");
 
   } else if (cmd.startsWith("SERVO_")) {
     int angle = cmd.substring(6).toInt();
@@ -241,5 +266,8 @@ void handleSerialCommand(String cmd) {
     String sub = cmd.substring(4);
     if      (sub == "BROADCAST") sendPairingBroadcast();
     else if (sub == "CLASSIFY")  sendClassifyRequest();
+
+  } else {
+    LOG("[CMD] Unknown: " + cmd);
   }
 }

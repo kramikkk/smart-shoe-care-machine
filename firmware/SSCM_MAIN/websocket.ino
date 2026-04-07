@@ -1,4 +1,27 @@
-/* ===================== WEBSOCKET FUNCTIONS ===================== */
+/**
+ * ===================== WEBSOCKET FUNCTIONS =====================
+ *
+ * Manages the persistent WebSocket connection to the backend server.
+ * All real-time communication between the ESP32 and the web dashboard/kiosk
+ * flows through this channel.
+ *
+ * Inbound message types (from backend/dashboard):
+ *   status-ack           — Confirms pairing state from DB
+ *   device-update        — Dashboard paired/unpaired the device
+ *   enable-payment       — Activate coin/bill acceptors
+ *   disable-payment      — Deactivate coin/bill acceptors
+ *   relay-control         — Direct relay channel on/off
+ *   start-service        — Begin cleaning/drying/sterilizing
+ *   start-classification — Trigger shoe classification via CAM
+ *   enable-classification / disable-classification — LED + CAM control
+ *   restart-device       — Remote reboot
+ *   serial-command       — Execute serial command remotely
+ *
+ * Outbound message types (to backend):
+ *   subscribe, status-update, coin-inserted, bill-inserted,
+ *   service-status, service-complete, classification-result,
+ *   cam-paired, cam-sync-status, firmware-log
+ */
 
 // Send a log message to the backend → broadcast to kiosk browser console.
 // level: "info", "warn", "error"
@@ -20,10 +43,12 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
 
     case WStype_DISCONNECTED:
+      LOG("[WS] Disconnected");
       wsConnected = false;
       break;
 
     case WStype_CONNECTED:
+      LOG("[WS] Connected");
       wsConnected = true;
       webSocket.sendTXT("{\"type\":\"subscribe\",\"deviceId\":\"" + deviceId + "\"}");
       wsLog("info", "WS Connected (firmware v" + String(FIRMWARE_VERSION) + ")");
@@ -37,6 +62,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         if (dbPaired && !isPaired) {
           isPaired = true;
           prefs.putBool("paired", true);
+          LOG("[WS] Device paired");
         } else if (!dbPaired && isPaired) {
           isPaired = false;
           prefs.putBool("paired", false);
@@ -49,10 +75,12 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
           if (!isPaired) {
             isPaired = true;
             prefs.putBool("paired", true);
+            LOG("[WS] Paired by dashboard");
             wsLog("info", "Device paired by dashboard");
           }
         } else if (message.indexOf("\"paired\":false") != -1) {
           if (isPaired) {
+            LOG("[WS] Unpaired — restarting");
             isPaired = false;
             prefs.putBool("paired", false);
             wsLog("warn", "Device unpaired — restarting");
@@ -62,6 +90,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         }
 
       } else if (message.indexOf("\"type\":\"enable-payment\"") != -1) {
+        LOG("[Payment] Enabled");
         paymentEnabled = true;
         paymentEnableTime = millis();
         digitalWrite(RELAY_1_PIN, RELAY_ON);
@@ -69,6 +98,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         wsLog("info", "Payment system enabled");
 
       } else if (message.indexOf("\"type\":\"disable-payment\"") != -1) {
+        LOG("[Payment] Disabled");
         paymentEnabled = false;
         digitalWrite(RELAY_1_PIN, RELAY_OFF);
         relay1State = false;
@@ -146,23 +176,28 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         }
 
       } else if (message.indexOf("\"type\":\"start-classification\"") != -1) {
+        LOG("[WS] Classification requested");
         if (camIsReady && camMacPaired) {
           sendClassifyRequest();
         } else {
+          LOG("[WS] CAM not ready");
           relayClassificationErrorToBackend("CAM_NOT_READY");
         }
 
       } else if (message.indexOf("\"type\":\"enable-classification\"") != -1) {
+        LOG("[WS] Classification LED ON");
         rgbWhite();
         classificationLedOn = true;
         sendLedControl(CAM_MSG_LED_ENABLE);
 
       } else if (message.indexOf("\"type\":\"disable-classification\"") != -1) {
+        LOG("[WS] Classification LED OFF");
         rgbOff();
         classificationLedOn = false;
         sendLedControl(CAM_MSG_LED_DISABLE);
 
       } else if (message.indexOf("\"type\":\"restart-device\"") != -1) {
+        LOG("[WS] Restart command received");
         delay(2000);
         ESP.restart();
 
@@ -185,6 +220,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     }
 
     case WStype_ERROR:
+      LOG("[WS] Error");
       wsConnected = false;
       break;
   }
@@ -198,6 +234,7 @@ void connectWebSocket() {
     wsPath += "&groupToken=" + groupToken;
   }
 
+  LOG("[WS] Connecting to " + String(BACKEND_HOST));
 #if USE_LOCAL_BACKEND
   webSocket.begin(BACKEND_HOST, BACKEND_PORT, wsPath);
 #else
@@ -206,8 +243,6 @@ void connectWebSocket() {
 
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(WS_RECONNECT_INTERVAL);
-  // Heartbeat: ping every 15s to keep Render's proxy from killing idle SSL connections.
-  // Without this, Render drops silently (no WStype_ERROR, just WStype_DISCONNECTED).
   webSocket.enableHeartbeat(15000, 3000, 2);
   wsInitialized = true;
 }

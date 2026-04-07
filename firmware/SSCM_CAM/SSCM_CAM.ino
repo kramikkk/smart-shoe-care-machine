@@ -1,13 +1,27 @@
 #define FIRMWARE_VERSION "1.0.3"
 #define BOARD_NAME "SSCM-CAM"
 
-/*
- * SSCM CAM Firmware — Gemini HTTP Classification Edition
+// Set to 0 to disable Serial logging in production builds
+#define SSCM_DEBUG 1
+#if SSCM_DEBUG
+  #define LOG(msg) Serial.println(msg)
+#else
+  #define LOG(msg)
+#endif
+
+/**
+ * ===================== SSCM-CAM FIRMWARE =====================
  *
- * Replaces Edge Impulse local inference wi//th HTTP POST to backend.
- * CAM captures a JPEG and POSTs it to /api/device/[mainId]/classify.
- * Backend calls Gemini and broadcasts the result via WebSocket.
- * CAM ACKs the main board with CAM_STATUS_API_HANDLED (6) via ESP-NOW.
+ * Gemini HTTP Classification Edition
+ * 
+ * Replaces Edge Impulse local inference with HTTP POST to backend.
+ * Architecture flow:
+ *   1. MAIN sends ESP-NOW trigger to CAM.
+ *   2. CAM captures a JPEG frame.
+ *   3. CAM POSTs JPEG to backend (`/api/device/[mainId]/classify`).
+ *   4. Backend queries Gemini API, updates database.
+ *   5. Backend broadcasts result to Dashboard and MAIN via WebSocket.
+ *   6. CAM ACKs MAIN with CAM_STATUS_API_HANDLED (6) via ESP-NOW.
  */
 
 #include "esp_camera.h"
@@ -228,6 +242,7 @@ void sendPairingAck(uint8_t *targetMac) {
 /* ===================== ESP-NOW SEND CALLBACK ===================== */
 void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
   if (status != ESP_NOW_SEND_SUCCESS) {
+    LOG("[CAM] ESP-NOW send FAILED");
   }
 }
 
@@ -255,9 +270,7 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
 
     if (mainBoardPaired) {
       bool sameBoard = (memcmp(senderMac, mainBoardMac, 6) == 0);
-      if (!sameBoard) {
-        return;
-      }
+      if (!sameBoard) return;
     }
 
     pb.groupToken[sizeof(pb.groupToken) - 1] = '\0';
@@ -290,6 +303,7 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
     memcpy(mainBoardMac, senderMac, 6);
     prefs.putBytes("mainMac", mainBoardMac, 6);
     mainBoardPaired = true;
+    LOG("[CAM] Paired to main board: " + String(pb.deviceId));
 
     String ssid = String(pb.ssid);
     String pass = String(pb.password);
@@ -330,6 +344,7 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
     } else if (classificationInProgress) {
       sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_BUSY, "", 0.0f);
     } else {
+      LOG("[CAM] Classify request received");
       classificationRequested = true;
     }
     break;
@@ -347,6 +362,7 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data,
     break;
 
   case CAM_MSG_FACTORY_RESET:
+    LOG("[CAM] Factory reset requested");
     factoryResetRequested = true;
     break;
 
@@ -462,6 +478,7 @@ void captureAndPostToBackend() {
     return;
   }
 
+  // Drain buffered frames so we capture a fresh one
   // Drain all buffered frames (fb_count=2) so we capture a truly fresh frame
   for (int i = 0; i < 3; i++) {
     camera_fb_t *stale = esp_camera_fb_get();
@@ -474,9 +491,11 @@ void captureAndPostToBackend() {
   // Capture the actual frame
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
+    LOG("[CAM] Frame capture failed");
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_ERROR, "", 0.0f);
     return;
   }
+  LOG("[CAM] Frame captured (" + String(fb->len) + " bytes)");
 
   // Read backend connection info from prefs
   String wsHost = prefs.getString("wsHost", "");
@@ -485,6 +504,7 @@ void captureAndPostToBackend() {
   String token = storedGroupToken;
 
   if (wsHost.isEmpty() || mainId.isEmpty() || token.isEmpty()) {
+    LOG("[CAM] Missing backend config");
     esp_camera_fb_return(fb);
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_ERROR, "", 0.0f);
     return;
@@ -514,8 +534,10 @@ void captureAndPostToBackend() {
 
   // ACK the main board: API_HANDLED only on HTTP 2xx, ERROR otherwise
   if (httpCode >= 200 && httpCode < 300) {
+    LOG("[CAM] POST OK (" + String(httpCode) + ")");
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_API_HANDLED, "", 0.0f);
   } else {
+    LOG("[CAM] POST failed (" + String(httpCode) + ")");
     sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_ERROR, "", 0.0f);
   }
 }
@@ -628,12 +650,14 @@ void setupOTA() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
+  LOG("[CAM] Booting " FIRMWARE_VERSION);
 
   prefs.begin("cam", false);
 
   // Factory reset via BOOT button (GPIO0) held at power-on for 3s
   pinMode(0, INPUT_PULLUP);
   if (digitalRead(0) == LOW) {
+    LOG("[CAM] Hold detected — factory reset in 3s...");
     delay(3000);
     if (digitalRead(0) == LOW) {
       factoryReset();
@@ -641,6 +665,7 @@ void setup() {
   }
 
   camOwnDeviceId = generateCamOwnDeviceId();
+  LOG("[CAM] Device: " + camOwnDeviceId);
 
   size_t macLen = prefs.getBytes("mainMac", mainBoardMac, 6);
   bool macValid = (macLen == 6 &&
@@ -653,13 +678,13 @@ void setup() {
 
   if (macValid) {
     mainBoardPaired = true;
+    LOG("[CAM] Paired to: " + prefs.getString("mainId", "?"));
   } else {
     memset(mainBoardMac, 0xFF, 6); // broadcast
+    LOG("[CAM] Not paired — waiting for pairing broadcast");
   }
 
   storedGroupToken = prefs.getString("groupToken", "");
-  if (storedGroupToken.length() > 0) {
-  }
 
   WiFi.onEvent(onWiFiConnected, ARDUINO_EVENT_WIFI_STA_CONNECTED);
   WiFi.onEvent(onWiFiGotIP, ARDUINO_EVENT_WIFI_STA_GOT_IP);
@@ -669,9 +694,11 @@ void setup() {
   delay(200);
 
   if (esp_now_init() != ESP_OK) {
+    LOG("[CAM] ESP-NOW init FAILED");
   } else {
     esp_now_register_send_cb(onDataSent);
     esp_now_register_recv_cb(onDataRecv);
+    LOG("[CAM] ESP-NOW ready");
   }
 
   if (mainBoardPaired) {
@@ -686,14 +713,20 @@ void setup() {
   String ssid = prefs.getString("ssid", "");
   String pass = prefs.getString("pass", "");
   if (ssid.length() > 0) {
+    LOG("[CAM] Connecting to WiFi: " + ssid);
     WiFi.begin(ssid.c_str(), pass.c_str());
     wifiConnectStartMs = millis();
   } else {
+    LOG("[CAM] No WiFi creds stored");
   }
 
   if (!camera_init()) {
+    LOG("[CAM] Camera init FAILED");
   } else {
+    LOG("[CAM] Camera ready");
   }
+
+  LOG("[CAM] Setup complete");
 }
 
 /* ===================== LOOP ===================== */
@@ -706,6 +739,7 @@ void loop() {
   if (WiFi.status() == WL_CONNECTED && !otaInitialized) {
     setupOTA();
     otaInitialized = true;
+    LOG("[CAM] OTA ready — IP: " + WiFi.localIP().toString());
   }
 
   // --- WiFi reconnect (deferred from event handler to avoid calling
@@ -728,6 +762,7 @@ void loop() {
   // --- Start HTTP server when WiFi first connects ---
   if (wifiConnected && !httpServerStarted) {
     setupHTTPServer();
+    LOG("[CAM] HTTP server started — http://" + camIp);
   }
 
   // --- Send pending PairingAck ---
@@ -736,10 +771,9 @@ void loop() {
     bool timedOut = (millis() - pairingTime) >= PAIRING_ACK_TIMEOUT_MS;
 
     if (wifiReady || timedOut) {
-      if (timedOut && !wifiReady) {
-      }
       sendPairingAck(mainBoardMac);
       pairingAckPending = false;
+      LOG("[CAM] Pairing ACK sent (IP: " + (camIp.length() ? camIp : "none") + ")");
     }
   }
 
@@ -773,13 +807,21 @@ void loop() {
 
     if (cmd == "CLASSIFY" || cmd == "TEST") {
       if (!is_initialised) {
+        LOG("[CAM] Camera not ready");
       } else if (classificationInProgress) {
+        LOG("[CAM] Classification already in progress");
       } else {
+        LOG("[CAM] Manual classify triggered");
         classificationInProgress = true;
         captureAndPostToBackend();
         classificationInProgress = false;
       }
     } else if (cmd == "STATUS") {
+      LOG("[CAM] Device:  " + camOwnDeviceId);
+      LOG("[CAM] Paired:  " + String(mainBoardPaired ? prefs.getString("mainId", "?") : "no"));
+      LOG("[CAM] WiFi:    " + String(wifiConnected ? WiFi.localIP().toString() : "disconnected"));
+      LOG("[CAM] Camera:  " + String(is_initialised ? "ready" : "not ready"));
+      LOG("[CAM] Heap:    " + String(ESP.getFreeHeap() / 1024) + " KB");
     } else if (cmd == "UNPAIR") {
       prefs.remove("mainMac");
       prefs.remove("groupToken");

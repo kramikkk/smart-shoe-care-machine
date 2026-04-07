@@ -1,8 +1,22 @@
-/* ===================== ESP-NOW FUNCTIONS ===================== */
+/**
+ * ===================== ESP-NOW FUNCTIONS =====================
+ *
+ * Handles bidirectional communication between SSCM-MAIN and SSCM-CAM boards
+ * using ESP-NOW (Espressif's proprietary low-latency protocol, <1ms, 250 bytes).
+ *
+ * Key functions:
+ *   initESPNow()            — Register callbacks, load stored CAM MAC, add peer
+ *   sendPairingBroadcast()  — Broadcast WiFi creds + backend info to any CAM
+ *   sendClassifyRequest()   — Tell CAM to capture + classify via Gemini API
+ *   sendLedControl()        — Turn classification LED on/off on CAM
+ *
+ * Threading model:
+ *   onDataRecv() runs on the WiFi task (core 0). It MUST NOT call
+ *   webSocket.sendTXT() (deadlock). Instead, it enqueues actions into
+ *   espNowQueue[], which loop() dequeues safely on core 1.
+ */
 
 // Enqueue a deferred ESP-NOW action (call from onDataRecv only).
-// webSocket.sendTXT() cannot be called from the ESP-NOW callback (core 0) —
-// doing so risks a deadlock. Entries are dispatched in loop() on core 1.
 static void espNowEnqueue(EspNowPending action, const char *shoeType = "",
                           float confidence = 0.0f, const char *errorCode = "") {
   portENTER_CRITICAL(&espNowMux);
@@ -62,6 +76,7 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
 
     camIsReady = true;
     lastCamHeartbeat = millis();
+    LOG("[ESP-NOW] CAM paired: " + pairedCamDeviceId);
     espNowEnqueue(ESPNOW_CAM_PAIRED);
     return;
   }
@@ -78,6 +93,7 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
 
     switch (msg.status) {
       case CAM_STATUS_OK:
+        LOG("[ESP-NOW] Classification: " + String(msg.shoeType));
         espNowEnqueue(ESPNOW_CLASSIFY_OK, msg.shoeType, msg.confidence);
         break;
       case CAM_STATUS_LOW_CONFIDENCE:
@@ -115,7 +131,10 @@ void onDataRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
 void initESPNow() {
   if (espNowInitialized) return;
 
-  if (esp_now_init() != ESP_OK) return;
+  if (esp_now_init() != ESP_OK) {
+    LOG("[ESP-NOW] Init failed");
+    return;
+  }
 
   esp_now_register_send_cb(onDataSent);
   esp_now_register_recv_cb(onDataRecv);
@@ -139,9 +158,13 @@ void initESPNow() {
   peer.channel = 0;
   peer.encrypt = false;
 
-  if (esp_now_add_peer(&peer) != ESP_OK) return;
+  if (esp_now_add_peer(&peer) != ESP_OK) {
+    LOG("[ESP-NOW] Add peer failed");
+    return;
+  }
 
   espNowInitialized = true;
+  LOG("[ESP-NOW] Initialized");
 }
 
 // Broadcast pairing info to CAM (retries until PairingAck received)
@@ -167,11 +190,15 @@ void sendPairingBroadcast() {
 
   pairingBroadcastStarted = true;
   lastPairingBroadcastTime = millis();
+  LOG("[ESP-NOW] Pairing broadcast sent");
 }
 
 // Send classify request to CAM via ESP-NOW
 void sendClassifyRequest() {
-  if (!espNowInitialized || !camMacPaired) return;
+  if (!espNowInitialized || !camMacPaired) {
+    LOG("[ESP-NOW] CAM not paired");
+    return;
+  }
 
   CamMessage msg;
   memset(&msg, 0, sizeof(msg));
@@ -181,6 +208,7 @@ void sendClassifyRequest() {
   esp_now_send(camMacAddress, (uint8_t *)&msg, sizeof(msg));
   classificationPending = true;
   classificationRequestTime = millis();
+  LOG("[ESP-NOW] Classify request sent");
   wsLog("info", "Classification request sent to CAM via ESP-NOW");
 }
 

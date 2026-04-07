@@ -1,4 +1,15 @@
-/* ===================== PAIRING & DEVICE IDENTITY ===================== */
+/**
+ * ===================== PAIRING & DEVICE IDENTITY =====================
+ *
+ * Manages the unique identity and pairing lifecycle of the machine.
+ *
+ * Device ID: Generated from the ESP32's baked-in MAC address (e.g., SSCM-A1B2C3)
+ * Group Token: Random 8-character hex string linking MAIN + CAM + Backend
+ * Pairing Code: 6-digit random code shown on the dashboard for initial link
+ *
+ * sendDeviceRegistration() is called upon WiFi connection to ensure the
+ * backend database knows this specific MAC address exists.
+ */
 
 String generateGroupToken() {
   uint32_t r1 = esp_random();
@@ -17,7 +28,6 @@ String generatePairingCode() {
 }
 
 String generateDeviceId() {
-  // Use lower 3 bytes of EfuseMac — device-specific (not OUI) part of the MAC
   uint64_t chipid = ESP.getEfuseMac();
   char id[12];
   snprintf(id, sizeof(id), "SSCM-%02X%02X%02X",
@@ -37,14 +47,10 @@ void sendDeviceRegistration() {
   http.begin(url);
 #else
   WiFiClientSecure secureClient;
-  // Note: setInsecure() skips TLS cert verification.
-  // Replace with setCACert() for stricter security in production.
   secureClient.setInsecure();
   http.begin(secureClient, url);
 #endif
 
-  // Hard timeouts: Render free-tier cold starts can take 10-30s.
-  // Without these, the OS TCP timeout (60s) blocks loop() completely.
   http.setConnectTimeout(10000);
   http.setTimeout(10000);
   http.addHeader("Content-Type", "application/json");
@@ -55,6 +61,8 @@ void sendDeviceRegistration() {
   payload += "\"firmwareVersion\":\"" + String(FIRMWARE_VERSION) + "\"";
   payload += "}";
 
-  http.POST(payload);
+  int httpCode = http.POST(payload);
   http.end();
+
+  LOG("[Registration] HTTP " + String(httpCode));
 }

@@ -1,19 +1,51 @@
 #define FIRMWARE_VERSION "1.0.3"
 #define BOARD_NAME "SSCM-MAIN"
 
-/*
- * Smart Shoe Care Machine - WiFi & Pairing with WebSocket
- * Firmware with WiFi configuration and real-time device pairing via WebSocket
+// Set to 0 to disable Serial logging in production builds
+#define SSCM_DEBUG 1
+#if SSCM_DEBUG
+  #define LOG(msg) Serial.println(msg)
+#else
+  #define LOG(msg)
+#endif
+
+/**
+ * =============================================================================
+ * Smart Shoe Care Machine — Main Controller Firmware (ESP32-S3)
+ * =============================================================================
+ *
+ * Architecture:
+ *   This is a multi-file Arduino sketch. The main .ino file contains global
+ *   state, constants, setup(), and loop(). Peripheral logic is split into
+ *   companion .ino files (motors, sensors, relays, etc.) which share this
+ *   file's global scope via the Arduino build system.
+ *
+ * Communication:
+ *   - WiFi + WebSocket → Backend server (pairing, commands, telemetry)
+ *   - ESP-NOW → SSCM-CAM board (classification, heartbeat, LED control)
+ *   - Serial → Debug console & manual commands
+ *
+ * Services:
+ *   The machine offers three shoe care services:
+ *     1. Cleaning — Motorized brush + foam dispenser + linear slide
+ *     2. Drying   — PTC heater + blower with closed-loop temp control
+ *     3. Sterilizing — UV-C light + ultrasonic atomizer mist
  *
  * Required Libraries:
- * - WiFi (built-in with ESP32)
- * - HTTPClient (built-in with ESP32)
- * - Preferences (built-in with ESP32)
- * - WebSocketsClient (by Markus Sattler) - Install via Library Manager
- * - DHT sensor library (by Adafruit) - Install via Library Manager
- * - Adafruit Unified Sensor - Install via Library Manager
- * - ESP32Servo (by Kevin Harrington) - Install via Library Manager
- * - Adafruit NeoPixel (by Adafruit) - Install via Library Manager
+ *   - WiFi, HTTPClient, Preferences (built-in ESP32)
+ *   - WebSocketsClient (Markus Sattler)  — Install via Library Manager
+ *   - DHT sensor library (Adafruit)      — Install via Library Manager
+ *   - Adafruit Unified Sensor            — Install via Library Manager
+ *   - ESP32Servo (Kevin Harrington)      — Install via Library Manager
+ *   - Adafruit NeoPixel (Adafruit)       — Install via Library Manager
+ *
+ * Build Notes:
+ *   - Board: ESP32S3 Dev Module (or LOLIN S3 Pro)
+ *   - Partition: Default 4MB or larger
+ *   - Set SSCM_DEBUG to 0 for production (strips all Serial output)
+ *   - Set USE_LOCAL_BACKEND to 1 for local dev server
+ *   - Lint warnings "Unable to handle compilation" are expected —
+ *     the Arduino IDE compiles all .ino files as one translation unit.
  */
 
 #include "html_pages.h"
@@ -29,19 +61,21 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 
-/* ===================== WIFI ===================== */
+/* ===================== WIFI STATE ===================== */
+// NVS (Non-Volatile Storage) for persisting WiFi creds, pairing, and totals
 Preferences prefs;
 
+// Captive portal HTTP server for initial WiFi setup (SoftAP mode)
 WiFiServer wifiServer(80);
 bool wifiConnected = false;
-unsigned long wifiRetryDelay = 5000;
+unsigned long wifiRetryDelay = 5000;     // Exponential backoff delay (doubles up to 30s)
 unsigned long wifiRetryStart = 0;
 bool softAPStarted = false;
-unsigned long wifiStartTime = 0;
+unsigned long wifiStartTime = 0;         // Timestamp of last WiFi.begin() call
 unsigned long lastWiFiRetry = 0;
 
-#define WIFI_TIMEOUT 60000
-#define WIFI_RETRY_INTERVAL 5000
+#define WIFI_TIMEOUT 60000               // Max time before falling back to SoftAP
+#define WIFI_RETRY_INTERVAL 5000         // Interval between WiFi status checks
 
 /* ===================== WEBSOCKET ===================== */
 WebSocketsClient webSocket;
@@ -53,11 +87,13 @@ const unsigned long WS_RECONNECT_INTERVAL = 5000;
 unsigned long lastStatusUpdate = 0;
 const unsigned long STATUS_UPDATE_INTERVAL = 5000;
 
-/* ===================== ESP-NOW - ESP32-CAM COMMUNICATION ===================== */
-// Hybrid communication: ESP-NOW for classification (fast, offline-capable),
-// WiFi/WebSocket optional on CAM for HTTP streaming only.
+/* ===================== ESP-NOW — ESP32-CAM COMMUNICATION ===================== */
+// Hybrid architecture:
+//   ESP-NOW (250-byte packets, <1ms latency) for classification + heartbeat.
+//   WiFi on CAM is optional — used only for HTTP MJPEG streaming.
+//   All struct layouts MUST match SSCM_CAM.ino exactly (byte-level ABI).
 
-// ---- Shared structs — must match EI_SHOE_CLASSIFICATION.ino exactly ----
+// ---- Shared structs — must match SSCM_CAM.ino exactly ----
 
 typedef struct {
   uint8_t type;
@@ -110,16 +146,17 @@ unsigned long lastCamHeartbeat = 0;
 unsigned long lastCamPing = 0;
 #define CAM_PING_INTERVAL 30000
 
-// ---- Deferred ESP-NOW dispatch ----
-// ESP-NOW recv callback runs in the WiFi task (core 0) — calling
-// webSocket.sendTXT() from it can deadlock. We enqueue here and dispatch in
-// loop() (core 1).
+// ---- Deferred ESP-NOW dispatch (cross-core producer–consumer queue) ----
+// Problem: ESP-NOW recv runs on WiFi task (core 0). Calling webSocket.sendTXT()
+//   from core 0 deadlocks because the WS library holds a mutex owned by core 1.
+// Solution: onDataRecv() enqueues actions here; loop() on core 1 dequeues and
+//   dispatches them safely.
 enum EspNowPending : uint8_t {
   ESPNOW_NONE = 0,
-  ESPNOW_CLASSIFY_OK = 1,
-  ESPNOW_CLASSIFY_ERROR = 2,
-  ESPNOW_CAM_PAIRED = 3,
-  ESPNOW_API_HANDLED = 4
+  ESPNOW_CLASSIFY_OK = 1,     // CAM returned a valid shoe type
+  ESPNOW_CLASSIFY_ERROR = 2,  // CAM returned an error status
+  ESPNOW_CAM_PAIRED = 3,      // CAM accepted our pairing broadcast
+  ESPNOW_API_HANDLED = 4      // CAM POSTed to Gemini; backend broadcasts result
 };
 #define ESPNOW_QUEUE_SIZE 4
 struct EspNowEntry {
@@ -128,9 +165,9 @@ struct EspNowEntry {
   float confidence;
   char errorCode[32];
 };
-static EspNowEntry espNowQueue[ESPNOW_QUEUE_SIZE];
-static uint8_t espNowQueueHead = 0;
-static uint8_t espNowQueueTail = 0;
+static EspNowEntry espNowQueue[ESPNOW_QUEUE_SIZE];  // Lock-free ring buffer
+static uint8_t espNowQueueHead = 0;                 // Consumer index (loop)
+static uint8_t espNowQueueTail = 0;                 // Producer index (onDataRecv)
 static portMUX_TYPE espNowMux = portMUX_INITIALIZER_UNLOCKED;
 
 // Pairing broadcast retry
@@ -156,15 +193,18 @@ String lastClassificationResult = "";
 float lastClassificationConfidence = 0.0;
 bool classificationLedOn = false;
 
-/* ===================== COIN SLOT ===================== */
+/* ===================== COIN SLOT (pulse-counting) ===================== */
+// Coin acceptor outputs N falling-edge pulses per coin (1 pulse = PHP 1).
+// ISR counts pulses; loop() processes them after COIN_COMPLETE_TIMEOUT.
 #define COIN_SLOT_PIN 5
 volatile unsigned long lastCoinPulseTime = 0;
 volatile unsigned int currentCoinPulses = 0;
 unsigned int totalCoinPesos = 0;
-const unsigned long COIN_PULSE_DEBOUNCE_TIME = 100;
-const unsigned long COIN_COMPLETE_TIMEOUT = 500;
+const unsigned long COIN_PULSE_DEBOUNCE_TIME = 100;  // Reject bounces <100ms
+const unsigned long COIN_COMPLETE_TIMEOUT = 500;     // No more pulses → coin done
 
-/* ===================== BILL ACCEPTOR ===================== */
+/* ===================== BILL ACCEPTOR (pulse-counting) ===================== */
+// Bill acceptor: 1 pulse = PHP 10. Same ISR pattern as coin slot.
 #define BILL_PULSE_PIN 4
 volatile unsigned long lastBillPulseTime = 0;
 volatile unsigned int currentBillPulses = 0;
@@ -174,25 +214,27 @@ const unsigned long BILL_PULSE_DEBOUNCE_TIME = 100;
 const unsigned long BILL_COMPLETE_TIMEOUT = 500;
 
 /* ===================== PAYMENT CONTROL ===================== */
+// Payment hardware is gated: acceptors only count when paymentEnabled == true.
+// After enabling, a 3s stabilization delay prevents EMI-induced phantom pulses.
 volatile bool paymentEnabled = false;
-bool totalsDirty = false;
+bool totalsDirty = false;          // True when RAM totals diverge from NVS
 unsigned long lastTotalsSave = 0;
-#define TOTALS_SAVE_INTERVAL 30000
+#define TOTALS_SAVE_INTERVAL 30000 // Batch NVS writes to avoid flash wear
 volatile unsigned long paymentEnableTime = 0;
 const unsigned long PAYMENT_STABILIZATION_DELAY = 3000;
 static portMUX_TYPE paymentMux = portMUX_INITIALIZER_UNLOCKED;
 
-/* ===================== 8-CHANNEL RELAY ===================== */
-#define RELAY_1_PIN  3  // Bill + Coin (combined power for both acceptors)
-#define RELAY_2_PIN  8  // Bottom Exhaust
-#define RELAY_3_PIN  18 // Centrifugal Blower Fan
-#define RELAY_4_PIN  17 // Left PTC Ceramic Heater
-#define RELAY_5_PIN  16 // Diaphragm Pump
-#define RELAY_6_PIN  15 // Right PTC Ceramic Heater
-#define RELAY_7_PIN  7  // Ultrasonic Mist Maker + Mist Fan
-#define RELAY_8_PIN  6  // UVC Light
+/* ===================== 8-CHANNEL RELAY MODULE ===================== */
+// Active-HIGH relay board. Each channel powers a specific load:
+#define RELAY_1_PIN  3  // CH1: Bill + Coin acceptor power
+#define RELAY_2_PIN  8  // CH2: Bottom exhaust fan (purge / over-temp cooling)
+#define RELAY_3_PIN  18 // CH3: Centrifugal blower fan (drying airflow)
+#define RELAY_4_PIN  17 // CH4: Left PTC ceramic heater
+#define RELAY_5_PIN  16 // CH5: Diaphragm foam pump (cleaning)
+#define RELAY_6_PIN  15 // CH6: Right PTC ceramic heater
+#define RELAY_7_PIN  7  // CH7: Ultrasonic mist maker + mist fan (sterilizing)
+#define RELAY_8_PIN  6  // CH8: UV-C germicidal light (sterilizing)
 
-// Active HIGH relay module
 #define RELAY_ON  HIGH
 #define RELAY_OFF LOW
 
@@ -224,25 +266,33 @@ String purgeCareType = "";
 const unsigned long PURGE_DURATION_MS = 15000;
 
 /* ===================== DRYING TEMPERATURE CONTROL ===================== */
-// Target range: 35–40°C — hysteresis band to prevent relay chatter
-const float DRYING_TEMP_LOW  = 35.0;
-const float DRYING_TEMP_HIGH = 40.0;
+// Closed-loop hysteresis: heater ON below 35°C, OFF above 40°C.
+// Prevents relay chatter that would occur with a single threshold.
+const float DRYING_TEMP_LOW  = 35.0;  // Heater turns ON below this
+const float DRYING_TEMP_HIGH = 40.0;  // Heater turns OFF above this
 bool dryingHeaterOn = false;
-bool dryingExhaustOn = false;
+bool dryingExhaustOn = false;          // Exhaust fan activates when heater OFF
 
-/* ===================== CLEANING SERVICE STATE ===================== */
-// Phase 0: idle | 1: top linear → 480mm | 2: top linear 480→0
-// Phase 3: top linear 0→480 | 4: brush CW | 5: brush CCW | 6: coast transition
-const long CLEANING_MAX_POSITION = 4800; // 480mm * 10 steps/mm
+/* ===================== CLEANING SERVICE STATE MACHINE ===================== */
+// The cleaning service runs a multi-phase sequence:
+//   Phase 0: Idle
+//   Phase 1: Top linear slide extends to max (foam dispensing position)
+//   Phase 2: Top linear slide retracts to 0 (spreading foam)
+//   Phase 3: Top linear slide extends back to max (positioning for brush)
+//   Phase 4: Brush motors CW (forward scrub)
+//   Phase 5: Brush motors CCW (reverse scrub)
+//   Phase 6: Coast transition (motors off briefly between CW↔CCW)
+// Brush cycles repeat BRUSH_TOTAL_CYCLES times, then service completes.
+const long CLEANING_MAX_POSITION = 4800; // 480mm × 10 steps/mm
 int cleaningPhase = 0;
 
-const unsigned long BRUSH_DURATION_MS  = 30000;
-const unsigned long BRUSH_COAST_MS     = 500;
-const int BRUSH_TOTAL_CYCLES           = 10;
-const int BRUSH_MOTOR_SPEED            = 255;
+const unsigned long BRUSH_DURATION_MS  = 30000;  // Duration of each CW or CCW phase
+const unsigned long BRUSH_COAST_MS     = 500;    // Pause between direction changes
+const int BRUSH_TOTAL_CYCLES           = 10;     // Number of full CW+CCW cycles
+const int BRUSH_MOTOR_SPEED            = 255;    // Full speed (8-bit PWM)
 int brushCurrentCycle = 0;
 unsigned long brushPhaseStartTime = 0;
-int brushNextPhase = 0;
+int brushNextPhase = 0;                          // Which phase to enter after coast
 
 /* ===================== DHT22 TEMPERATURE & HUMIDITY SENSOR ===================== */
 #define DHT_PIN  9
@@ -314,35 +364,38 @@ const int MOTOR_PWM_RESOLUTION = 8;
 int currentLeftMotorSpeed  = 0;
 int currentRightMotorSpeed = 0;
 
-/* ===================== TB6600 STEPPER 1 — TOP LINEAR ===================== */
+/* ===================== TB6600 STEPPER 1 — TOP LINEAR SLIDE ===================== */
+// Drives the top linear rail (foam dispenser carriage). NEMA11 + TB6600 driver.
+// Position is persisted in NVS to survive power cycles.
 #define STEPPER1_STEP_PIN 36
 #define STEPPER1_DIR_PIN  35
 
-const int STEPPER1_STEPS_PER_REV  = 200;
+const int STEPPER1_STEPS_PER_REV  = 200;   // 1.8° per step (full-step mode)
 const int STEPPER1_MICROSTEPS     = 1;
-const int STEPPER1_STEPS_PER_MM   = 10;
-const int STEPPER1_MAX_SPEED      = 800;
-const unsigned long STEPPER1_MIN_PULSE_WIDTH = 2;
+const int STEPPER1_STEPS_PER_MM   = 10;    // Lead screw pitch = 0.1mm/step
+const int STEPPER1_MAX_SPEED      = 800;   // steps/sec max
+const unsigned long STEPPER1_MIN_PULSE_WIDTH = 2; // µs
 
-long currentStepper1Position = 0;
+long currentStepper1Position = 0;          // Loaded from NVS at boot
 long targetStepper1Position  = 0;
 int  stepper1Speed = 800;
 bool stepper1Moving = false;
 unsigned long lastStepper1Update = 0;
-unsigned long stepper1StepInterval = 1250;
+unsigned long stepper1StepInterval = 1250; // µs between steps (= 1e6 / speed)
 
-/* ===================== TB6600 STEPPER 2 — SIDE LINEAR ===================== */
+/* ===================== TB6600 STEPPER 2 — SIDE LINEAR SLIDE ===================== */
+// Drives the side linear rail (shoe holder / conveyor). Mini rail + TB6600.
 #define STEPPER2_STEP_PIN 37
 #define STEPPER2_DIR_PIN  38
 
 const int STEPPER2_STEPS_PER_REV  = 200;
 const int STEPPER2_MICROSTEPS     = 1;
-const int STEPPER2_STEPS_PER_MM   = 200;
-const int STEPPER2_MAX_SPEED      = 24000;
-const long STEPPER2_MAX_POSITION  = 20000;
+const int STEPPER2_STEPS_PER_MM   = 200;   // Higher resolution lead screw
+const int STEPPER2_MAX_SPEED      = 24000; // Faster rail, finer pitch
+const long STEPPER2_MAX_POSITION  = 20000; // Software endstop (100mm)
 const unsigned long STEPPER2_MIN_PULSE_WIDTH = 2;
 
-long currentStepper2Position = 0;
+long currentStepper2Position = 0;          // Loaded from NVS at boot
 long targetStepper2Position  = 0;
 int  stepper2Speed = 1500;
 bool stepper2Moving = false;
@@ -393,8 +446,8 @@ bool otaInitialized = false;
 /* ===================== SETUP ===================== */
 void setup() {
   Serial.begin(115200);
-  delay(500);
-  Serial.println("[SSCM] Booting " FIRMWARE_VERSION);
+  delay(1000);
+  LOG("[Setup] Booting Firmware Version: " FIRMWARE_VERSION);
 
   prefs.begin("sscm", false);
 
@@ -404,7 +457,7 @@ void setup() {
   // Factory reset via BOOT button (GPIO0) held at power-on for 3s
   pinMode(0, INPUT_PULLUP);
   if (digitalRead(0) == LOW) {
-    Serial.println("[SSCM] Hold detected — factory reset in 3s...");
+    LOG("[Setup] Hold detected — factory reset in 3s...");
     delay(3000);
     if (digitalRead(0) == LOW) {
       factoryReset();
@@ -413,6 +466,7 @@ void setup() {
 
   // DHT sensor
   dht.begin();
+  LOG("[Setup] DHT Temperature Sensor OK");
 
   // Ultrasonic sensors
   pinMode(ATOMIZER_TRIG_PIN, OUTPUT);
@@ -421,6 +475,7 @@ void setup() {
   pinMode(FOAM_TRIG_PIN, OUTPUT);
   pinMode(FOAM_ECHO_PIN, INPUT);
   digitalWrite(FOAM_TRIG_PIN, LOW);
+  LOG("[Setup] Ultrasonic Sensor OK");
 
   // Servo motors
   servoLeft.attach(SERVO_LEFT_PIN);
@@ -431,6 +486,7 @@ void setup() {
   currentRightPosition = 180;
   targetLeftPosition   = 0;
   targetRightPosition  = 180;
+  LOG("[Setup] Servos OK");
 
   // DC motor drivers — set LOW before PWM attach to prevent spin at boot
   pinMode(MOTOR_LEFT_IN1_PIN,  OUTPUT);
@@ -454,7 +510,7 @@ void setup() {
   ledcAttachPin(MOTOR_RIGHT_IN2_PIN, MOTOR_RIGHT_IN2_CH);
   ledcWrite(MOTOR_RIGHT_IN2_CH, 0);
   motorsCoast();
-  Serial.println("[SSCM] Motors OK");
+  LOG("[Setup] Motors OK");
 
   // Stepper 1 — top linear
   pinMode(STEPPER1_STEP_PIN, OUTPUT);
@@ -472,18 +528,20 @@ void setup() {
 
   // Move to boot positions if needed
   if (currentStepper1Position != CLEANING_MAX_POSITION) {
+    LOG("[Setup] Top linear stepper not at home (" + String(currentStepper1Position) + ") — moving");
     stepper1MoveTo(CLEANING_MAX_POSITION);
   }
   if (currentStepper2Position != 0) {
+    LOG("[Setup] side linear steppers not at home (" + String(currentStepper2Position) + ") — moving");
     stepper2MoveTo(0);
   }
-  Serial.println("[SSCM] Steppers OK");
+  LOG("[SSCM] Top and Side Linear Steppers OK");
 
   // NeoPixel LED strip
   strip.begin();
   strip.setBrightness(100);
   strip.show();
-  Serial.println("[SSCM] NeoPixel OK");
+  LOG("[SSCM] RGB LED Strip OK");
 
   // 8-channel relay
   pinMode(RELAY_1_PIN, OUTPUT);
@@ -495,6 +553,7 @@ void setup() {
   pinMode(RELAY_7_PIN, OUTPUT);
   pinMode(RELAY_8_PIN, OUTPUT);
   allRelaysOff();
+  LOG("[SSCM] Relays 1-8 OK");
 
   // Brief stabilization delay — prevents brownout from combined inrush current
   delay(200);
@@ -504,7 +563,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(COIN_SLOT_PIN), handleCoinPulse, FALLING);
   pinMode(BILL_PULSE_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(BILL_PULSE_PIN), handleBillPulse, FALLING);
-  Serial.println("[SSCM] Relays + interrupts OK");
+  LOG("[SSCM] Coin and Bill interrupts OK");
 
   // Load totals from NVS
   totalCoinPesos = prefs.getUInt("totalCoinPesos", 0);
@@ -531,29 +590,38 @@ void setup() {
     pairingCode = generatePairingCode();
   }
 
-  Serial.println("[SSCM] Device: " + deviceId);
-  Serial.println("[SSCM] Paired: " + String(isPaired ? "yes" : "no, code=" + pairingCode));
+  LOG("[SSCM] Device: " + deviceId);
+  LOG("[SSCM] Paired: " + String(isPaired ? "yes" : "no, code=" + pairingCode));
 
   // WiFi
   String storedSSID = prefs.getString("ssid", "");
   if (storedSSID.length() == 0) {
-    Serial.println("[SSCM] No WiFi creds — SoftAP starting");
+    LOG("[SSCM] No WiFi creds — SoftAP starting");
     startSoftAP();
-    Serial.println("[SSCM] SoftAP ready");
+    LOG("[SSCM] SoftAP ready — connect to 'Smart Shoe Care Machine Setup'");
   } else {
-    Serial.println("[SSCM] WiFi creds found — connecting to: " + storedSSID);
+    LOG("[SSCM] WiFi creds found — connecting to: " + storedSSID);
     WiFi.mode(WIFI_STA);
     delay(100);
     initESPNow();
-    Serial.println("[SSCM] ESP-NOW ready");
+    LOG("[SSCM] ESP-NOW ready");
     delay(100);
     connectWiFi();
   }
 
-  Serial.println("[SSCM] Setup complete. Free heap: " + String(ESP.getFreeHeap() / 1024) + " KB");
+  LOG("[SSCM] Setup complete. Free heap: " + String(ESP.getFreeHeap() / 1024) + " KB");
 }
 
-/* ===================== LOOP ===================== */
+/* ===================== MAIN LOOP ===================== */
+// Execution order matters:
+//   1. OTA + WebSocket housekeeping
+//   2. ESP-NOW deferred dispatch (cross-core safe)
+//   3. Stepper/servo position updates (time-critical, µs-level)
+//   4. Payment pulse processing (after ISR debounce timeout)
+//   5. CAM heartbeat monitoring
+//   6. Serial command processing
+//   7. WiFi state machine (connect → retry → SoftAP fallback)
+//   8. Periodic sensor readings + service state machine
 void loop() {
   if (otaInitialized) ArduinoOTA.handle();
 
@@ -595,7 +663,9 @@ void loop() {
   updateStepper1Position();
   updateStepper2Position();
 
-  // Coin insertion processing
+  // ---- Payment pulse processing ----
+  // ISR increments currentCoinPulses/currentBillPulses on each falling edge.
+  // After COIN_COMPLETE_TIMEOUT with no new pulses, we treat the count as final.
   if (paymentEnabled && currentCoinPulses > 0) {
     if (millis() - lastCoinPulseTime >= COIN_COMPLETE_TIMEOUT) {
       portENTER_CRITICAL(&paymentMux);
@@ -606,6 +676,8 @@ void loop() {
       totalCoinPesos += coinValue;
       totalPesos = totalCoinPesos + totalBillPesos;
       totalsDirty = true;
+
+      LOG("[COIN] PHP" + String(coinValue) + " | Total: PHP" + String(totalPesos));
 
       if (isPaired && wsConnected) {
         String msg = "{\"type\":\"coin-inserted\",\"deviceId\":\"" + deviceId +
@@ -630,6 +702,8 @@ void loop() {
       totalPesos = totalCoinPesos + totalBillPesos;
       totalsDirty = true;
 
+      LOG("[BILL] PHP" + String(billValue) + " | Total: PHP" + String(totalPesos));
+
       if (isPaired && wsConnected) {
         String msg = "{\"type\":\"bill-inserted\",\"deviceId\":\"" + deviceId +
                      "\",\"billValue\":" + String(billValue) +
@@ -646,6 +720,7 @@ void loop() {
     prefs.putUInt("totalBillPesos", totalBillPesos);
     lastTotalsSave = millis();
     totalsDirty = false;
+
   }
 
   // CAM keep-alive ping
@@ -661,6 +736,7 @@ void loop() {
   if (camIsReady && (millis() - lastCamHeartbeat > CAM_HEARTBEAT_TIMEOUT)) {
     camIsReady = false;
     lastCamHeartbeat = millis();
+    LOG("[CAM] Heartbeat timeout");
   }
 
   // Pairing broadcast retry until CAM sends PairingAck
@@ -674,6 +750,7 @@ void loop() {
   if (classificationPending &&
       (millis() - classificationRequestTime >= CAM_CLASSIFY_TIMEOUT_MS)) {
     classificationPending = false;
+    LOG("[CAM] Classification timeout");
     wsLog("warn", "Classification timeout — CAM did not respond");
     relayClassificationErrorToBackend("CAM_RESPONSE_TIMEOUT");
   }
@@ -689,9 +766,13 @@ void loop() {
     handleWiFiPortal();
   }
 
-  /* ================= WIFI STATE MACHINE ================= */
+  /* ================= WIFI STATE MACHINE =================
+   * States: Disconnected → Connecting → Connected → (if lost) → Retry with backoff → SoftAP fallback
+   * SoftAP runs a captive portal for WiFi credential entry.
+   */
 
   if (wifiConnected && WiFi.status() != WL_CONNECTED) {
+    LOG("[WiFi] Disconnected");
     wifiConnected = false;
     wsConnected = false;
     wifiStartTime = millis();
@@ -710,6 +791,8 @@ void loop() {
     softAPStarted = false;
     wifiRetryDelay = 5000;
     wifiRetryStart = 0;
+
+    LOG("[WiFi] Connected: " + WiFi.localIP().toString());
 
     wifiServer.stop();
     WiFi.softAPdisconnect(true);
@@ -738,6 +821,7 @@ void loop() {
       if (status == WL_CONNECTED) return;
 
       if (status == WL_IDLE_STATUS || status == WL_DISCONNECTED) {
+
         WiFi.begin(prefs.getString("ssid", "").c_str(),
                    prefs.getString("pass", "").c_str());
       }
@@ -762,7 +846,9 @@ void loop() {
 
   if (!wifiConnected) return;
 
-  /* ================= STATUS UPDATE (KEEP ALIVE) ================= */
+  /* ================= STATUS UPDATE (HEARTBEAT + KEEP-ALIVE) ================= */
+  // Sends status every 5s to keep WS alive. Every 30s, re-subscribes and
+  // syncs CAM state to heal server restarts or late-joining dashboards.
   if (wsConnected && millis() - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
     lastStatusUpdate = millis();
 
@@ -784,7 +870,8 @@ void loop() {
   }
 
   /* ================= SENSOR READINGS ================= */
-  // Skip during stepper movement (pulseIn blocks up to 30ms per sensor)
+  // Ultrasonic sensors use pulseIn() which blocks ~30ms per reading.
+  // Skip when steppers are moving to avoid missing step pulses.
   if (wsConnected && !stepper1Moving && !stepper2Moving) {
 
     if (isPaired && millis() - lastDHTRead >= DHT_READ_INTERVAL) {

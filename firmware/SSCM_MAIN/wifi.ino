@@ -1,4 +1,16 @@
-/* ===================== WIFI FUNCTIONS ===================== */
+/**
+ * ===================== WIFI FUNCTIONS =====================
+ *
+ * Manages WiFi connectivity with two modes:
+ *   1. STA mode — Connects to user's home/shop WiFi using stored credentials
+ *   2. SoftAP mode — Creates "Smart Shoe Care Machine Setup" hotspot with a
+ *      captive portal for initial WiFi credential entry
+ *
+ * WiFi lifecycle:
+ *   Boot → check NVS for credentials → STA connect → success → WebSocket
+ *     └→ no credentials → SoftAP → user enters WiFi → save to NVS → restart
+ *     └→ connect timeout → SoftAP fallback → exponential retry
+ */
 #include "esp_task_wdt.h"
 
 String getWiFiListHTML() {
@@ -37,10 +49,9 @@ void startSoftAP() {
   softAPStarted = true;
 
   WiFi.persistent(false);
-  // WiFi.softAP() starves the idle task on first init — disable TWDT for the duration.
-  // The interrupt WDT (TG0) still protects against true hard hangs.
   esp_task_wdt_deinit();
   WiFi.softAP("Smart Shoe Care Machine Setup");
+  LOG("[SoftAP] Started: " + WiFi.softAPIP().toString());
   wifiServer.begin();
 }
 
@@ -90,6 +101,7 @@ void handleWiFiPortal() {
 
     prefs.putString("ssid", ssid);
     prefs.putString("pass", pass);
+    LOG("[WiFi] Credentials saved: " + ssid);
 
     String confirmPage = FPSTR(CONFIRM_HTML);
     confirmPage.replace("{{SSID}}", ssid);
@@ -121,6 +133,7 @@ void connectWiFi() {
   String pass = prefs.getString("pass", "");
 
   if (ssid.length() == 0) {
+    LOG("[WiFi] No credentials — starting SoftAP");
     startSoftAP();
     return;
   }
@@ -128,4 +141,5 @@ void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid.c_str(), pass.c_str());
   wifiStartTime = millis();
+  LOG("[WiFi] Connecting to: " + ssid);
 }

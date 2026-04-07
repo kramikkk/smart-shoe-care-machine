@@ -1,7 +1,21 @@
-/* ===================== SERVO MOTORS ===================== */
+/**
+ * ===================== MOTOR & ACTUATOR CONTROL =====================
+ *
+ * Controls all motion hardware:
+ *   - 2× MG995 Servo motors (left/right shoe holder, 0–180° synchronized)
+ *   - 2× DRV8871 DC brush motors (left/right cleaning brushes, ±255 PWM)
+ *   - TB6600 Stepper 1 (top linear slide — foam dispenser, NEMA11)
+ *   - TB6600 Stepper 2 (side linear slide — shoe conveyor, mini rail)
+ *
+ * Servo synchronization:
+ *   Left and right servos move in opposition (L + R = 180°) to tilt the
+ *   shoe holder. Movement is interpolated 1° per step for smooth motion.
+ *
+ * Stepper positioning:
+ *   Positions are tracked in absolute steps and persisted to NVS.
+ *   At boot, steppers return to their home positions if displaced.
+ */
 
-// Non-blocking servo update — call every loop iteration.
-// Left servo: 0°→180°, Right servo: 180°→0° (mirrored).
 void updateServoPositions() {
   if (!servosMoving) return;
 
@@ -23,11 +37,12 @@ void updateServoPositions() {
   else if (currentRightPosition > targetRightPosition) { currentRightPosition--; servoRight.write(currentRightPosition); }
   else                                                  { rightReached = true; }
 
-  if (leftReached && rightReached) servosMoving = false;
+  if (leftReached && rightReached) {
+    servosMoving = false;
+    LOG("[Servo] Reached L:" + String(currentLeftPosition) + " R:" + String(currentRightPosition));
+  }
 }
 
-// Set servo target positions. Right servo mirrors left automatically.
-// fastMode=true for quick return; false for slow brushing sweep.
 void setServoPositions(int leftPos, bool fastMode) {
   leftPos = constrain(leftPos, 0, 180);
   int rightPos = 180 - leftPos;
@@ -39,6 +54,7 @@ void setServoPositions(int leftPos, bool fastMode) {
     targetLeftPosition  = leftPos;
     targetRightPosition = rightPos;
     servosMoving = true;
+    LOG("[Servo] Moving to L:" + String(leftPos) + " R:" + String(rightPos));
   }
 }
 
@@ -50,6 +66,7 @@ void setLeftMotorSpeed(int speed) {
   if      (speed > 0) { ledcWrite(MOTOR_LEFT_IN1_CH, speed);    ledcWrite(MOTOR_LEFT_IN2_CH, 0); }
   else if (speed < 0) { ledcWrite(MOTOR_LEFT_IN1_CH, 0);        ledcWrite(MOTOR_LEFT_IN2_CH, abs(speed)); }
   else                { ledcWrite(MOTOR_LEFT_IN1_CH, 0);        ledcWrite(MOTOR_LEFT_IN2_CH, 0); }
+  LOG("[Motor] Left=" + String(speed));
 }
 
 void setRightMotorSpeed(int speed) {
@@ -58,6 +75,7 @@ void setRightMotorSpeed(int speed) {
   if      (speed > 0) { ledcWrite(MOTOR_RIGHT_IN1_CH, speed);   ledcWrite(MOTOR_RIGHT_IN2_CH, 0); }
   else if (speed < 0) { ledcWrite(MOTOR_RIGHT_IN1_CH, 0);       ledcWrite(MOTOR_RIGHT_IN2_CH, abs(speed)); }
   else                { ledcWrite(MOTOR_RIGHT_IN1_CH, 0);       ledcWrite(MOTOR_RIGHT_IN2_CH, 0); }
+  LOG("[Motor] Right=" + String(speed));
 }
 
 void setMotorsSameSpeed(int speed) {
@@ -82,16 +100,19 @@ void setStepper1Speed(int stepsPerSecond) {
 
 void stepper1Step(bool direction) {
   digitalWrite(STEPPER1_DIR_PIN, direction ? HIGH : LOW);
-  delayMicroseconds(3); // TB6600 direction setup time (min 2.5µs)
+  delayMicroseconds(3);
   digitalWrite(STEPPER1_STEP_PIN, HIGH);
-  delayMicroseconds(2); // TB6600 pulse width (min 2µs)
+  delayMicroseconds(2);
   digitalWrite(STEPPER1_STEP_PIN, LOW);
   currentStepper1Position += direction ? 1 : -1;
 }
 
 void stepper1MoveTo(long position) {
   targetStepper1Position = position;
-  if (targetStepper1Position != currentStepper1Position) stepper1Moving = true;
+  if (targetStepper1Position != currentStepper1Position) {
+    stepper1Moving = true;
+    LOG("[S1] Moving to " + String(targetStepper1Position));
+  }
 }
 
 void stepper1MoveRelative(long steps) {
@@ -105,6 +126,7 @@ void stepper1MoveByMM(float mm) {
 void stepper1Stop() {
   targetStepper1Position = currentStepper1Position;
   stepper1Moving = false;
+  LOG("[S1] Stopped at " + String(currentStepper1Position));
 }
 
 void stepper1Home() {
@@ -112,6 +134,7 @@ void stepper1Home() {
   targetStepper1Position  = 0;
   stepper1Moving = false;
   prefs.putLong("s1pos", 0);
+  LOG("[S1] Home set");
   wsLog("info", "S1 zeroed at current position (NVS saved)");
 }
 
@@ -126,6 +149,7 @@ void updateStepper1Position() {
   else {
     stepper1Moving = false;
     prefs.putLong("s1pos", currentStepper1Position);
+    LOG("[S1] Reached " + String(currentStepper1Position));
   }
 }
 
@@ -148,7 +172,10 @@ void stepper2Step(bool direction) {
 void stepper2MoveTo(long position) {
   position = constrain(position, 0L, STEPPER2_MAX_POSITION);
   targetStepper2Position = position;
-  if (targetStepper2Position != currentStepper2Position) stepper2Moving = true;
+  if (targetStepper2Position != currentStepper2Position) {
+    stepper2Moving = true;
+    LOG("[S2] Moving to " + String(targetStepper2Position));
+  }
 }
 
 void stepper2MoveRelative(long steps) {
@@ -162,6 +189,7 @@ void stepper2MoveByMM(float mm) {
 void stepper2Stop() {
   targetStepper2Position = currentStepper2Position;
   stepper2Moving = false;
+  LOG("[S2] Stopped at " + String(currentStepper2Position));
 }
 
 void stepper2Home() {
@@ -169,6 +197,7 @@ void stepper2Home() {
   targetStepper2Position  = 0;
   stepper2Moving = false;
   prefs.putLong("s2pos", 0);
+  LOG("[S2] Home set");
   wsLog("info", "S2 zeroed at current position (NVS saved)");
 }
 
@@ -183,5 +212,6 @@ void updateStepper2Position() {
   else {
     stepper2Moving = false;
     prefs.putLong("s2pos", currentStepper2Position);
+    LOG("[S2] Reached " + String(currentStepper2Position));
   }
 }

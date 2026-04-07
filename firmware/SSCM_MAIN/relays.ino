@@ -1,4 +1,18 @@
-/* ===================== RELAY CONTROL ===================== */
+/**
+ * ===================== RELAY CONTROL =====================
+ *
+ * Controls an 8-channel Active-HIGH relay module. Each channel corresponds
+ * to a specific load (see SSCM_MAIN.ino for pin→load mapping).
+ *
+ * setRelay(channel, state) — Toggle individual relay with human-readable logging
+ * allRelaysOff()           — Emergency/shutdown: all relays OFF at once
+ */
+
+static const char* RELAY_NAMES[] = {
+  "", "Bill Acceptor", "Exhaust Fan", "Blower Fan",
+  "Heating Element", "Foam Pump", "Heating Element 2",
+  "UV Light", "Atomizer"
+};
 
 void setRelay(int channel, bool state) {
   int pin;
@@ -18,9 +32,8 @@ void setRelay(int channel, bool state) {
 
   *stateVar = state;
   digitalWrite(pin, state ? RELAY_ON : RELAY_OFF);
+  LOG("[Relay] CH" + String(channel) + " " + RELAY_NAMES[channel] + " " + (state ? "ON" : "OFF"));
 
-  // Relay 1 switching creates inductive EMI that can disturb servo PWM.
-  // Re-asserting servo positions immediately overrides any EMI-induced displacement.
   if (channel == 1) {
     servoLeft.write(currentLeftPosition);
     servoRight.write(currentRightPosition);
