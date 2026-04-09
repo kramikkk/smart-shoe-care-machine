@@ -170,6 +170,8 @@ void setup() {
   WiFi.onEvent(onWiFiGotIP, ARDUINO_EVENT_WIFI_STA_GOT_IP);
   WiFi.onEvent(onWiFiDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  esp_wifi_set_ps(WIFI_PS_NONE);  // Disable WiFi power saving (no sleep mode)
   delay(200);
 
   // ESP-NOW

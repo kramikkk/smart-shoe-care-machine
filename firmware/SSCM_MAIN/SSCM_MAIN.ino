@@ -50,7 +50,8 @@ const unsigned long WS_RECONNECT_INTERVAL = 5000;
 unsigned long lastStatusUpdate = 0;
 const unsigned long STATUS_UPDATE_INTERVAL = 5000;
 
-/* ===================== ESP-NOW - ESP32-CAM COMMUNICATION ===================== */
+/* ===================== ESP-NOW - ESP32-CAM COMMUNICATION =====================
+ */
 typedef struct {
   uint8_t type;
   char groupToken[10];
@@ -269,8 +270,8 @@ int currentLeftMotorSpeed = 0;
 int currentRightMotorSpeed = 0;
 
 /* ===================== STEPPER 1 (TOP) ===================== */
-#define STEPPER1_STEP_PIN 36
-#define STEPPER1_DIR_PIN 35
+#define STEPPER1_STEP_PIN 40
+#define STEPPER1_DIR_PIN 38
 const int STEPPER1_STEPS_PER_REV = 200;
 const int STEPPER1_MICROSTEPS = 1;
 const int STEPPER1_STEPS_PER_MM = 10;
@@ -284,8 +285,8 @@ unsigned long lastStepper1Update = 0;
 unsigned long stepper1StepInterval = 1250;
 
 /* ===================== STEPPER 2 (SIDE) ===================== */
-#define STEPPER2_STEP_PIN 37
-#define STEPPER2_DIR_PIN 38
+#define STEPPER2_STEP_PIN 41
+#define STEPPER2_DIR_PIN 42
 const int STEPPER2_STEPS_PER_REV = 200;
 const int STEPPER2_MICROSTEPS = 1;
 const int STEPPER2_STEPS_PER_MM = 200;
@@ -349,7 +350,8 @@ void setup() {
   pinMode(0, INPUT_PULLUP);
   if (digitalRead(0) == LOW) {
     delay(3000);
-    if (digitalRead(0) == LOW) factoryReset();
+    if (digitalRead(0) == LOW)
+      factoryReset();
   }
 
   dht.begin();
@@ -402,8 +404,10 @@ void setup() {
   digitalWrite(STEPPER2_DIR_PIN, LOW);
   setStepper2Speed(1500);
 
-  if (currentStepper1Position != CLEANING_MAX_POSITION) stepper1MoveTo(CLEANING_MAX_POSITION);
-  if (currentStepper2Position != 0) stepper2MoveTo(0);
+  if (currentStepper1Position != CLEANING_MAX_POSITION)
+    stepper1MoveTo(CLEANING_MAX_POSITION);
+  if (currentStepper2Position != 0)
+    stepper2MoveTo(0);
 
   strip.begin();
   strip.setBrightness(100);
@@ -422,9 +426,11 @@ void setup() {
   delay(200);
 
   pinMode(COIN_SLOT_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(COIN_SLOT_PIN), handleCoinPulse, FALLING);
+  attachInterrupt(digitalPinToInterrupt(COIN_SLOT_PIN), handleCoinPulse,
+                  FALLING);
   pinMode(BILL_PULSE_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(BILL_PULSE_PIN), handleBillPulse, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BILL_PULSE_PIN), handleBillPulse,
+                  FALLING);
 
   totalCoinPesos = prefs.getUInt("totalCoinPesos", 0);
   totalBillPesos = prefs.getUInt("totalBillPesos", 0);
@@ -467,7 +473,8 @@ void setup() {
 bool otaInitialized = false;
 
 void loop() {
-  if (otaInitialized) ArduinoOTA.handle();
+  if (otaInitialized)
+    ArduinoOTA.handle();
   webSocket.loop();
 
   // Dispatch deferred ESP-NOW results
@@ -483,11 +490,21 @@ void loop() {
 
     if (hasEntry) {
       switch (entry.action) {
-      case ESPNOW_CLASSIFY_OK: handleClassificationResultFromCAM(String(entry.shoeType), entry.confidence); break;
-      case ESPNOW_CLASSIFY_ERROR: relayClassificationErrorToBackend(String(entry.errorCode)); break;
-      case ESPNOW_CAM_PAIRED: sendCamPairedToBackend(); break;
-      case ESPNOW_API_HANDLED: wsLog("info", "CAM: Gemini API handled classification result"); break;
-      default: break;
+      case ESPNOW_CLASSIFY_OK:
+        handleClassificationResultFromCAM(String(entry.shoeType),
+                                          entry.confidence);
+        break;
+      case ESPNOW_CLASSIFY_ERROR:
+        relayClassificationErrorToBackend(String(entry.errorCode));
+        break;
+      case ESPNOW_CAM_PAIRED:
+        sendCamPairedToBackend();
+        break;
+      case ESPNOW_API_HANDLED:
+        wsLog("info", "CAM: Gemini API handled classification result");
+        break;
+      default:
+        break;
       }
     }
   }
@@ -507,7 +524,9 @@ void loop() {
       totalPesos = totalCoinPesos + totalBillPesos;
       totalsDirty = true;
       if (isPaired && wsConnected) {
-        String coinMsg = "{\"type\":\"coin-inserted\",\"deviceId\":\"" + deviceId + "\",\"coinValue\":" + String(coinValue) + ",\"totalPesos\":" + String(totalPesos) + "}";
+        String coinMsg = "{\"type\":\"coin-inserted\",\"deviceId\":\"" +
+                         deviceId + "\",\"coinValue\":" + String(coinValue) +
+                         ",\"totalPesos\":" + String(totalPesos) + "}";
         webSocket.sendTXT(coinMsg);
       }
     }
@@ -524,7 +543,9 @@ void loop() {
       totalPesos = totalCoinPesos + totalBillPesos;
       totalsDirty = true;
       if (isPaired && wsConnected) {
-        String billMsg = "{\"type\":\"bill-inserted\",\"deviceId\":\"" + deviceId + "\",\"billValue\":" + String(billValue) + ",\"totalPesos\":" + String(totalPesos) + "}";
+        String billMsg = "{\"type\":\"bill-inserted\",\"deviceId\":\"" +
+                         deviceId + "\",\"billValue\":" + String(billValue) +
+                         ",\"totalPesos\":" + String(totalPesos) + "}";
         webSocket.sendTXT(billMsg);
       }
     }
@@ -538,7 +559,8 @@ void loop() {
   }
 
   // CAM heartbeats and pairing retries
-  if (camIsReady && camMacPaired && (millis() - lastCamPing >= CAM_PING_INTERVAL)) {
+  if (camIsReady && camMacPaired &&
+      (millis() - lastCamPing >= CAM_PING_INTERVAL)) {
     lastCamPing = millis();
     CamMessage ping;
     memset(&ping, 0, sizeof(ping));
@@ -557,13 +579,16 @@ void loop() {
     }
   }
 
-  if (classificationPending && (millis() - classificationRequestTime >= CAM_CLASSIFY_TIMEOUT_MS)) {
+  if (classificationPending &&
+      (millis() - classificationRequestTime >= CAM_CLASSIFY_TIMEOUT_MS)) {
     classificationPending = false;
     relayClassificationErrorToBackend("CAM_RESPONSE_TIMEOUT");
   }
 
-  if (Serial.available()) handleSerialCommand(Serial.readStringUntil('\n'));
-  if (softAPStarted) handleWiFiPortal();
+  if (Serial.available())
+    handleSerialCommand(Serial.readStringUntil('\n'));
+  if (softAPStarted)
+    handleWiFiPortal();
 
   // WiFi state machine
   if (wifiConnected && WiFi.status() != WL_CONNECTED) {
@@ -587,7 +612,8 @@ void loop() {
     wifiRetryStart = 0;
     wifiServer.stop();
     WiFi.softAPdisconnect(true);
-    if (!isPaired) sendDeviceRegistration();
+    if (!isPaired)
+      sendDeviceRegistration();
     if (!wsConnected) {
       webSocket.disconnect();
       wsInitialized = false;
@@ -602,7 +628,8 @@ void loop() {
       lastWiFiRetry = millis();
       wl_status_t status = WiFi.status();
       if (status == WL_IDLE_STATUS || status == WL_DISCONNECTED) {
-        WiFi.begin(prefs.getString("ssid", "").c_str(), prefs.getString("pass", "").c_str());
+        WiFi.begin(prefs.getString("ssid", "").c_str(),
+                   prefs.getString("pass", "").c_str());
       }
       if (millis() - wifiStartTime > WIFI_TIMEOUT) {
         if (wifiRetryStart == 0) {
@@ -614,18 +641,21 @@ void loop() {
           wifiStartTime = millis();
           String ssid = prefs.getString("ssid", "");
           String pass = prefs.getString("pass", "");
-          if (ssid.length() > 0) WiFi.begin(ssid.c_str(), pass.c_str());
+          if (ssid.length() > 0)
+            WiFi.begin(ssid.c_str(), pass.c_str());
         }
       }
     }
   }
 
-  if (!wifiConnected) return;
+  if (!wifiConnected)
+    return;
 
   // Status updates
   if (wsConnected && millis() - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
     lastStatusUpdate = millis();
-    String statusMsg = "{\"type\":\"status-update\",\"deviceId\":\"" + deviceId +
+    String statusMsg = "{\"type\":\"status-update\",\"deviceId\":\"" +
+                       deviceId +
                        "\",\"camSynced\":" + (camIsReady ? "true" : "false") +
                        ",\"isPaired\":" + (isPaired ? "true" : "false") + "}";
     webSocket.sendTXT(statusMsg);
@@ -635,13 +665,15 @@ void loop() {
   if (wsConnected && !stepper1Moving && !stepper2Moving) {
     if (isPaired && millis() - lastDHTRead >= DHT_READ_INTERVAL) {
       lastDHTRead = millis();
-      if (readDHT11()) sendDHTDataViaWebSocket();
+      if (readDHT11())
+        sendDHTDataViaWebSocket();
     }
     if (isPaired && millis() - lastUltrasonicRead >= ULTRASONIC_READ_INTERVAL) {
       lastUltrasonicRead = millis();
       bool s1 = readAtomizerLevel();
       bool s2 = readFoamLevel();
-      if (s1 || s2) sendUltrasonicDataViaWebSocket();
+      if (s1 || s2)
+        sendUltrasonicDataViaWebSocket();
     }
   }
 

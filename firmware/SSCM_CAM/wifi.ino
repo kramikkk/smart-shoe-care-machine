@@ -3,16 +3,30 @@
  */
 
 unsigned long lastWifiAttemptMs = 0;
-const unsigned long WIFI_RETRY_INTERVAL_MS = 10000; // 10s cooldown
+const unsigned long WIFI_RETRY_INTERVAL_MS = 5000;  // 5s cooldown
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000; // 20s timeout before retry
 
 /**
  * Handle WiFi reconnection requests with cooldown
  * Prevents "cannot set config" errors from rapid retries
  */
 void handleWiFiReconnect() {
+  unsigned long now = millis();
+  
+  // If connection attempt is timing out, force disconnect and retry
+  if (wifiConnectStartMs > 0 && (now - wifiConnectStartMs) > WIFI_CONNECT_TIMEOUT_MS) {
+    if (WiFi.status() != WL_CONNECTED && !wifiReconnectRequested) {
+      LOG("[WiFi] Connection timeout - forcing disconnect & retry");
+      WiFi.disconnect();
+      wifiReconnectRequested = true;
+      wifiConnectStartMs = 0;
+      lastWifiAttemptMs = now;
+      return;
+    }
+  }
+  
   if (!wifiReconnectRequested) return;
 
-  unsigned long now = millis();
   if (now - lastWifiAttemptMs < WIFI_RETRY_INTERVAL_MS) return;
 
   wifiReconnectRequested = false;
@@ -40,6 +54,8 @@ void onWiFiConnected(WiFiEvent_t event, WiFiEventInfo_t info) {
  */
 void onWiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info) {
   wifiConnected = true;
+  wifiReconnectRequested = false;  // Clear reconnect flag on successful connection
+  wifiConnectStartMs = 0;          // Clear timeout timer
   camIp = WiFi.localIP().toString();
   LOG("[WiFi:EVT] IP obtained: " + camIp);
 }
@@ -51,6 +67,13 @@ void onWiFiDisconnected(WiFiEvent_t event, WiFiEventInfo_t info) {
   wifiConnected = false;
   httpServerStarted = false;
   camIp = "";
-  wifiReconnectRequested = true;
-  LOG("[WiFi:EVT] Disconnected - scheduled for retry");
+  
+  // Only restart reconnect if we were previously connected
+  // This prevents spurious retries during initial connection
+  if (wifiConnectStartMs == 0) {
+    wifiReconnectRequested = true;
+    LOG("[WiFi:EVT] Disconnected - scheduled for retry");
+  } else {
+    LOG("[WiFi:EVT] Disconnected during connection attempt");
+  }
 }

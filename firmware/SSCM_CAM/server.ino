@@ -24,6 +24,8 @@ void handleRoot() {
  */
 void handleStream() {
   WiFiClient client = httpServer.client();
+  unsigned long streamStartMs = millis();
+  const unsigned long STREAM_TIMEOUT_MS = 60000; // Disconnect stream after 60s
 
   client.print("HTTP/1.1 200 OK\r\n");
   client.print("Content-Type: multipart/x-mixed-replace; boundary=" PART_BOUNDARY "\r\n");
@@ -32,6 +34,12 @@ void handleStream() {
   while (client.connected()) {
     yield();
     if (classificationRequested) break; // Pause stream for classification capture
+    
+    // Prevent stream from blocking WiFi indefinitely
+    if ((millis() - streamStartMs) > STREAM_TIMEOUT_MS) {
+      LOG("[HTTP] Stream timeout - closing connection");
+      break;
+    }
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
