@@ -18,6 +18,5 @@ void setRGBColor(int red, int green, int blue) {
 void rgbWhite() { setRGBColor(255, 255, 255); }
 void rgbBlue() { setRGBColor(0, 0, 255); }
 void rgbGreen() { setRGBColor(0, 255, 0); }
-void rgbViolet() { setRGBColor(238, 130, 238); }
-void rgbPink() { setRGBColor(150, 0, 255); }
+void rgbViolet() { setRGBColor(150, 0, 255); }
 void rgbOff() { setRGBColor(0, 0, 0); }

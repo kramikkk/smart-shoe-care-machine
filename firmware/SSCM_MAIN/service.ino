@@ -55,7 +55,8 @@ void startService(String shoeType, String service, String care,
     LOG("[SERVICE] Sterilizing started — UVC and mist ON");
     setRelay(8, true); // UVC light ON
     setRelay(7, true); // Mist maker ON
-    rgbPink();
+    delay(100);
+    rgbViolet();
   }
 
   // Notify backend

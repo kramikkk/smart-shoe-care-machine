@@ -1172,7 +1172,7 @@ export default function CommandsPage() {
               { label: 'White',  cmd: 'RGB_WHITE',  color: '#f8fafc', r: 255, g: 255, b: 255 },
               { label: 'Blue',   cmd: 'RGB_BLUE',   color: '#3b82f6', r: 59,  g: 130, b: 246 },
               { label: 'Green',  cmd: 'RGB_GREEN',  color: '#22c55e', r: 34,  g: 197, b: 94  },
-              { label: 'Violet', cmd: 'RGB_VIOLET', color: '#a78bfa', r: 139, g: 92,  b: 246 },
+              { label: 'Violet', cmd: 'RGB_VIOLET', color: '#9600FF', r: 150, g: 0, b: 255 },
               { label: 'Off',    cmd: 'RGB_OFF',    color: '#1e293b', r: 0,   g: 0,   b: 0   },
             ]
 

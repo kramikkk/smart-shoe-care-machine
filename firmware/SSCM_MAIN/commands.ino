@@ -131,6 +131,19 @@ void handleSerialCommand(String cmd) {
     else if (subCmd == "GREEN") rgbGreen();
     else if (subCmd == "VIOLET") rgbViolet();
     else if (subCmd == "OFF") rgbOff();
+    else if (subCmd.startsWith("CUSTOM_")) {
+      // RGB_CUSTOM_r_g_b (matches dashboard serial-command)
+      String rest = subCmd.substring(7);
+      int u1 = rest.indexOf('_');
+      int u2 = rest.indexOf('_', u1 + 1);
+      if (u1 > 0 && u2 > u1) {
+        int r = rest.substring(0, u1).toInt();
+        int g = rest.substring(u1 + 1, u2).toInt();
+        int b = rest.substring(u2 + 1).toInt();
+        if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255)
+          setRGBColor(r, g, b);
+      }
+    }
   } else if (cmd.startsWith("CAM_")) {
     String subCmd = cmd.substring(4);
     if (subCmd == "BROADCAST") sendPairingBroadcast();
