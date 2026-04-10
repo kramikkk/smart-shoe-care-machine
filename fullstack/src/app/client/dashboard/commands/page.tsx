@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useDeviceFilter } from '@/contexts/DeviceFilterContext'
 import { useDashboardWebSocket } from '@/contexts/DashboardWebSocketContext'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -21,7 +21,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
-import { Terminal, Wifi, WifiOff, AlertTriangle, ArrowUp, ArrowDown, RotateCw, Zap, Power, Activity, DollarSign, Unlink, RotateCcw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Square, RotateCcw as Home, MapPin, RefreshCw, Coins, Wind, Fan, Flame, Droplets, Waves, Sun, Sparkles, MoveHorizontal, Camera, RefreshCcw, Download, VideoOff } from 'lucide-react'
+import { Terminal, Wifi, WifiOff, AlertTriangle, ArrowUp, ArrowDown, RotateCw, Zap, Power, Activity, DollarSign, Unlink, RotateCcw, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Square, RotateCcw as Home, MapPin, RefreshCw, Coins, Wind, Fan, Flame, Droplets, Waves, Sun, Sparkles, MoveHorizontal, Camera, CheckCircle2, CircleSlash, Loader2, ImageOff, ExternalLink } from 'lucide-react'
 import { motion } from 'motion/react'
 
 type LogEntry = {
@@ -31,8 +31,27 @@ type LogEntry = {
   message: string
 }
 
+type ClassifyTestResult = {
+  result: string
+  confidence: number
+  subCategory: string
+  condition: 'normal' | 'too_dirty'
+  snapshotDataUrl?: string
+}
+
 type MotorId = 'left' | 'right' | 'both'
 const MOTOR_PREFIX: Record<MotorId, string> = { left: 'MOTOR_LEFT_', right: 'MOTOR_RIGHT_', both: 'MOTOR_' }
+
+type CamMeta = {
+  deviceId: string
+  camDeviceId: string | null
+  camIpStored: string | null
+  camHost: string | null
+  camSynced: boolean
+  hasCamEndpoint: boolean
+  directStreamUrl: string | null
+  directSnapshotUrl: string | null
+}
 
 const RELAYS = [
   { ch: 1, name: 'Bill + Coin Acceptors', icon: 'coins',   color: 'yellow' },
@@ -60,24 +79,41 @@ export default function CommandsPage() {
 
   const { sendMessage, isConnected, addMessageHandler } = useDashboardWebSocket()
   const [isDeviceReady, setIsDeviceReady] = useState(false)
+  const [commandsTab, setCommandsTab] = useState('relays')
 
   // Log
   const [log, setLog] = useState<LogEntry[]>([])
   const logIdRef = useRef(0)
+  /** Avoid duplicate connect/disconnect lines when `isConnected` flaps the same way twice. */
+  const wsConnectedPrevRef = useRef(false)
+  /** Rate-limit firmware-log lines (high-frequency telemetry often arrives as sensor-data; logs can still spam). */
+  const firmwareLogTimestampsRef = useRef<number[]>([])
 
   const addLog = useCallback((type: string, message: string) => {
-    setLog(prev => [{
-      id: ++logIdRef.current,
-      timestamp: new Date().toLocaleTimeString(),
-      type,
-      message,
-    }, ...prev].slice(0, 200))
+    const maxLen = 320
+    const trimmed =
+      message.length > maxLen ? `${message.slice(0, maxLen)}…` : message
+    setLog((prev) =>
+      [
+        {
+          id: ++logIdRef.current,
+          timestamp: new Date().toLocaleTimeString(),
+          type,
+          message: trimmed,
+        },
+        ...prev,
+      ].slice(0, 200)
+    )
   }, [])
 
-  // Camera tab state
-  const [streamKey, setStreamKey] = useState(0)
-  const [streamActive, setStreamActive] = useState(false)
-  const [streamStatus, setStreamStatus] = useState<'idle' | 'loading' | 'live' | 'error'>('idle')
+  // Classify test tab — same WS flow as kiosk classify; LAN preview only via new tab (http://cam/stream).
+  const [camMeta, setCamMeta] = useState<CamMeta | null>(null)
+  const [camMetaLoading, setCamMetaLoading] = useState(false)
+  const [camMetaNonce, setCamMetaNonce] = useState(0)
+  const [classifyTestBusy, setClassifyTestBusy] = useState(false)
+  const [classifyPreviewTick, setClassifyPreviewTick] = useState(0)
+  const [lastClassifyResult, setLastClassifyResult] = useState<ClassifyTestResult | null>(null)
+  const [lastClassifyError, setLastClassifyError] = useState<string | null>(null)
 
   // Relay state
   const [relayStates, setRelayStates] = useState<boolean[]>(Array(8).fill(false))
@@ -114,7 +150,76 @@ export default function CommandsPage() {
     setMotorSpeed({ left: 0, right: 0, both: 0 })
     setMotorDir({ left: 'fwd', right: 'fwd', both: 'fwd' })
     setIsDeviceReady(false)
+    setCamMeta(null)
+    setCamMetaNonce(0)
+    setClassifyTestBusy(false)
+    setLastClassifyResult(null)
+    setLastClassifyError(null)
   }, [selectedDevice])
+
+  useEffect(() => {
+    if (!selectedDevice) {
+      setCamMeta(null)
+      return
+    }
+    let cancelled = false
+    setCamMetaLoading(true)
+    fetch(`/api/device/${selectedDevice}/camera-meta`, { credentials: 'include' })
+      .then(async (r) => {
+        if (!r.ok) return null
+        return r.json() as Promise<CamMeta>
+      })
+      .then((data) => {
+        if (!cancelled && data) setCamMeta(data)
+      })
+      .catch(() => {
+        if (!cancelled) setCamMeta(null)
+      })
+      .finally(() => {
+        if (!cancelled) setCamMetaLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedDevice, camMetaNonce])
+
+  /** LAN http:// URLs for optional stream/snapshot (open in new tab). */
+  const canLanStream =
+    !!camMeta?.directStreamUrl && !!camMeta?.directSnapshotUrl
+
+  const liveClassifyPreviewSrc = useMemo(() => {
+    if (!camMeta?.directSnapshotUrl) return ''
+    return `${camMeta.directSnapshotUrl}?t=${classifyPreviewTick}`
+  }, [camMeta?.directSnapshotUrl, classifyPreviewTick])
+
+  const camHostPageUrl = useMemo(
+    () => (camMeta?.camHost ? `http://${camMeta.camHost}/` : ''),
+    [camMeta?.camHost]
+  )
+
+  useEffect(() => {
+    if (!classifyTestBusy || !canLanStream) return
+    const id = window.setInterval(() => setClassifyPreviewTick((t) => t + 1), 450)
+    return () => window.clearInterval(id)
+  }, [classifyTestBusy, canLanStream])
+
+  // Classification LED: only on while a run is active (not when merely opening this tab).
+  const commandsTabPrevRef = useRef(commandsTab)
+  useEffect(() => {
+    const prev = commandsTabPrevRef.current
+    commandsTabPrevRef.current = commandsTab
+    if (prev === 'cam' && commandsTab !== 'cam' && selectedDevice) {
+      sendMessage({ type: 'disable-classification', deviceId: selectedDevice })
+    }
+  }, [commandsTab, selectedDevice, sendMessage])
+
+  // Turn off classification LED on the previous unit when switching devices mid-session.
+  useEffect(() => {
+    const id = selectedDevice
+    return () => {
+      sendMessage({ type: 'disable-classification', deviceId: id })
+    }
+  }, [selectedDevice, sendMessage])
 
   // Log connection events and sync isDeviceReady with isConnected.
   // isDeviceReady must be set true here (not just from incoming messages) so
@@ -122,9 +227,16 @@ export default function CommandsPage() {
   // while the device is already online — not waiting for the next sensor tick.
   useEffect(() => {
     if (isConnected) {
-      addLog('system', 'Connected to device')
+      if (!wsConnectedPrevRef.current) {
+        addLog('system', 'Connected to device')
+      }
+      wsConnectedPrevRef.current = true
       setIsDeviceReady(true)
     } else {
+      if (wsConnectedPrevRef.current) {
+        addLog('system', 'Disconnected from device')
+      }
+      wsConnectedPrevRef.current = false
       setIsDeviceReady(false)
     }
   }, [isConnected, addLog])
@@ -132,29 +244,121 @@ export default function CommandsPage() {
   // Subscribe to WS messages for commands-specific handling
   useEffect(() => {
     const cleanup = addMessageHandler((msg) => {
+      const mid = msg.deviceId as string | undefined
+
       if (msg.type === 'serial-command') return // filter echo-back
-      if (['device-online', 'firmware-log', 'sensor-data', 'distance-data'].includes(msg.type as string)) {
+
+      // Only treat readiness signals as belonging to the selected unit (subscription should already scope this).
+      const readinessTypes = ['device-online', 'firmware-log', 'sensor-data', 'distance-data']
+      if (readinessTypes.includes(msg.type as string) && (!mid || mid === selectedDevice)) {
         setIsDeviceReady(true)
       }
+
+      // High-frequency telemetry — never mirror to this log (gauges still update elsewhere).
+      if (msg.type === 'sensor-data' || msg.type === 'distance-data') return
+      if (msg.type === 'coin-inserted' || msg.type === 'bill-inserted') return
+
+      if (mid && mid !== selectedDevice) return
+
       if (msg.type === 'firmware-log') {
-        const text = (msg.message as string) || ''
+        const levelRaw = ((msg.level as string) || 'info').toLowerCase()
+        if (levelRaw === 'debug' || levelRaw === 'verbose' || levelRaw === 'trace') return
+
+        const text = typeof msg.message === 'string' ? msg.message.trim() : ''
         const s1Steps = text.match(/\bS1\s+pos=(-?\d+)/)
         if (s1Steps) setS1Pos(parseInt(s1Steps[1]))
         const s2Steps = text.match(/\bS2\s+pos=(-?\d+)/)
         if (s2Steps) setS2Pos(parseInt(s2Steps[1]))
-        addLog((msg.level as string) || 'info', text || JSON.stringify(msg))
-      } else if (msg.type === 'service-status') {
+
+        if (!text) {
+          addLog(levelRaw || 'info', '[firmware] (no message body)')
+          return
+        }
+
+        const now = Date.now()
+        const win = firmwareLogTimestampsRef.current.filter((t) => now - t < 1000)
+        if (win.length >= 12) return
+        win.push(now)
+        firmwareLogTimestampsRef.current = win
+
+        addLog(levelRaw || 'info', text)
+        return
+      }
+
+      if (msg.type === 'service-status') {
         addLog('service', `Progress: ${msg.progress}% — ${msg.timeRemaining}s remaining`)
-      } else if (msg.type === 'service-complete') {
+        return
+      }
+      if (msg.type === 'service-complete') {
         addLog('service', `Complete: ${msg.serviceType}`)
-      } else if (msg.type === 'classification-result') {
-        addLog('classify', `Result: ${msg.result} (${((msg.confidence as number) * 100).toFixed(1)}%)`)
-      } else if (msg.type === 'classification-error') {
+        return
+      }
+      if (msg.type === 'classification-result') {
+        const conf = typeof msg.confidence === 'number' ? msg.confidence : 0
+        const res = String(msg.result ?? '')
+        const sub = typeof msg.subCategory === 'string' ? msg.subCategory : ''
+        const cond =
+          msg.condition === 'too_dirty' ? 'too_dirty' : 'normal'
+        const snapB64 = typeof msg.snapshotBase64 === 'string' ? msg.snapshotBase64 : ''
+        addLog('classify', `Result: ${msg.result} (${(conf * 100).toFixed(1)}%)`)
+        sendMessage({ type: 'disable-classification', deviceId: selectedDevice })
+        setClassifyTestBusy(false)
+        setLastClassifyError(null)
+        setLastClassifyResult({
+          result: res,
+          confidence: conf,
+          subCategory: sub,
+          condition: cond,
+          snapshotDataUrl: snapB64 ? `data:image/jpeg;base64,${snapB64}` : undefined,
+        })
+        return
+      }
+      if (msg.type === 'classification-error') {
+        const err = String(msg.error ?? 'Unknown error')
         addLog('error', `Classification error: ${msg.error}`)
+        sendMessage({ type: 'disable-classification', deviceId: selectedDevice })
+        setClassifyTestBusy(false)
+        setLastClassifyError(err)
+        return
+      }
+      if (msg.type === 'classification-started') {
+        addLog('classify', 'Classification started')
+        setClassifyTestBusy(true)
+        setLastClassifyError(null)
+        return
+      }
+      if (msg.type === 'classification-busy') {
+        addLog('classify', 'Classification busy — try again shortly')
+        sendMessage({ type: 'disable-classification', deviceId: selectedDevice })
+        setClassifyTestBusy(false)
+        toast.message('Classification busy', { description: 'Try again in a few seconds.' })
+        return
+      }
+      if (msg.type === 'restart-device') {
+        addLog('system', 'Restart command broadcast to device')
+        return
+      }
+      if (msg.type === 'cam-paired') {
+        const camId = msg.camDeviceId as string | undefined
+        addLog('system', camId ? `Camera paired (${camId})` : 'Camera paired')
+        setCamMetaNonce((n) => n + 1)
+        return
+      }
+      if (msg.type === 'cam-sync-status') {
+        const synced = Boolean(msg.camSynced)
+        const cid = msg.camDeviceId as string | undefined
+        addLog(
+          'system',
+          synced
+            ? `CAM sync OK${cid ? ` · ${cid}` : ''}`
+            : `CAM not synced${cid ? ` · ${cid}` : ''}`
+        )
+        setCamMetaNonce((n) => n + 1)
+        return
       }
     })
     return cleanup
-  }, [addMessageHandler, addLog])
+  }, [addMessageHandler, addLog, selectedDevice, sendMessage])
 
   // ── Send helper ───────────────────────────────────────────────────────────
 
@@ -166,6 +370,27 @@ export default function CommandsPage() {
     sendMessage({ type: 'serial-command', deviceId: selectedDevice, command })
     addLog('sent', `→ ${command}`)
   }, [isConnected, selectedDevice, sendMessage, addLog])
+
+  const runTestClassify = useCallback(() => {
+    if (!isConnected || !selectedDevice) {
+      toast.error('Not connected to device')
+      return
+    }
+    if (!camMeta?.camSynced) {
+      toast.error('CAM not synced', {
+        description: 'Wait for pairing and IP sync (details update automatically).',
+      })
+      return
+    }
+    setLastClassifyError(null)
+    setClassifyTestBusy(true)
+    setClassifyPreviewTick(Date.now())
+    sendMessage({ type: 'enable-classification', deviceId: selectedDevice })
+    window.setTimeout(() => {
+      sendMessage({ type: 'start-classification', deviceId: selectedDevice })
+    }, 50)
+    toast.message('Test classification started')
+  }, [isConnected, selectedDevice, sendMessage, camMeta?.camSynced])
 
   // ── Servo helper ──────────────────────────────────────────────────────────
   const sendServo = useCallback((angle: number) => {
@@ -245,7 +470,7 @@ export default function CommandsPage() {
       )}
 
       {/* Tabs */}
-      <Tabs defaultValue="relays" className="flex flex-col gap-4 flex-1">
+      <Tabs value={commandsTab} onValueChange={setCommandsTab} className="flex flex-col gap-4 flex-1">
         <div className="overflow-x-auto pb-1 -mx-1 px-1">
           <TabsList className="w-max min-w-full justify-start gap-1 h-9">
             <TabsTrigger value="relays" className="text-xs sm:text-sm">Relays</TabsTrigger>
@@ -253,8 +478,8 @@ export default function CommandsPage() {
             <TabsTrigger value="motors" className="text-xs sm:text-sm">DC Motors</TabsTrigger>
             <TabsTrigger value="steppers" className="text-xs sm:text-sm">Linear Actuators</TabsTrigger>
             <TabsTrigger value="rgb" className="text-xs sm:text-sm">RGB LED</TabsTrigger>
-            <TabsTrigger value="system" className="text-xs sm:text-sm">System</TabsTrigger>
             <TabsTrigger value="cam" className="text-xs sm:text-sm">Camera</TabsTrigger>
+            <TabsTrigger value="system" className="text-xs sm:text-sm">System</TabsTrigger>
           </TabsList>
         </div>
 
@@ -1104,6 +1329,260 @@ export default function CommandsPage() {
           })()}
         </TabsContent>
 
+        {/* ── CAMERA ── */}
+        <TabsContent value="cam">
+          <Card className="glass-card border-none overflow-hidden">
+            <CardContent className="p-4 sm:p-6">
+              {/* Stacked on small screens; explicit left | right split from lg (1024px) up */}
+              <div className="flex flex-col gap-6 lg:flex-row lg:items-stretch lg:gap-8">
+                {/* Left: preview / snapshot */}
+                <div className="relative w-full min-h-[220px] overflow-hidden rounded-xl bg-black aspect-[4/3] max-h-[min(68vh,520px)] lg:aspect-auto lg:max-h-none lg:min-h-[min(360px,52vh)] lg:min-w-0 lg:flex-1 lg:basis-0">
+                  {/* Status badges + clear — top overlay on preview */}
+                  <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-wrap items-start justify-between gap-2 p-3 sm:p-3.5">
+                    <div className="pointer-events-auto flex flex-wrap items-center gap-2">
+                      {classifyTestBusy && (
+                        <Badge variant="secondary" className="border border-white/10 bg-black/55 text-[10px] font-bold uppercase tracking-wide text-white backdrop-blur-sm">
+                          Classifying
+                        </Badge>
+                      )}
+                      {!classifyTestBusy && lastClassifyResult && (
+                        <Badge
+                          variant="outline"
+                          className="border-emerald-500/50 bg-black/55 text-[10px] font-bold uppercase tracking-wide text-emerald-300 backdrop-blur-sm"
+                        >
+                          Last shoe type
+                        </Badge>
+                      )}
+                    </div>
+                    {(lastClassifyResult || lastClassifyError) && !classifyTestBusy && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="pointer-events-auto h-8 shrink-0 border border-white/15 bg-black/55 text-xs font-medium text-white backdrop-blur-sm hover:bg-black/70"
+                        onClick={() => {
+                          setLastClassifyResult(null)
+                          setLastClassifyError(null)
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    )}
+                  </div>
+                  {classifyTestBusy && liveClassifyPreviewSrc ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={liveClassifyPreviewSrc}
+                        alt=""
+                        className="absolute inset-0 w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 bg-black/35" />
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
+                        <Loader2 className="w-10 h-10 text-white/90 animate-spin drop-shadow-md" />
+                        <p className="text-sm font-medium text-white drop-shadow-md">Running classification…</p>
+                      </div>
+                    </>
+                  ) : classifyTestBusy ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground px-6 text-center">
+                      <Loader2 className="w-10 h-10 opacity-60 animate-spin" />
+                      <p className="text-sm font-medium text-foreground/85">Running classification…</p>
+                      <p className="text-[11px] text-muted-foreground/80 max-w-xs leading-relaxed">
+                        Waiting for result. LAN snapshot preview may be blocked if this page is HTTPS and the CAM is HTTP.
+                      </p>
+                    </div>
+                  ) : lastClassifyError ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground px-6 text-center">
+                      <AlertTriangle className="w-9 h-9 text-destructive/70" />
+                      <p className="text-sm font-medium text-destructive/90">Classification failed</p>
+                      <p className="text-[11px] text-muted-foreground/85 max-w-sm">{lastClassifyError}</p>
+                    </div>
+                  ) : lastClassifyResult ? (
+                    lastClassifyResult.snapshotDataUrl ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img
+                        src={lastClassifyResult.snapshotDataUrl}
+                        alt="Classification snapshot"
+                        className="absolute inset-0 w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground bg-white/[0.04]">
+                        <ImageOff className="w-12 h-12 opacity-35" />
+                        <p className="text-sm font-medium text-foreground/80 capitalize">{lastClassifyResult.result}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {(lastClassifyResult.confidence * 100).toFixed(1)}% · No snapshot in payload
+                        </p>
+                      </div>
+                    )
+                  ) : (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 text-muted-foreground px-5 sm:px-8 text-center">
+                      <Camera className="w-9 h-9 sm:w-10 sm:h-10 opacity-20 shrink-0" />
+                      <p className="text-sm font-medium text-foreground/55">Ready to test</p>
+                      <p className="text-[11px] text-muted-foreground/75 max-w-[280px] leading-relaxed">
+                        {!camMeta?.hasCamEndpoint && !camMetaLoading
+                          ? 'Pair the CAM module and wait for sync, then run a test classify. A live snapshot may appear here while classifying (LAN HTTP only).'
+                          : 'Run a test classify. While it runs, a LAN snapshot may refresh here when the CAM URL is reachable from this browser.'}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Right: details + action — fixed column width on lg+ */}
+                <div className="flex w-full min-w-0 flex-col gap-5 lg:min-h-[min(360px,52vh)] lg:w-80 lg:max-w-full lg:shrink-0 xl:w-96">
+                  <div className="flex min-h-0 flex-1 flex-col gap-5">
+                    <div className="min-w-0">
+                      <p className="mb-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/50">
+                        Camera details
+                      </p>
+                      <div className="divide-y divide-white/5 rounded-xl border border-white/5 bg-white/[0.03] text-xs">
+                        <div className="flex items-start justify-between gap-3 px-3 py-2.5 sm:px-3.5">
+                          <span className="shrink-0 pt-0.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/45">
+                            Module
+                          </span>
+                          <span className="min-w-0 text-right text-[11px] leading-snug text-muted-foreground">
+                            SSCM‑CAM · VGA JPEG · :80
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 px-3 py-2.5 sm:px-3.5">
+                          <span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/45">
+                            Main unit
+                          </span>
+                          <code className="max-w-[min(100%,11rem)] truncate text-right text-[11px] font-mono font-semibold text-foreground/90">
+                            {selectedDevice}
+                          </code>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 px-3 py-2.5 sm:px-3.5">
+                          <span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/45">
+                            CAM ID
+                          </span>
+                          {camMeta?.camDeviceId ? (
+                            <code className="max-w-[min(100%,11rem)] truncate text-right text-[11px] font-mono font-semibold text-sky-400/95">
+                              {camMeta.camDeviceId}
+                            </code>
+                          ) : (
+                            <span className="text-right text-muted-foreground/50">
+                              {camMetaLoading ? '…' : 'Not paired'}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between gap-3 px-3 py-2.5 sm:px-3.5">
+                          <span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/45">
+                            CAM host
+                          </span>
+                          {camMeta?.camHost ? (
+                            <code
+                              className="max-w-[min(100%,11rem)] truncate text-right text-[11px] font-mono font-semibold text-amber-400/90"
+                              title={camMeta.camHost}
+                            >
+                              {camMeta.camHost}
+                            </code>
+                          ) : (
+                            <span className="text-muted-foreground/50">{camMetaLoading ? '…' : '—'}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between gap-3 px-3 py-2.5 sm:px-3.5">
+                          <span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/45">
+                            Sync
+                          </span>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {camMeta?.camSynced ? (
+                              <>
+                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                                <span className="text-xs font-medium text-emerald-400/90">Synced</span>
+                              </>
+                            ) : (
+                              <>
+                                <CircleSlash className="h-3.5 w-3.5 text-muted-foreground/45" />
+                                <span className="text-xs text-muted-foreground">Pending</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="min-w-0">
+                      <p className="mb-2.5 text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/50">
+                        Classification details
+                      </p>
+                      <div className="divide-y divide-white/5 rounded-xl border border-white/5 bg-white/[0.03] text-xs">
+                        <div className="flex items-center justify-between gap-3 px-3 py-2.5 sm:px-3.5">
+                          <span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/45">
+                            Shoe type
+                          </span>
+                          <span className="min-w-0 max-w-[65%] truncate text-right font-medium capitalize text-foreground/90">
+                            {lastClassifyResult?.result ?? '—'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 px-3 py-2.5 sm:px-3.5">
+                          <span className="shrink-0 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/45">
+                            Subcategory
+                          </span>
+                          <span className="min-w-0 max-w-[65%] truncate text-right text-muted-foreground">
+                            {lastClassifyResult?.subCategory ? lastClassifyResult.subCategory : '—'}
+                          </span>
+                        </div>
+                        <div className="flex items-start justify-between gap-3 px-3 py-2.5 sm:px-3.5">
+                          <span
+                            className="shrink-0 cursor-help border-b border-dotted border-muted-foreground/25 pt-0.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground/45"
+                            title="Chamber condition from the model, with classification confidence (same run as shoe type)."
+                          >
+                            Condition
+                          </span>
+                          <span className="min-w-0 max-w-[65%] text-right text-[11px] tabular-nums leading-snug text-muted-foreground">
+                            {!lastClassifyResult
+                              ? '—'
+                              : (() => {
+                                  const condLabel =
+                                    lastClassifyResult.condition === 'too_dirty' ? 'Too dirty' : 'Normal'
+                                  const c = lastClassifyResult.confidence
+                                  if (typeof c === 'number' && c >= 0) {
+                                    return `${condLabel} · ${(c * 100).toFixed(1)}%`
+                                  }
+                                  return condLabel
+                                })()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex shrink-0 flex-col gap-2 border-t border-white/5 pt-4 lg:mt-auto lg:border-t-0 lg:pt-0">
+                    <Button
+                      size="default"
+                      className="h-10 w-full gap-2 bg-emerald-600 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
+                      disabled={disabled || classifyTestBusy || camMetaLoading}
+                      onClick={runTestClassify}
+                    >
+                      <Sparkles className="h-4 w-4 shrink-0" />
+                      Run test classify
+                    </Button>
+                    <Button
+                      type="button"
+                      size="default"
+                      variant="outline"
+                      className="h-auto min-h-10 w-full gap-2 py-2 text-sm font-medium disabled:opacity-40"
+                      disabled={!camHostPageUrl || camMetaLoading}
+                      title={camHostPageUrl || undefined}
+                      onClick={() => {
+                        if (!camHostPageUrl) return
+                        window.open(camHostPageUrl, '_blank', 'noopener,noreferrer')
+                      }}
+                    >
+                      <ExternalLink className="h-4 w-4 shrink-0" />
+                      <span className="min-w-0 truncate text-left leading-tight">
+                        {camMeta?.camHost
+                          ? `Open CAM · ${camMeta.camHost}`
+                          : 'Open CAM Host'}
+                      </span>
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
         {/* ── SYSTEM ── */}
         <TabsContent value="system" className="space-y-6">
 
@@ -1270,99 +1749,7 @@ export default function CommandsPage() {
 
         </TabsContent>
 
-        {/* ── CAMERA ── */}
-        <TabsContent value="cam">
-          <Card className="glass-card border-none">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <Camera className="w-4 h-4 text-muted-foreground" />
-                <CardTitle className="text-sm font-medium">CAM Live Feed</CardTitle>
-              </div>
-            </CardHeader>
-            <CardContent className="px-4 pb-5 flex flex-col items-center gap-4">
 
-              {/* Feed — centered, capped width, 4:3 VGA ratio */}
-              <div className="relative w-full max-w-md rounded-xl overflow-hidden bg-black aspect-[4/3]">
-                {streamActive ? (
-                  <>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      key={streamKey}
-                      src={`/api/device/${selectedDevice}/stream?k=${streamKey}`}
-                      alt="CAM live feed"
-                      className={`w-full h-full object-contain transition-opacity duration-300 ${streamStatus === 'live' ? 'opacity-100' : 'opacity-0'}`}
-                      onLoad={() => setStreamStatus('live')}
-                      onError={() => setStreamStatus('error')}
-                    />
-                    {streamStatus === 'loading' && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                        <Camera className="w-8 h-8 opacity-25 animate-pulse" />
-                        <p className="text-xs">Connecting to camera…</p>
-                      </div>
-                    )}
-                    {streamStatus === 'error' && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                        <VideoOff className="w-8 h-8 opacity-25" />
-                        <p className="text-xs">Camera unreachable</p>
-                      </div>
-                    )}
-                    {/* Live badge overlay */}
-                    {streamStatus === 'live' && (
-                      <div className="absolute top-2 left-2 flex items-center gap-1.5 px-2 py-1 rounded-full bg-black/50 backdrop-blur-sm">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
-                        <span className="text-xs text-emerald-400 font-medium">Live</span>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-                    <Camera className="w-10 h-10 opacity-15" />
-                    <p className="text-sm opacity-40">Stream not started</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Controls row */}
-              <div className="flex items-center gap-2">
-                {!streamActive ? (
-                  <Button
-                    size="sm"
-                    className="gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-                    onClick={() => { setStreamStatus('loading'); setStreamActive(true); setStreamKey(k => k + 1) }}
-                  >
-                    <Camera className="w-3.5 h-3.5" />
-                    Start Live View
-                  </Button>
-                ) : (
-                  <>
-                    <Button
-                      size="sm" variant="outline" className="gap-1.5 text-xs"
-                      onClick={() => { setStreamActive(false); setStreamStatus('idle') }}
-                    >
-                      <VideoOff className="w-3.5 h-3.5" />
-                      Stop
-                    </Button>
-                    <Button
-                      size="sm" variant="outline" className="gap-1.5 text-xs"
-                      onClick={() => { setStreamStatus('loading'); setStreamKey(k => k + 1) }}
-                    >
-                      <RefreshCcw className="w-3.5 h-3.5" />
-                      Reconnect
-                    </Button>
-                  </>
-                )}
-                <Button
-                  size="sm" variant="outline" className="gap-1.5 text-xs"
-                  onClick={() => window.open(`/api/device/${selectedDevice}/snapshot?t=${Date.now()}`, '_blank')}
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Snapshot
-                </Button>
-              </div>
-
-            </CardContent>
-          </Card>
-        </TabsContent>
       </Tabs>
 
       {/* ── Live Response Log ── */}

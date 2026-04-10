@@ -4,6 +4,18 @@ import type { Server } from 'http'
 import type { Duplex } from 'stream'
 import prisma from './prisma'
 
+/**
+ * High-volume WebSocket traces (every sensor frame, each browser subscribe, heartbeats).
+ * Off by default in production — set WS_VERBOSE=1 or WS_VERBOSE=true to enable (e.g. local debug).
+ * Errors and security warnings are always logged.
+ */
+const WS_VERBOSE =
+  process.env.WS_VERBOSE === '1' || process.env.WS_VERBOSE === 'true'
+
+function wsVerbose(...args: unknown[]) {
+  if (WS_VERBOSE) console.log(...args)
+}
+
 // Store active WebSocket connections by device ID (for clients subscribing to device updates)
 // Use a global singleton so all Next.js bundles (API routes, custom server) share the same Map
 declare global {
@@ -170,7 +182,7 @@ export function createWebSocketServer(server: Server) {
     // include a 'source' param; ESP32 firmware does not — use that to label them.
     const connLabel = connSourceParam ?? (connDeviceId ? 'esp32' : 'unknown')
     const connSource = connDeviceId ? `${connLabel} for ${connDeviceId}` : `${connLabel} client`
-    console.log(`[WebSocket] New connection from ${connSource}`)
+    wsVerbose(`[WebSocket] New connection from ${connSource}`)
     // Set to true only when a status-update message is received.
     // Browser clients (kiosk, dashboard) also pass deviceId in the URL but never send
     // status-update, so they are NOT treated as device connections. Detecting client type
@@ -189,7 +201,7 @@ export function createWebSocketServer(server: Server) {
         deviceConnections.set(deviceId, connections)
       }
       connections.add(ws)
-      console.log(`[WebSocket] [${connLabel}] auto-subscribed to device: ${deviceId}`);
+      wsVerbose(`[WebSocket] [${connLabel}] auto-subscribed to device: ${deviceId}`)
 
       // IMMEDIATE: Tell the joining client if the device is live right now.
       // deviceLiveConnections and deviceCachedPairedStatus are in-memory — no DB wait needed.
@@ -239,7 +251,7 @@ export function createWebSocketServer(server: Server) {
               }
             }))
           } else if (!device) {
-             console.log(`[WebSocket] New device identified (not in DB): ${deviceId}`)
+             wsVerbose(`[WebSocket] New device identified (not in DB): ${deviceId}`)
           }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : 'Unknown error'
@@ -277,7 +289,7 @@ export function createWebSocketServer(server: Server) {
           }
           connections.add(ws)
 
-          console.log(`[WebSocket] [${connLabel}] subscribed to device: ${subscribeDeviceId}`)
+          wsVerbose(`[WebSocket] [${connLabel}] subscribed to device: ${subscribeDeviceId}`)
 
           ws.send(JSON.stringify({
             type: 'subscribed',
@@ -361,8 +373,11 @@ export function createWebSocketServer(server: Server) {
           const lastDbUpdate = deviceLastDbUpdateTime.get(updateDeviceId) || 0;
           deviceLastStatusTime.set(updateDeviceId, now)
 
-          // Silence status-update logging unless there's a change or it's the first time
-          if (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId)) {
+          // High-frequency: only when WS_VERBOSE=1 (throttled to ≤1/min per device when verbose)
+          if (
+            WS_VERBOSE &&
+            (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId))
+          ) {
             console.log(`[WebSocket] Status heartbeat from device: ${updateDeviceId}`)
           }
 
@@ -442,7 +457,7 @@ export function createWebSocketServer(server: Server) {
         // Handle payment system enable from frontend
         else if (message.type === 'enable-payment' && message.deviceId) {
           const paymentDeviceId = message.deviceId as string
-          console.log(`[WebSocket] Enable payment system on ${paymentDeviceId}`)
+          wsVerbose(`[WebSocket] Enable payment system on ${paymentDeviceId}`)
           // Forward to ESP32 device
           broadcastToDevice(paymentDeviceId, message)
         }
@@ -450,7 +465,7 @@ export function createWebSocketServer(server: Server) {
         // Handle payment system disable from frontend
         else if (message.type === 'disable-payment' && message.deviceId) {
           const paymentDeviceId = message.deviceId as string
-          console.log(`[WebSocket] Disable payment system on ${paymentDeviceId}`)
+          wsVerbose(`[WebSocket] Disable payment system on ${paymentDeviceId}`)
           // Forward to ESP32 device
           broadcastToDevice(paymentDeviceId, message)
         }
@@ -458,7 +473,9 @@ export function createWebSocketServer(server: Server) {
         // Handle sensor data from ESP32 (temperature & humidity)
         else if (message.type === 'sensor-data' && message.deviceId) {
           const sensorDeviceId = message.deviceId as string
-          console.log(`[WebSocket] Sensor data from ${sensorDeviceId}: Temp ${message.temperature}°C, Humidity ${message.humidity}%, CAM Synced: ${message.camSynced}, CAM ID: ${message.camDeviceId || 'NOT PROVIDED'}`)
+          wsVerbose(
+            `[WebSocket] Sensor data from ${sensorDeviceId}: Temp ${message.temperature}°C, Humidity ${message.humidity}%, CAM Synced: ${message.camSynced}, CAM ID: ${message.camDeviceId || 'NOT PROVIDED'}`
+          )
 
           // Update camSynced and camDeviceId in database only if they changed
           if (message.camSynced !== undefined || message.camDeviceId) {
@@ -499,7 +516,9 @@ export function createWebSocketServer(server: Server) {
         // Handle CAM sync status from ESP32 (main board)
         else if (message.type === 'cam-sync-status' && message.deviceId) {
           const syncDeviceId = message.deviceId as string
-          console.log(`[WebSocket] CAM sync status from ${syncDeviceId}: ${message.camSynced ? 'SYNCED' : 'NOT_SYNCED'}${message.camDeviceId ? `, CAM ID: ${message.camDeviceId}` : ''}`)
+          wsVerbose(
+            `[WebSocket] CAM sync status from ${syncDeviceId}: ${message.camSynced ? 'SYNCED' : 'NOT_SYNCED'}${message.camDeviceId ? `, CAM ID: ${message.camDeviceId}` : ''}`
+          )
 
           // Update camSynced and camDeviceId in database - throttle to once per 60s
           const now = Date.now()
@@ -554,7 +573,9 @@ export function createWebSocketServer(server: Server) {
         // Handle distance data from ESP32 (atomizer & foam levels)
         else if (message.type === 'distance-data' && message.deviceId) {
           const distanceDeviceId = message.deviceId as string
-          console.log(`[WebSocket] Distance data from ${distanceDeviceId}: Atomizer ${message.atomizerDistance}cm, Foam ${message.foamDistance}cm`)
+          wsVerbose(
+            `[WebSocket] Distance data from ${distanceDeviceId}: Atomizer ${message.atomizerDistance}cm, Foam ${message.foamDistance}cm`
+          )
           // Broadcast to all clients subscribed to this device
           broadcastToDevice(distanceDeviceId, message)
         }
@@ -578,7 +599,7 @@ export function createWebSocketServer(server: Server) {
               })
               if (entry) {
                 enrichedMessage = { ...message, cleaningDistanceMm: entry.distanceMm }
-                console.log(`[WebSocket] Injecting cleaningDistanceMm=${entry.distanceMm} for ${message.careType}`)
+                wsVerbose(`[WebSocket] Injecting cleaningDistanceMm=${entry.distanceMm} for ${message.careType}`)
               }
             } catch (e) {
               console.error('[WebSocket] Failed to fetch cleaning distance:', e)
@@ -594,7 +615,9 @@ export function createWebSocketServer(server: Server) {
           const rem =
             (message as { remainingSeconds?: unknown; timeRemaining?: unknown }).remainingSeconds ??
             (message as { timeRemaining?: unknown }).timeRemaining
-          console.log(`[WebSocket] Service status from ${statusDeviceId}: ${(message as { progress?: unknown }).progress ?? '?'}% complete, ${rem ?? '?'}s remaining`)
+          wsVerbose(
+            `[WebSocket] Service status from ${statusDeviceId}: ${(message as { progress?: unknown }).progress ?? '?'}% complete, ${rem ?? '?'}s remaining`
+          )
           // Broadcast to all clients subscribed to this device
           broadcastToDevice(statusDeviceId, message)
         }
@@ -612,7 +635,9 @@ export function createWebSocketServer(server: Server) {
         // Handle CAM status updates
         else if (message.type === 'cam-status' && message.deviceId) {
           const camDeviceId = message.deviceId as string
-          console.log(`[WebSocket] CAM status from ${camDeviceId}: camera=${message.cameraReady}, classifying=${message.classifying}`)
+          wsVerbose(
+            `[WebSocket] CAM status from ${camDeviceId}: camera=${message.cameraReady}, classifying=${message.classifying}`
+          )
           // Broadcast to main board and UI clients
           // CAM device ID is SSCM-CAM-xxx, main board is SSCM-xxx
           const mainDeviceId = camDeviceId.replace('SSCM-CAM-', 'SSCM-')
@@ -641,7 +666,11 @@ export function createWebSocketServer(server: Server) {
         // Backward compat: also handles old path where CAM sent directly (SSCM-CAM-xxx)
         else if (message.type === 'classification-result' && message.deviceId) {
           const sourceId = message.deviceId as string
-          console.log(`[WebSocket] Classification result from ${sourceId}: ${message.result} (${(message.confidence * 100).toFixed(1)}%)`)
+          const confPct =
+            typeof message.confidence === 'number' && Number.isFinite(message.confidence)
+              ? `${(message.confidence * 100).toFixed(1)}%`
+              : 'n/a'
+          console.log(`[WebSocket] Classification result from ${sourceId}: ${message.result} (${confPct})`)
 
           if (sourceId.startsWith('SSCM-CAM-')) {
             // Old path: CAM sent directly (backward compat)
@@ -687,7 +716,7 @@ export function createWebSocketServer(server: Server) {
         // Handle enable-classification (page enter) from frontend
         else if (message.type === 'enable-classification' && message.deviceId) {
           const mainDeviceId = message.deviceId as string
-          console.log(`[WebSocket] Classification page entered, enabling LED for ${mainDeviceId}`)
+          wsVerbose(`[WebSocket] Classification page entered, enabling LED for ${mainDeviceId}`)
           broadcastToDevice(mainDeviceId, {
             type: 'enable-classification',
             deviceId: mainDeviceId
@@ -697,7 +726,7 @@ export function createWebSocketServer(server: Server) {
         // Handle disable-classification (page leave) from frontend
         else if (message.type === 'disable-classification' && message.deviceId) {
           const mainDeviceId = message.deviceId as string
-          console.log(`[WebSocket] Classification page exited, disabling LED for ${mainDeviceId}`)
+          wsVerbose(`[WebSocket] Classification page exited, disabling LED for ${mainDeviceId}`)
           broadcastToDevice(mainDeviceId, {
             type: 'disable-classification',
             deviceId: mainDeviceId
@@ -802,7 +831,7 @@ export function createWebSocketServer(server: Server) {
           deviceLastDbUpdateTime.delete(closedDeviceId)
           deviceLastStatusTime.delete(closedDeviceId)
         }
-        console.log(`[WebSocket] [${isDeviceWsClient ? 'esp32' : connLabel}] unsubscribed from device: ${closedDeviceId}`)
+        wsVerbose(`[WebSocket] [${isDeviceWsClient ? 'esp32' : connLabel}] unsubscribed from device: ${closedDeviceId}`)
       }
     })
 
