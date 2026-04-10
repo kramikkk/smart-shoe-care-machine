@@ -17,6 +17,8 @@ declare global {
   var _deviceLastDbUpdateTime: Map<string, number> | undefined
   // eslint-disable-next-line no-var
   var _deviceCachedPairedStatus: Map<string, boolean> | undefined
+  // eslint-disable-next-line no-var
+  var _devicePendingOfflineTimers: Map<string, NodeJS.Timeout> | undefined
 }
 const deviceConnections: Map<string, Set<WebSocket>> =
   global._deviceConnections ?? (global._deviceConnections = new Map())
@@ -38,11 +40,12 @@ const deviceLastDbUpdateTime: Map<string, number> =
 const deviceCachedPairedStatus: Map<string, boolean> =
   global._deviceCachedPairedStatus ?? (global._deviceCachedPairedStatus = new Map())
 
-// Offline after 3 missed status-update cycles (ESP32 sends every 5s → 15s threshold).
-// Using 3x the send interval prevents false offline events caused by normal network jitter.
-// A 1ms race between the timeout interval and an in-flight status-update was causing
-// the device to flicker offline every ~5s, clearing sensor data and disrupting sync.
-const DEVICE_STATUS_TIMEOUT_MS = 15_000
+const devicePendingOfflineTimers: Map<string, NodeJS.Timeout> =
+  global._devicePendingOfflineTimers ?? (global._devicePendingOfflineTimers = new Map())
+
+// Offline timeout for ungraceful disconnects (power cut/network loss).
+// ESP32 sends status every 5s; keep >2 beats to avoid jitter flapping.
+const DEVICE_STATUS_TIMEOUT_MS = 12_000
 
 // Token validation — requires WS_AUTH_TOKEN (enforced at startup in server.ts)
 function validateWebSocketToken(token: string | null): boolean {
@@ -87,7 +90,7 @@ export function createWebSocketServer(server: Server) {
         broadcastToDevice(devId, { type: 'device-offline', deviceId: devId })
       }
     })
-  }, 5_000)
+  }, 1_000)
   deviceTimeoutInterval.unref()
   wss.on('close', () => clearInterval(deviceTimeoutInterval))
 
@@ -342,6 +345,11 @@ export function createWebSocketServer(server: Server) {
         // Handle device status update from ESP32
         else if (message.type === 'status-update' && message.deviceId) {
           const updateDeviceId = message.deviceId as string
+          const pendingOffline = devicePendingOfflineTimers.get(updateDeviceId)
+          if (pendingOffline) {
+            clearTimeout(pendingOffline)
+            devicePendingOfflineTimers.delete(updateDeviceId)
+          }
 
           // Mark this connection as an actual ESP32 device — only firmware sends status-update.
           // This is used by the close handler to decide whether to broadcast device-offline.
@@ -349,8 +357,9 @@ export function createWebSocketServer(server: Server) {
             console.log(`[WebSocket] ESP32 identified: ${updateDeviceId}`)
           }
           // Track whether this device was already considered online before this message.
-          // Used below to decide whether to broadcast device-online (only on transition).
-          const wasAlreadyLive = deviceLiveConnections.has(updateDeviceId)
+          // Only treat it as live if the old socket is actually OPEN.
+          const oldWs = deviceLiveConnections.get(updateDeviceId)
+          const wasAlreadyLive = !!oldWs && oldWs.readyState === WebSocket.OPEN
 
           isDeviceWsClient = true
           deviceLiveConnections.set(updateDeviceId, ws)
@@ -380,9 +389,7 @@ export function createWebSocketServer(server: Server) {
           // Throttle database writes to once every 60 seconds to prevent connection pool exhaustion
           let isPaired = deviceCachedPairedStatus.get(updateDeviceId) ?? false;
 
-          // Only broadcast device-online on the transition from offline→online.
-          // Skipping the broadcast on every 5s heartbeat prevents React re-renders and
-          // spurious state updates in all subscribed browser clients.
+          // Broadcast online only on offline→online transition.
           if (!wasAlreadyLive) {
             broadcastToDevice(updateDeviceId, {
               type: 'device-online',
@@ -405,16 +412,8 @@ export function createWebSocketServer(server: Server) {
               deviceCachedPairedStatus.set(updateDeviceId, isPaired);
               deviceLastDbUpdateTime.set(updateDeviceId, now);
 
-              // Re-broadcast with confirmed paired status from DB only if this was a
-              // transition (first status-update after coming online or after cold start).
-              if (!wasAlreadyLive) {
-                broadcastToDevice(updateDeviceId, {
-                  type: 'device-online',
-                  deviceId: updateDeviceId,
-                  paired: isPaired,
-                  lastSeen: new Date().toISOString()
-                })
-              }
+              // Do not re-broadcast device-online here; it was already emitted above.
+              // This avoids duplicate online events during reconnect/session refresh.
             }
 
             // Send acknowledgment with current paired status for sync
@@ -744,6 +743,22 @@ export function createWebSocketServer(server: Server) {
           })
         }
 
+        // Handle graceful offline intent from ESP32 before restart/disconnect.
+        else if (message.type === 'going-offline' && message.deviceId) {
+          const offlineDeviceId = message.deviceId as string
+          const pending = devicePendingOfflineTimers.get(offlineDeviceId)
+          if (pending) {
+            clearTimeout(pending)
+            devicePendingOfflineTimers.delete(offlineDeviceId)
+          }
+          if (deviceLiveConnections.get(offlineDeviceId) === ws) {
+            deviceLiveConnections.delete(offlineDeviceId)
+            deviceLastStatusTime.delete(offlineDeviceId)
+            console.log(`[WebSocket] ESP32 graceful offline: ${offlineDeviceId} — broadcasting offline status`)
+            broadcastToDevice(offlineDeviceId, { type: 'device-offline', deviceId: offlineDeviceId })
+          }
+        }
+
         // Forward firmware log messages to kiosk subscribers
         else if (message.type === 'firmware-log' && message.deviceId) {
           broadcastToDevice(message.deviceId as string, message)
@@ -761,38 +776,49 @@ export function createWebSocketServer(server: Server) {
     ws.on('close', () => {
       // Remove connection from all subscriptions
       if (deviceId) {
-        const connections = deviceConnections.get(deviceId)
+        const closedDeviceId = deviceId
+        const connections = deviceConnections.get(closedDeviceId)
         if (connections) {
           connections.delete(ws)
           if (connections.size === 0) {
-            deviceConnections.delete(deviceId)
+            deviceConnections.delete(closedDeviceId)
           }
         }
-        // If the ESP32 device itself disconnected, clean up live connection tracking.
-        // Do NOT broadcast device-offline here — let the deviceTimeoutInterval handle it
-        // after DEVICE_STATUS_TIMEOUT_MS of silence. This prevents false offline flashes
-        // when the ESP32 briefly drops and reconnects within its 5s reconnect window:
-        // the timeout won't fire if a fresh status-update arrives before the threshold.
+        // If the ESP32 device itself disconnected, clean up live connection tracking and
+        // broadcast offline immediately for faster UI sync on deliberate restarts/unpair.
         if (isDeviceWsClient) {
-          if (deviceLiveConnections.get(deviceId) === ws) {
-            deviceLiveConnections.delete(deviceId)
-            // Leave deviceLastStatusTime intact — the timeout uses it to decide when to
-            // actually fire device-offline. If the ESP32 reconnects quickly, it will
-            // overwrite deviceLastStatusTime via status-update before the threshold.
-            console.log(`[WebSocket] ESP32 device disconnected: ${deviceId} — waiting for timeout or reconnect`)
+          if (deviceLiveConnections.get(closedDeviceId) === ws) {
+            deviceLiveConnections.delete(closedDeviceId)
+            const pending = setTimeout(() => {
+              // Debounce close events to avoid offline/online flaps on quick reconnect.
+              // If a new status-update came in, this timer is canceled in the message handler.
+              const liveWs = deviceLiveConnections.get(closedDeviceId)
+              if (!liveWs || liveWs.readyState !== WebSocket.OPEN) {
+                deviceLastStatusTime.delete(closedDeviceId)
+                console.log(`[WebSocket] ESP32 device disconnected: ${closedDeviceId} — broadcasting offline status`)
+                broadcastToDevice(closedDeviceId, { type: 'device-offline', deviceId: closedDeviceId })
+              }
+              devicePendingOfflineTimers.delete(closedDeviceId)
+            }, 7000)
+            devicePendingOfflineTimers.set(closedDeviceId, pending)
           } else {
-            console.log(`[WebSocket] Stale ESP32 connection closed: ${deviceId} — ignoring since a newer connection exists`)
+            console.log(`[WebSocket] Stale ESP32 connection closed: ${closedDeviceId} — ignoring since a newer connection exists`)
           }
         }
         // When no subscribers remain for a device (ESP32 + all browser clients gone),
         // clean up caches that the deviceTimeoutInterval won't reach for graceful disconnects.
-        const remainingConnections = deviceConnections.get(deviceId)
+        const remainingConnections = deviceConnections.get(closedDeviceId)
         if (!remainingConnections || remainingConnections.size === 0) {
-          deviceCachedPairedStatus.delete(deviceId)
-          deviceLastDbUpdateTime.delete(deviceId)
-          deviceLastStatusTime.delete(deviceId)
+          const pending = devicePendingOfflineTimers.get(closedDeviceId)
+          if (pending) {
+            clearTimeout(pending)
+            devicePendingOfflineTimers.delete(closedDeviceId)
+          }
+          deviceCachedPairedStatus.delete(closedDeviceId)
+          deviceLastDbUpdateTime.delete(closedDeviceId)
+          deviceLastStatusTime.delete(closedDeviceId)
         }
-        console.log(`[WebSocket] [${isDeviceWsClient ? 'esp32' : connLabel}] unsubscribed from device: ${deviceId}`)
+        console.log(`[WebSocket] [${isDeviceWsClient ? 'esp32' : connLabel}] unsubscribed from device: ${closedDeviceId}`)
       }
     })
 

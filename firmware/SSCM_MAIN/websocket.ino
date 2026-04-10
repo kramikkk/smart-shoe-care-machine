@@ -60,6 +60,14 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         "{\"type\":\"subscribe\",\"deviceId\":\"" + deviceId + "\"}";
     webSocket.sendTXT(subMsg);
     wsLog("info", "WS Connected (firmware v" + String(FIRMWARE_VERSION) + ")");
+
+    // Immediate status update so backend marks device online right away.
+    String statusMsg = "{\"type\":\"status-update\",\"deviceId\":\"" +
+                       deviceId +
+                       "\",\"camSynced\":" + (camIsReady ? "true" : "false") +
+                       ",\"isPaired\":" + (isPaired ? "true" : "false") + "}";
+    webSocket.sendTXT(statusMsg);
+    lastStatusUpdate = millis();
     break;
   }
 
@@ -91,7 +99,10 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
           isPaired = false;
           prefs.putBool("paired", false);
           wsLog("warn", "Device unpaired — restarting");
-          delay(500);
+          LOG("[WS] Global restart requested");
+          sendGoingOffline();
+          webSocket.disconnect();
+          delay(1000);
           ESP.restart();
         }
       }
@@ -175,6 +186,10 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       classificationLedOn = false;
       sendLedControl(CAM_MSG_LED_DISABLE);
     } else if (message.indexOf("\"type\":\"restart-device\"") != -1) {
+      LOG("[WS] Global restart requested");
+      sendGoingOffline();
+      webSocket.disconnect();
+      delay(1000);
       delay(2000);
       ESP.restart();
     } else if (message.indexOf("\"type\":\"serial-command\"") != -1) {
@@ -189,6 +204,28 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 
   case WStype_ERROR:
     wsConnected = false;
+    LOG("[WS] Event: ERROR");
+    break;
+
+  case WStype_BIN:
+    break;
+
+  case WStype_FRAGMENT_TEXT_START:
+    break;
+
+  case WStype_FRAGMENT_BIN_START:
+    break;
+
+  case WStype_FRAGMENT:
+    break;
+
+  case WStype_FRAGMENT_FIN:
+    break;
+
+  case WStype_PING:
+    break;
+
+  case WStype_PONG:
     break;
   }
 }
@@ -197,7 +234,8 @@ void connectWebSocket() {
   if (!wifiConnected || wsInitialized) return;
 
   LOG("[WS] Connecting to backend");
-  String wsPath = "/api/ws?deviceId=" + deviceId;
+  // Add a unique session query param to avoid stale proxy/session reuse.
+  String wsPath = "/api/ws?deviceId=" + deviceId + "&v=" + String(millis());
   if (groupToken.length() > 0) wsPath += "&groupToken=" + groupToken;
 
 #if USE_LOCAL_BACKEND
@@ -209,4 +247,12 @@ void connectWebSocket() {
   webSocket.setReconnectInterval(WS_RECONNECT_INTERVAL);
   webSocket.enableHeartbeat(15000, 3000, 2);
   wsInitialized = true;
+}
+
+void sendGoingOffline() {
+  if (!wsConnected || deviceId.length() == 0) return;
+  String msg = "{\"type\":\"going-offline\",\"deviceId\":\"" + deviceId + "\"}";
+  webSocket.sendTXT(msg);
+  // Give TCP a brief window to flush before disconnect/restart.
+  delay(150);
 }

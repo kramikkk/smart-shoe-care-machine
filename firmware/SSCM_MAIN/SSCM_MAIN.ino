@@ -612,14 +612,19 @@ void loop() {
     wifiRetryStart = 0;
     wifiServer.stop();
     WiFi.softAPdisconnect(true);
+
+    LOG("[WIFI] Connected! Wait 3s for system stabilisation...");
+    delay(3000);
+
     if (!isPaired)
       sendDeviceRegistration();
-    if (!wsConnected) {
-      webSocket.disconnect();
-      wsInitialized = false;
-    }
+
+    LOG("[WS] Powering up connection...");
+    webSocket.disconnect();
+    wsInitialized = false;
     connectWebSocket();
-    delay(100);
+
+    delay(500);
     sendPairingBroadcast();
   }
 
