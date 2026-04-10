@@ -45,7 +45,7 @@ const devicePendingOfflineTimers: Map<string, NodeJS.Timeout> =
 
 // Offline timeout for ungraceful disconnects (power cut/network loss).
 // ESP32 sends status every 5s; keep >2 beats to avoid jitter flapping.
-const DEVICE_STATUS_TIMEOUT_MS = 12_000
+const DEVICE_STATUS_TIMEOUT_MS = 10_000
 
 // Token validation — requires WS_AUTH_TOKEN (enforced at startup in server.ts)
 function validateWebSocketToken(token: string | null): boolean {
