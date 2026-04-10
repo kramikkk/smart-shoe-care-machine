@@ -8,6 +8,7 @@ type Device = {
   id: string; deviceId: string; name: string | null; pairingCode: string | null
   paired: boolean; pairedAt: string | null; pairedBy: string | null; lastSeen: string
   createdAt: string; camSynced: boolean; camDeviceId: string | null
+  online?: boolean
   pairedByUser?: { name: string; email: string }
 }
 
@@ -16,7 +17,11 @@ export type DeviceWithStatus = Device & { status: 'connected' | 'disconnected' |
 function withStatus(devices: Device[]): DeviceWithStatus[] {
   return devices.filter(d => d.paired).map(d => ({
     ...d,
-    status: d.lastSeen && (Date.now() - new Date(d.lastSeen).getTime()) / 1000 < 60 ? 'connected' : 'disconnected',
+    // Prefer authoritative in-memory WS liveness from backend; fallback to lastSeen
+    // only if older API payloads do not include `online`.
+    status: d.online !== undefined
+      ? (d.online ? 'connected' : 'disconnected')
+      : (d.lastSeen && (Date.now() - new Date(d.lastSeen).getTime()) / 1000 < 12 ? 'connected' : 'disconnected'),
   }))
 }
 

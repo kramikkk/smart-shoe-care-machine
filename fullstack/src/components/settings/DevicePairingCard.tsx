@@ -297,11 +297,6 @@ export function DevicePairingCard({
                           <Badge variant="outline" className={`text-[10px] h-4 px-1.5 transition-colors duration-500 ${badgeClass}`}>
                             {isActuallyConnected ? 'Online' : isActuallyPairing ? 'Pairing' : 'Offline'}
                           </Badge>
-                          {isCurrentActive && isActuallyConnected && (
-                            <Badge variant="outline" className="text-[9px] h-3.5 px-1 bg-blue-500/10 text-blue-400 border-blue-500/20">
-                              LIVE
-                            </Badge>
-                          )}
                         </div>
                       </div>
 

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { auth } from '@/lib/auth'
 import { headers } from 'next/headers'
+import { isDeviceLive } from '@/lib/websocket'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,6 +36,7 @@ export async function GET() {
     // Add user info to each device
     const devicesWithUser = devices.map(device => ({
       ...device,
+      online: isDeviceLive(device.deviceId),
       pairedByUser: {
         id: session.user.id,
         name: session.user.name,

@@ -39,7 +39,7 @@ const ModePage = () => {
 
   return (
     <div className="relative">
-      <BackButton />
+      <BackButton href="/kiosk" />
 
       <StepIndicator steps={currentSteps} currentStep={0} />
 

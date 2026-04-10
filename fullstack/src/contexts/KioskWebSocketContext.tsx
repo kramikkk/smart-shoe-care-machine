@@ -45,11 +45,15 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
   const connectionStateRef = useRef<ConnectionState>(ConnectionState.DISCONNECTED)
   const reconnectAttemptsRef = useRef<number>(0)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const connectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const intentionalCloseRef = useRef<boolean>(false)
   const messageHandlersRef = useRef<Set<(message: WebSocketMessage) => void>>(new Set())
   const prevIsPairedRef = useRef<boolean | null>(null)
 
   const connectWebSocket = useCallback((devId: string) => {
+    // This connect attempt is active/expected.
+    intentionalCloseRef.current = false
+
     // Prevent duplicate connections
     if (connectionStateRef.current === ConnectionState.CONNECTING ||
         connectionStateRef.current === ConnectionState.CONNECTED) {
@@ -61,6 +65,10 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
+    }
+    if (connectTimeoutRef.current) {
+      clearTimeout(connectTimeoutRef.current)
+      connectTimeoutRef.current = null
     }
 
     connectionStateRef.current = reconnectAttemptsRef.current > 0
@@ -76,7 +84,20 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
+    // Some browsers/networks can leave WS in CONNECTING too long.
+    // Force-close stale attempts so onclose reconnect logic kicks in.
+    connectTimeoutRef.current = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) {
+        debug.warn('[WebSocket] Connect timeout, retrying...')
+        ws.close()
+      }
+    }, 6000)
+
     ws.onopen = () => {
+      if (connectTimeoutRef.current) {
+        clearTimeout(connectTimeoutRef.current)
+        connectTimeoutRef.current = null
+      }
       debug.log('[WebSocket] Connected successfully')
       connectionStateRef.current = ConnectionState.CONNECTED
       setIsConnected(true)
@@ -141,9 +162,15 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
       console.error('[WebSocket] Connection error')
       connectionStateRef.current = ConnectionState.DISCONNECTED
       setIsConnected(false)
+      // Ensure stalled sockets transition to onclose quickly.
+      try { ws.close() } catch {}
     }
 
     ws.onclose = (event) => {
+      if (connectTimeoutRef.current) {
+        clearTimeout(connectTimeoutRef.current)
+        connectTimeoutRef.current = null
+      }
       connectionStateRef.current = ConnectionState.DISCONNECTED
       setIsConnected(false)
 
@@ -220,6 +247,9 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
       intentionalCloseRef.current = true
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
+      }
+      if (connectTimeoutRef.current) {
+        clearTimeout(connectTimeoutRef.current)
       }
       if (wsRef.current) {
         wsRef.current.close()

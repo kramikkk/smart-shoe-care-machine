@@ -23,7 +23,14 @@ const VALID_SHOE_TYPES = ['mesh', 'canvas', 'rubber'] as const
 
 export default function ClassifyPage() {
   const router = useRouter()
-  const { isConnected, deviceId, sendMessage, subscribe, onMessage } = useKioskWebSocket()
+  const {
+    isConnected,
+    camSynced: contextCamSynced,
+    deviceId,
+    sendMessage,
+    subscribe,
+    onMessage
+  } = useKioskWebSocket()
   const [state, setState] = useState<ClassificationState>('connecting')
   const [camSynced, setCamSynced] = useState<boolean>(false)
   const [hasReceivedSyncStatus, setHasReceivedSyncStatus] = useState<boolean>(false)
@@ -35,6 +42,14 @@ export default function ClassifyPage() {
   const subscriptionsSetRef = useRef<boolean>(false)
   const hasResultRef = useRef<boolean>(false)
   const syncDelayRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Seed local sync state from context so we don't get stuck waiting for
+  // an extra sensor/cam event before starting classification.
+  useEffect(() => {
+    if (!isConnected) return
+    setCamSynced(contextCamSynced)
+    setHasReceivedSyncStatus(true)
+  }, [isConnected, contextCamSynced])
 
   useEffect(() => {
     if (!deviceId || deviceId === 'No device configured') {
@@ -124,6 +139,16 @@ export default function ClassifyPage() {
       }
       else if (message.type === 'cam-sync-status') {
         debug.log(`[Classify] cam-sync-status — camSynced: ${message.camSynced}`)
+        setCamSynced(message.camSynced)
+        setHasReceivedSyncStatus(true)
+      }
+      else if (message.type === 'device-update' && message.data?.camSynced !== undefined) {
+        debug.log(`[Classify] device-update — camSynced: ${message.data.camSynced}`)
+        setCamSynced(message.data.camSynced)
+        setHasReceivedSyncStatus(true)
+      }
+      else if (message.type === 'device-online' && message.camSynced !== undefined) {
+        debug.log(`[Classify] device-online — camSynced: ${message.camSynced}`)
         setCamSynced(message.camSynced)
         setHasReceivedSyncStatus(true)
       }
@@ -232,7 +257,8 @@ export default function ClassifyPage() {
   }
 
   const handleCancel = () => {
-    router.push('/kiosk/mode')
+    // Replace current history entry so browser Back won't return to classify page.
+    router.replace('/kiosk/mode')
   }
 
   const isValidShoeType = result && VALID_SHOE_TYPES.includes(result.shoeType as typeof VALID_SHOE_TYPES[number])

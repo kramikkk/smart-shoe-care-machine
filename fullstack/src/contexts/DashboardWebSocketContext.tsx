@@ -178,6 +178,7 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
   // Debounce alert sync to avoid firing on every rapid sensor tick
   const alertSyncTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const connectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const dataTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const messageHandlersRef = useRef<Set<MessageHandler>>(new Set())
@@ -253,7 +254,16 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
       ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
+      // Avoid hanging forever in CONNECTING on flaky networks.
+      if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current)
+      connectTimeoutRef.current = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          try { ws.close() } catch {}
+        }
+      }, 6000)
+
       ws.onopen = () => {
+        if (connectTimeoutRef.current) { clearTimeout(connectTimeoutRef.current); connectTimeoutRef.current = null }
         // Don't set isConnected here — only device-online message confirms the device is alive
         setIsLoadingData(true)
         ws.send(JSON.stringify({ type: 'subscribe', deviceId: selectedDevice }))
@@ -265,6 +275,11 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data)
+          const messageDeviceId = typeof message.deviceId === 'string' ? message.deviceId : null
+          const isDeviceScopedMessage = !!messageDeviceId
+          if (isDeviceScopedMessage && messageDeviceId !== selectedDevice) {
+            return
+          }
 
           if (message.type === 'sensor-data') {
             if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
@@ -366,15 +381,19 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
       }
 
       ws.onerror = () => {
+        if (connectTimeoutRef.current) { clearTimeout(connectTimeoutRef.current); connectTimeoutRef.current = null }
         // Don't wipe sensor data on transient errors — the ESP32's data is still
         // valid. Only clear on authoritative device-offline from the server.
         setIsConnected(false)
         setIsLoadingData(false)
         if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
         wsRef.current = null
+        // Push to onclose path promptly so reconnect timer starts.
+        try { ws.close() } catch {}
       }
 
       ws.onclose = () => {
+        if (connectTimeoutRef.current) { clearTimeout(connectTimeoutRef.current); connectTimeoutRef.current = null }
         // Don't wipe sensor data on reconnect — this causes the gauges to flash
         // to zero every 5s during a brief WS drop. Sensor data is preserved so
         // the dashboard stays stable. Data is cleared only on device-offline.
@@ -390,6 +409,7 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
 
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+      if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current)
       if (alertSyncTimeoutRef.current) clearTimeout(alertSyncTimeoutRef.current)
       if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current)
       // Reset alert key tracking so remount starts fresh (no stale re-POST surge)
