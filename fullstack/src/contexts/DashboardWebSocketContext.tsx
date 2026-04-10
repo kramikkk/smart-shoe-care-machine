@@ -265,6 +265,11 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data)
+          const messageDeviceId = typeof message.deviceId === 'string' ? message.deviceId : null
+          const isDeviceScopedMessage = !!messageDeviceId
+          if (isDeviceScopedMessage && messageDeviceId !== selectedDevice) {
+            return
+          }
 
           if (message.type === 'sensor-data') {
             if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }

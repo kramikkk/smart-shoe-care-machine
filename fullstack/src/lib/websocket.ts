@@ -296,9 +296,6 @@ export function createWebSocketServer(server: Server) {
           }
 
           // Push full pairing state async (pairingCode, groupToken, camSynced need DB).
-          // Also send device-online from DB lastSeen as a fallback for the case where
-          // the server just cold-started and deviceLiveConnections is empty but the
-          // ESP32 was recently active (e.g. Render cold start, brief server restart).
           ;(async () => {
             try {
               const device = await prisma.device.findUnique({
@@ -319,22 +316,6 @@ export function createWebSocketServer(server: Server) {
                     camDeviceId: device.camDeviceId,
                   }
                 }))
-
-                // DB-based device-online fallback: if the in-memory live connection map
-                // is empty (server just cold-started) but the device was seen recently,
-                // tell the joining client the device is likely online. Use a 30s window —
-                // wide enough to survive a Render cold start + ESP32 reconnect cycle.
-                const secondsSinceLastSeen = device.lastSeen
-                  ? (Date.now() - new Date(device.lastSeen).getTime()) / 1000
-                  : Infinity
-                if (secondsSinceLastSeen < 30 && !deviceLiveConnections.has(subscribeDeviceId)) {
-                  ws.send(JSON.stringify({
-                    type: 'device-online',
-                    deviceId: subscribeDeviceId,
-                    paired: device.paired,
-                    lastSeen: device.lastSeen?.toISOString()
-                  }))
-                }
               }
             } catch (err) {
               console.warn(`[WebSocket] Could not push initial device state for ${subscribeDeviceId}`)
