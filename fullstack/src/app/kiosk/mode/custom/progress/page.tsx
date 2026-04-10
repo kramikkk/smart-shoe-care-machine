@@ -36,7 +36,11 @@ const CustomProgress = () => {
     deviceIdRef.current    = deviceId
   }, [sendMessage, deviceId])
 
-  const progress = resolvedDuration !== null && totalTime > 0 ? ((totalTime - timeRemaining) / totalTime) * 100 : 0
+  const safeRemaining = Number.isFinite(timeRemaining) && timeRemaining >= 0 ? timeRemaining : 0
+  const progress =
+    resolvedDuration !== null && totalTime > 0
+      ? Math.min(100, Math.max(0, ((totalTime - safeRemaining) / totalTime) * 100))
+      : 0
 
   // Fetch configured duration from API
   useEffect(() => {
@@ -87,11 +91,28 @@ const CustomProgress = () => {
     })
   }, [isConnected, deviceId, resolvedDuration, shoe, service, care, sendMessage])
 
-  // Drive countdown entirely from WS messages — firmware is the source of truth
+  // Drive countdown entirely from WS messages — firmware sends remainingSeconds / durationSeconds
   useEffect(() => {
     const unsubscribe = onMessage((message) => {
       if (message.type === 'service-status') {
-        setTimeRemaining(message.timeRemaining)
+        const m = message as {
+          remainingSeconds?: unknown
+          timeRemaining?: unknown
+          durationSeconds?: unknown
+        }
+        const parseNonNegInt = (v: unknown): number | null => {
+          const n = typeof v === 'number' ? v : Number(v)
+          if (!Number.isFinite(n) || n < 0) return null
+          return Math.floor(n)
+        }
+        const remaining = parseNonNegInt(m.remainingSeconds ?? m.timeRemaining)
+        if (remaining !== null) {
+          setTimeRemaining(remaining)
+        }
+        const duration = parseNonNegInt(m.durationSeconds)
+        if (duration !== null && duration > 0) {
+          setTotalTime(duration)
+        }
       } else if (message.type === 'service-complete') {
         setTimeRemaining(0)
       }
@@ -116,8 +137,10 @@ const CustomProgress = () => {
   }, [timeRemaining, router, shoe, service, care])
 
   const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
+    if (!Number.isFinite(seconds) || seconds < 0) return '--:--'
+    const s = Math.floor(seconds)
+    const mins = Math.floor(s / 60)
+    const secs = s % 60
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
   }
 
@@ -207,7 +230,9 @@ const CustomProgress = () => {
       <div className="mb-6">
         <p className="text-xl text-gray-500 text-center mb-1">Time Remaining</p>
         <p className="text-6xl font-bold text-center bg-gradient-to-r from-blue-600 via-cyan-600 to-green-600 bg-clip-text text-transparent">
-          {resolvedDuration === null ? '--:--' : formatTime(timeRemaining)}
+          {resolvedDuration === null || !Number.isFinite(timeRemaining)
+            ? '--:--'
+            : formatTime(timeRemaining)}
         </p>
       </div>
 

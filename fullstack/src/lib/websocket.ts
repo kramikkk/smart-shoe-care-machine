@@ -591,7 +591,10 @@ export function createWebSocketServer(server: Server) {
         // Handle service status updates from ESP32
         else if (message.type === 'service-status' && message.deviceId) {
           const statusDeviceId = message.deviceId as string
-          console.log(`[WebSocket] Service status from ${statusDeviceId}: ${message.progress}% complete, ${message.timeRemaining}s remaining`)
+          const rem =
+            (message as { remainingSeconds?: unknown; timeRemaining?: unknown }).remainingSeconds ??
+            (message as { timeRemaining?: unknown }).timeRemaining
+          console.log(`[WebSocket] Service status from ${statusDeviceId}: ${(message as { progress?: unknown }).progress ?? '?'}% complete, ${rem ?? '?'}s remaining`)
           // Broadcast to all clients subscribed to this device
           broadcastToDevice(statusDeviceId, message)
         }
