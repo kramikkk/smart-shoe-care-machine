@@ -5,10 +5,10 @@ import { z } from 'zod'
 
 const CARE_TYPES = ['gentle', 'normal', 'strong'] as const
 
-// Firmware hardcoded defaults (STEPPER2_STEPS_PER_MM = 200)
+// Firmware-side steps ÷ STEPPER2_STEPS_PER_MM (200) — gentle 90, normal 95, strong 100 mm
 const DEFAULT_DISTANCES: Record<string, number> = {
-  gentle: 93,
-  normal: 98,
+  gentle: 90,
+  normal: 95,
   strong: 100,
 }
 

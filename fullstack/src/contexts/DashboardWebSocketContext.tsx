@@ -1,6 +1,11 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
+import {
+  parseServiceStatusActive,
+  parseServiceStatusProgress,
+  tryParseServiceStatusRemainingSeconds,
+} from '@/lib/service-status-fields'
 import { useDeviceFilter, SELECTED_DEVICE_KEY } from './DeviceFilterContext'
 
 // Re-export deriveAlerts so SystemAlertCard can use the same logic
@@ -135,7 +140,8 @@ type SensorData = {
   serviceActive: boolean
   serviceType: string
   serviceProgress: number
-  serviceTimeRemaining: number
+  /** Seconds left from firmware; `null` when payload omits time — show "--" in UI */
+  serviceTimeRemaining: number | null
   camSynced: boolean
 }
 
@@ -159,7 +165,7 @@ const DEFAULT_SENSOR_DATA: SensorData = {
   serviceActive: false,
   serviceType: '',
   serviceProgress: 0,
-  serviceTimeRemaining: 0,
+  serviceTimeRemaining: null,
   camSynced: false,
 }
 
@@ -328,12 +334,13 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
           if (message.type === 'service-status') {
             if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
             setIsLoadingData(false)
+            const m = message as Record<string, unknown>
             setSensorData(prev => ({
               ...prev,
-              serviceActive: message.active,
-              serviceType: message.serviceType || '',
-              serviceProgress: message.progress || 0,
-              serviceTimeRemaining: message.timeRemaining || 0,
+              serviceActive: parseServiceStatusActive(m),
+              serviceType: (m.serviceType as string) || '',
+              serviceProgress: parseServiceStatusProgress(m),
+              serviceTimeRemaining: tryParseServiceStatusRemainingSeconds(m),
               lastUpdate: new Date(),
             }))
           }

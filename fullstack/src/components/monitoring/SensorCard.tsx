@@ -102,13 +102,17 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
       displayStatus = 'Offline'
       displayPercentage = 0
     } else if (sensorData.serviceActive) {
-      // Format time remaining as MM:SS
-      const mins = Math.floor(sensorData.serviceTimeRemaining / 60)
-      const secs = sensorData.serviceTimeRemaining % 60
       displayValue = `${sensorData.serviceType.charAt(0).toUpperCase() + sensorData.serviceType.slice(1)}`
       displayPercentage = sensorData.serviceProgress
       displayStatus = 'Active'
-      displayRange = `Timer: ${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+      if (sensorData.serviceTimeRemaining === null) {
+        displayRange = 'Timer: --:--'
+      } else {
+        const rem = sensorData.serviceTimeRemaining
+        const mins = Math.floor(rem / 60)
+        const secs = rem % 60
+        displayRange = `Timer: ${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+      }
     } else {
       displayValue = 'Idle'
       displayStatus = 'Normal'

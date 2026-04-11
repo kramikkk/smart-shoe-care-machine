@@ -3,6 +3,10 @@ import { IncomingMessage } from 'http'
 import type { Server } from 'http'
 import type { Duplex } from 'stream'
 import prisma from './prisma'
+import {
+  parseServiceStatusProgress,
+  tryParseServiceStatusRemainingSeconds,
+} from './service-status-fields'
 
 /**
  * High-volume WebSocket traces (every sensor frame, each browser subscribe, heartbeats).
@@ -609,14 +613,24 @@ export function createWebSocketServer(server: Server) {
           broadcastToDevice(serviceDeviceId, enrichedMessage)
         }
 
+        // Kiosk back-navigation: stop running service on the device
+        else if (message.type === 'stop-service' && message.deviceId) {
+          const stopDeviceId = message.deviceId as string
+          wsVerbose(`[WebSocket] Stop service on ${stopDeviceId}`)
+          broadcastToDevice(stopDeviceId, {
+            type: 'stop-service',
+            deviceId: stopDeviceId,
+          })
+        }
+
         // Handle service status updates from ESP32
         else if (message.type === 'service-status' && message.deviceId) {
           const statusDeviceId = message.deviceId as string
-          const rem =
-            (message as { remainingSeconds?: unknown; timeRemaining?: unknown }).remainingSeconds ??
-            (message as { timeRemaining?: unknown }).timeRemaining
+          const m = message as Record<string, unknown>
+          const pct = parseServiceStatusProgress(m)
+          const rem = tryParseServiceStatusRemainingSeconds(m)
           wsVerbose(
-            `[WebSocket] Service status from ${statusDeviceId}: ${(message as { progress?: unknown }).progress ?? '?'}% complete, ${rem ?? '?'}s remaining`
+            `[WebSocket] Service status from ${statusDeviceId}: ${pct}% complete, ${rem === null ? '--' : `${rem}s`} remaining`
           )
           // Broadcast to all clients subscribed to this device
           broadcastToDevice(statusDeviceId, message)

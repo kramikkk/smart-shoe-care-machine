@@ -18,11 +18,11 @@ type ServiceDurationCardProps = {
   onSaveDuration: (serviceType: string, careType: string) => void
 }
 
-// Firmware hardcoded defaults (Thesis_SSCM.ino)
+// Default seconds per care tier (aligned with /api/duration seed values)
 const FIRMWARE_DEFAULTS: Record<string, Record<string, number>> = {
-  cleaning:    { gentle: 300, normal: 300, strong: 300 },
-  drying:      { gentle: 60,  normal: 180, strong: 300 },
-  sterilizing: { gentle: 60,  normal: 180, strong: 300 },
+  cleaning: { gentle: 60, normal: 180, strong: 300 },
+  drying: { gentle: 60, normal: 180, strong: 300 },
+  sterilizing: { gentle: 60, normal: 180, strong: 300 },
 }
 
 const SERVICE_CONFIG = [

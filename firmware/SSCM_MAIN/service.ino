@@ -3,34 +3,118 @@
  * Handles state machines for Cleaning, Drying, and Sterilizing cycles.
  */
 
+static long cleaningSideTargetSteps(const String &care, long customMm) {
+  if (customMm > 0) {
+    long steps = customMm * STEPPER2_STEPS_PER_MM;
+    if (steps > STEPPER2_MAX_POSITION)
+      steps = STEPPER2_MAX_POSITION;
+    return steps;
+  }
+  /* STEPPER2_STEPS_PER_MM = 200 → mm = steps/200 (gentle 90, normal 95, strong 100) */
+  if (care == "strong")
+    return 20000;
+  if (care == "normal")
+    return 19000;
+  if (care == "gentle")
+    return 18000;
+  return 19000;
+}
+
+/** Defaults when client omits duration (seconds × 1000); aligned with app tier defaults. */
+static unsigned long defaultServiceDurationMs(const String &svc,
+                                              const String &care) {
+  if (svc == "cleaning") {
+    if (care == "gentle")
+      return 60000UL;
+    if (care == "normal")
+      return 180000UL;
+    if (care == "strong")
+      return 300000UL;
+    return 180000UL;
+  }
+  if (svc == "drying" || svc == "sterilizing") {
+    if (care == "gentle")
+      return 60000UL;
+    if (care == "normal")
+      return 180000UL;
+    if (care == "strong")
+      return 300000UL;
+    return 180000UL;
+  }
+  return 180000UL;
+}
+
+static void sendServiceCompleteMessage(const String &svcType, const String &shoe,
+                                       const String &care) {
+  if (!wsConnected || !isPaired)
+    return;
+  String msg = "{\"type\":\"service-complete\",\"deviceId\":\"" + deviceId +
+               "\",\"serviceType\":\"" + svcType + "\",\"shoeType\":\"" + shoe +
+               "\",\"careType\":\"" + care + "\"}";
+  webSocket.sendTXT(msg);
+  wsLog("info", "service-complete: " + svcType + " | shoe: " + shoe +
+                    " | care: " + care);
+}
+
+/** Auto/kiosk: end current stage so the next start-service can run (e375564). */
+static void handoverEndPreviousService() {
+  if (!serviceActive)
+    return;
+
+  String prevType = currentServiceType;
+  String prevShoe = currentShoeType;
+  String prevCare = currentCareType;
+
+  LOG("[SERVICE] Handover — ending " + prevType + " before next stage");
+  motorsCoast();
+
+  if (prevType == "cleaning") {
+    setRelay(5, false);
+    cleaningPhase = 0;
+    brushCurrentCycle = 0;
+    stepper1MoveTo(CLEANING_MAX_POSITION);
+    stepper2MoveTo(0);
+    setServoPositions(0, true);
+  } else if (prevType == "drying") {
+    dryingHeaterOn = false;
+    dryingExhaustOn = false;
+  }
+
+  if (purgeActive) {
+    purgeActive = false;
+    setRelay(2, false);
+    purgeServiceType = "";
+    purgeShoeType = "";
+    purgeCareType = "";
+  }
+
+  allRelaysOff();
+  rgbOff();
+
+  sendServiceCompleteMessage(prevType, prevShoe, prevCare);
+}
+
 /* ===================== START SERVICE ===================== */
 void startService(String shoeType, String service, String care,
                   unsigned long customDurationSeconds,
                   long customCleaningDistanceMm) {
-  if (serviceActive) {
-    return;
-  }
+  if (serviceActive)
+    handoverEndPreviousService();
 
-  // Set service state
+  // Set service state (stays active across kiosk stage changes)
   serviceActive = true;
+  classificationLedOn = false; // Strip owned by service, not classify preview
   currentServiceType = service;
   currentShoeType = shoeType;
   currentCareType = care;
   serviceStartTime = millis();
+  lastServiceStatusUpdate = millis();
 
   // Set duration (seconds -> ms)
   if (customDurationSeconds > 0) {
     serviceDuration = customDurationSeconds * 1000;
   } else {
-    // Default durations if not specified by backend
-    if (service == "cleaning")
-      serviceDuration = 300000; // 5 min
-    else if (service == "drying")
-      serviceDuration = 600000; // 10 min
-    else if (service == "sterilizing")
-      serviceDuration = 300000; // 5 min
-    else
-      serviceDuration = 300000; // 5 min default
+    serviceDuration = defaultServiceDurationMs(service, care);
   }
 
   // Safety: ensure all relays off before starting
@@ -40,15 +124,20 @@ void startService(String shoeType, String service, String care,
   if (service == "cleaning") {
     cleaningPhase = 1;
     brushCurrentCycle = 0;
-    // Initial hardware: Top Linear moves to home position
-    LOG("[SERVICE] Cleaning started — homing top linear");
-    stepper1MoveTo(CLEANING_MAX_POSITION);
+    long s2 = cleaningSideTargetSteps(care, customCleaningDistanceMm);
+    LOG("[SERVICE] Cleaning — pump ON; side→" + String(s2) +
+        " steps + top 480→0→480 simultaneously (top reverses at 0, no side wait); then brush+servo");
+    setRelay(5, true); // Diaphragm pump — on for approach + oscillation until top home
+    stepper2MoveTo(s2);       // side brush moves to cleaning depth
+    stepper1MoveTo(0);        // top brush descends simultaneously (was CLEANING_MAX_POSITION no-op)
+    brushPhaseStartTime = millis();
     rgbBlue();
   } else if (service == "drying") {
-    LOG("[SERVICE] Drying started — heater and fan ON");
+    LOG("[SERVICE] Drying — fan + PTC on; temp loop cools if >40C");
     setRelay(3, true); // Fan ON
-    // Heaters will be managed by temperature control loop
-    dryingHeaterOn = false;
+    setRelay(4, true); // Left PTC ON (handleDryingTemperature may cycle off)
+    setRelay(6, true); // Right PTC ON
+    dryingHeaterOn = true;
     dryingExhaustOn = false;
     rgbGreen();
   } else if (service == "sterilizing") {
@@ -69,43 +158,55 @@ void stopService(String reason) {
     return;
 
   LOG("[SERVICE] Service stopped: " + reason);
+  String endedServiceType = currentServiceType;
   serviceActive = false;
 
   // Turn off all hardware
   allRelaysOff();
   motorsCoast();
+
+  // Park top/side/servos only when cleaning ends (dry/steril do not move linear axes)
+  if (endedServiceType == "cleaning") {
+    stepper1MoveTo(CLEANING_MAX_POSITION);
+    stepper2MoveTo(0);
+    setServoPositions(0, true);
+  }
+
   rgbOff();
 
   // Reset cleaning state
   cleaningPhase = 0;
   brushCurrentCycle = 0;
 
-  // Final actions: enter purge mode if ending naturally or after heating
-  if (reason == "completed" || currentServiceType == "drying") {
-    LOG("[SERVICE] Entering 15s purge cycle");
+  String endedShoe = currentShoeType;
+  String endedCare = currentCareType;
+
+  // Legacy: purge after drying or sterilizing on completed OR aborted
+  if (endedServiceType == "drying" || endedServiceType == "sterilizing") {
+    LOG("[SERVICE] Entering 15s purge (" + reason + ")");
     purgeActive = true;
     purgeStartTime = millis();
-    purgeServiceType = currentServiceType;
-    purgeShoeType = currentShoeType;
-    purgeCareType = currentCareType;
+    purgeServiceType = endedServiceType;
+    purgeShoeType = endedShoe;
+    purgeCareType = endedCare;
     setRelay(2, true); // Bottom Exhaust ON for purge
   }
 
-  // Clear current service info
+  sendServiceCompleteMessage(endedServiceType, endedShoe, endedCare);
+
+  // Keep current* populated for this payload
+  sendServiceStatusUpdate(reason);
+
   currentServiceType = "";
   currentShoeType = "";
   currentCareType = "";
-
-  // Notify backend
-  sendServiceStatusUpdate(reason);
 }
 
 void stopService() { stopService("aborted"); }
 
 /**
  * Handle purge cycle (exhaust fan cleanup after service)
- * Runs for 15 seconds after drying or sterilizing to vent chamber
- * Prevents condensation and mist accumulation
+ * Runs for 15s after drying or sterilizing ends (completed or aborted).
  */
 void handlePurge() {
   if (!purgeActive)
@@ -162,6 +263,7 @@ void handleDryingTemperature() {
       dryingExhaustOn = true;
     }
   }
+  // Between DRYING_TEMP_LOW and DRYING_TEMP_HIGH: no change (hysteresis band).
 }
 
 /**
@@ -186,70 +288,83 @@ void handleService() {
     sendServiceStatusUpdate("running");
   }
 
-  if (currentServiceType == "cleaning") {
-    // ===========================================
-    // CLEANING STATE MACHINE
-    // ===========================================
+  if (currentServiceType == "cleaning" && cleaningPhase > 0) {
+    // Phase 1: pump ON — side and top start simultaneously (startService sends both).
+    //          Top does a full 480→0→480 round trip independently:
+    //          the moment top reaches 0 it immediately reverses — it does NOT wait for side.
+    // Phase 2: top returning 0→480 (pump still ON). The moment top hits 480 → pump OFF.
+    // Phase 3: wait for side to reach cleaning depth, then start CW/CCW brush + servo sweep.
+    // Phase 4+: CW/CCW brushes + coast transitions.
 
     if (cleaningPhase == 1) {
-      // Phase 1: Homing top linear and starting side brush movement
       if (!stepper1Moving) {
-        LOG("[CLEANING] Top linear home. Starting side move.");
-        stepper2MoveTo(STEPPER2_MAX_POSITION);
+        // Top reached 0 — immediately reverse upward (pump still ON).
+        // Side linear continues moving to its depth independently.
+        LOG("[CLEANING] Top at 0 — reversing 0→480mm (pump still ON); side still moving");
         cleaningPhase = 2;
-        // Start side motors (DRV8871)
-        setMotorsSameSpeed(BRUSH_MOTOR_SPEED);
+        stepper1MoveTo(CLEANING_MAX_POSITION);
       }
     } else if (cleaningPhase == 2) {
-      // Phase 2: Top linear moving downwards (towards brush)
-      if (!stepper2Moving) {
-        LOG("[CLEANING] Side move complete. Moving top linear to 0.");
-        stepper1MoveTo(0);
+      if (!stepper1Moving) {
+        // Top is back at 480mm — pump OFF immediately. Side may still be moving.
+        LOG("[CLEANING] Top at 480 — pump OFF; waiting for side to reach depth");
+        setRelay(5, false);
         cleaningPhase = 3;
-        // Turn on pump for soap dispense during descent
-        setRelay(5, true);
       }
     } else if (cleaningPhase == 3) {
-      // Phase 3: Moving to 0 (descending)
-      if (!stepper1Moving) {
-        LOG("[CLEANING] Reached bottom. Starting brush cycles.");
-        setRelay(5, false); // Pump OFF
-        brushPhaseStartTime = millis();
+      if (!stepper2Moving) {
+        // Side at cleaning depth — start brush + servo sweep
+        LOG("[CLEANING] Side at depth — start brush + servo sweep");
+        cleaningPhase = 4;
         brushCurrentCycle = 1;
-        cleaningPhase = 4; // Start CW brushing
+        brushPhaseStartTime = millis();
+        setMotorsSameSpeed(BRUSH_MOTOR_SPEED);
+
+        unsigned long elapsedSoFar = millis() - serviceStartTime;
+        unsigned long remainingMs =
+            (elapsedSoFar < serviceDuration) ? (serviceDuration - elapsedSoFar) : 1UL;
+        int dynInterval = (int)((remainingMs / 15UL) / 180UL);
+        if (dynInterval < 1)
+          dynInterval = 1;
+        setServoPositions(180, false);
+        servoStepInterval = dynInterval;
       }
     } else if (cleaningPhase == 4) {
-      // Phase 4: Brushing CW
       if (millis() - brushPhaseStartTime >= BRUSH_DURATION_MS) {
-        LOG("[CLEANING] CW cycle complete. Coasting...");
+        LOG("[CLEANING] CW segment done — coast");
         motorsCoast();
-        brushPhaseStartTime = millis();
+        cleaningPhase = 6;
         brushNextPhase = 5;
-        cleaningPhase = 6; // Entrance to coast transition
+        brushPhaseStartTime = millis();
       }
     } else if (cleaningPhase == 5) {
-      // Phase 5: Brushing CCW
       if (millis() - brushPhaseStartTime >= BRUSH_DURATION_MS) {
-        LOG("[CLEANING] CCW cycle complete. Coasting...");
-        motorsCoast();
-        brushPhaseStartTime = millis();
-        brushNextPhase = 4;
         brushCurrentCycle++;
-        cleaningPhase = 6; // Entrance to coast transition
+        if (brushCurrentCycle > BRUSH_TOTAL_CYCLES) {
+          LOG("[CLEANING] Brush cycle cap — stopping");
+          motorsCoast();
+          cleaningPhase = 0;
+          brushCurrentCycle = 0;
+          stopService("completed");
+          return;
+        }
+        LOG("[CLEANING] CCW segment done — coast");
+        motorsCoast();
+        cleaningPhase = 6;
+        brushNextPhase = 4;
+        brushPhaseStartTime = millis();
       }
     } else if (cleaningPhase == 6) {
-      // Phase 6: Coast transition (safety wait)
       if (millis() - brushPhaseStartTime >= BRUSH_COAST_MS) {
-        // Change direction and enter next phase
-        if (brushNextPhase == 4) {
-          LOG("[CLEANING] Cycle " + String(brushCurrentCycle) + " -> CW");
-          setMotorsSameSpeed(BRUSH_MOTOR_SPEED);
-        } else {
-          LOG("[CLEANING] Cycle " + String(brushCurrentCycle) + " -> CCW");
-          setMotorsSameSpeed(-BRUSH_MOTOR_SPEED);
-        }
-        brushPhaseStartTime = millis();
         cleaningPhase = brushNextPhase;
+        brushPhaseStartTime = millis();
+        if (brushNextPhase == 5) {
+          LOG("[CLEANING] → CCW");
+          setMotorsSameSpeed(-BRUSH_MOTOR_SPEED);
+        } else {
+          LOG("[CLEANING] → CW");
+          setMotorsSameSpeed(BRUSH_MOTOR_SPEED);
+        }
       }
     }
   }
@@ -260,11 +375,22 @@ void sendServiceStatusUpdate(String status) {
   if (!wsConnected)
     return;
 
-  unsigned long elapsed = millis() - serviceStartTime;
-  unsigned long remaining =
-      (serviceDuration > elapsed) ? (serviceDuration - elapsed) : 0;
+  unsigned long elapsedMs = millis() - serviceStartTime;
+  unsigned long remainingMs =
+      (serviceDuration > elapsedMs) ? (serviceDuration - elapsedMs) : 0;
+  unsigned long elapsedSec = elapsedMs / 1000;
+  unsigned long remainingSec = remainingMs / 1000;
 
-  // JSON summary of current service state for cockpit UI
+  int progressPct = 0;
+  if (serviceDuration > 0) {
+    progressPct = (int)((elapsedMs * 100UL) / serviceDuration);
+    if (progressPct > 100)
+      progressPct = 100;
+  }
+
+  bool active = (status == "started" || status == "running");
+
+  // New fields + legacy (e375564) progress / timeRemaining / active for dashboard
   String msg = "{";
   msg += "\"type\":\"service-status\",";
   msg += "\"deviceId\":\"" + deviceId + "\",";
@@ -272,10 +398,25 @@ void sendServiceStatusUpdate(String status) {
   msg += "\"serviceType\":\"" + currentServiceType + "\",";
   msg += "\"shoeType\":\"" + currentShoeType + "\",";
   msg += "\"careType\":\"" + currentCareType + "\",";
-  msg += "\"elapsedSeconds\":" + String(elapsed / 1000) + ",";
-  msg += "\"remainingSeconds\":" + String(remaining / 1000) + ",";
-  msg += "\"durationSeconds\":" + String(serviceDuration / 1000);
+  msg += "\"elapsedSeconds\":" + String(elapsedSec) + ",";
+  msg += "\"remainingSeconds\":" + String(remainingSec) + ",";
+  msg += "\"durationSeconds\":" + String(serviceDuration / 1000) + ",";
+  msg += "\"progress\":" + String(progressPct) + ",";
+  msg += "\"timeRemaining\":" + String(remainingSec) + ",";
+  msg += "\"active\":" + String(active ? "true" : "false");
   msg += "}";
 
   webSocket.sendTXT(msg);
+}
+
+/** WebSocket stop-service while post-dry/steril purge is running (serviceActive is false). */
+void abortPurgeIfActive() {
+  if (!purgeActive)
+    return;
+  LOG("[SERVICE] Purge aborted (stop-service)");
+  purgeActive = false;
+  setRelay(2, false);
+  purgeServiceType = "";
+  purgeShoeType = "";
+  purgeCareType = "";
 }

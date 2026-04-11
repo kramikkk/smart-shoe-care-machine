@@ -4,7 +4,7 @@ import { toast } from 'sonner'
 type CleaningDistance = { careType: string; distanceMm: number }
 type DistanceMap = Record<string, number>
 
-const FIRMWARE_DEFAULTS: DistanceMap = { gentle: 93, normal: 98, strong: 100 }
+const FIRMWARE_DEFAULTS: DistanceMap = { gentle: 90, normal: 95, strong: 100 }
 
 export function useCleaningDistance(selectedDevice: string | null) {
   const [distances, setDistances]           = useState<DistanceMap>({})

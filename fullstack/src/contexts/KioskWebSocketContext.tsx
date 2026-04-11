@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
 import { debug } from '@/lib/debug'
 
-interface WebSocketMessage {
+export interface WebSocketMessage {
   type: string
   [key: string]: any
 }

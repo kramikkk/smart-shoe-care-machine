@@ -174,6 +174,16 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
          startService(shoeType, serviceType, careType, customDuration, customCleaningDistanceMm);
          wsLog("info", "Service started: " + serviceType + " | shoe: " + shoeType);
        }
+    } else if (message.indexOf("\"type\":\"stop-service\"") != -1) {
+      // Active service → stopService (may start purge for dry/steril). Idle + purge only
+      // → abort purge; do not call abortPurgeIfActive after stopService or we'd cancel
+      // the purge that stopService just started.
+      if (serviceActive) {
+        stopService("aborted");
+      } else {
+        abortPurgeIfActive();
+      }
+      wsLog("info", "Stop service (WS)");
     } else if (message.indexOf("\"type\":\"start-classification\"") != -1) {
       if (camIsReady && camMacPaired) sendClassifyRequest();
       else relayClassificationErrorToBackend("CAM_NOT_READY");
@@ -182,8 +192,9 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       classificationLedOn = true;
       sendLedControl(CAM_MSG_LED_ENABLE);
     } else if (message.indexOf("\"type\":\"disable-classification\"") != -1) {
-      rgbOff();
       classificationLedOn = false;
+      if (!serviceActive)
+        rgbOff();
       sendLedControl(CAM_MSG_LED_DISABLE);
     } else if (message.indexOf("\"type\":\"restart-device\"") != -1) {
       LOG("[WS] Global restart requested");

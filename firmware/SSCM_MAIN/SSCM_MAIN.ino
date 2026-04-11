@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.5"
+#define FIRMWARE_VERSION "1.0.6"
 #define BOARD_NAME "SSCM-MAIN"
 
 /**
@@ -316,6 +316,13 @@ bool isPaired = false;
 bool camSynced = false;
 String camDeviceId = "";
 
+/* ===================== WIFI POST-CONNECT STABILISATION ===================== */
+// Non-blocking 3s stabilisation window after WiFi connects.
+// delay() in loop() would freeze stepper homing — use millis() instead.
+static bool wifiPostConnectPending = false;
+static unsigned long wifiPostConnectAt = 0;
+#define WIFI_STABILISE_MS 3000
+
 /* ===================== BACKEND URL ===================== */
 #define USE_LOCAL_BACKEND 0
 #if USE_LOCAL_BACKEND
@@ -612,19 +619,21 @@ void loop() {
     wifiRetryStart = 0;
     wifiServer.stop();
     WiFi.softAPdisconnect(true);
+    LOG("[WIFI] Connected — 3s non-blocking stabilisation (steppers keep running)");
+    wifiPostConnectAt = millis();
+    wifiPostConnectPending = true;
+  }
 
-    LOG("[WIFI] Connected! Wait 3s for system stabilisation...");
-    delay(3000);
-
+  // Post-connect actions deferred 3s so TCP/IP stack settles without blocking loop().
+  // Stepper homing continues uninterrupted during this window.
+  if (wifiPostConnectPending && millis() - wifiPostConnectAt >= WIFI_STABILISE_MS) {
+    wifiPostConnectPending = false;
     if (!isPaired)
       sendDeviceRegistration();
-
     LOG("[WS] Powering up connection...");
     webSocket.disconnect();
     wsInitialized = false;
     connectWebSocket();
-
-    delay(500);
     sendPairingBroadcast();
   }
 

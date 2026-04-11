@@ -9,6 +9,7 @@ import { Suspense } from 'react'
 import { BackButton } from '@/components/kiosk/BackButton'
 import { StepIndicator } from '@/components/kiosk/StepIndicator'
 import { CUSTOM_STEPS } from '@/lib/kiosk-constants'
+import { useDurations } from '@/hooks/useDurations'
 
 const careTypes = [
   { id: 'gentle', name: 'Gentle', image: '/Gentle3D.webp' },
@@ -16,11 +17,21 @@ const careTypes = [
   { id: 'strong', name: 'Strong', image: '/Strong3D.webp' },
 ]
 
+function formatDurationBadge(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '—'
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  if (m === 0) return `${s} sec`
+  if (s === 0) return m === 1 ? '1 min' : `${m} min`
+  return `${m} min ${s} sec`
+}
+
 function CareContent() {
   const searchParams = useSearchParams()
-  const service = searchParams.get('service') || 'cleaning'
+  const service = (searchParams.get('service') || 'cleaning').toLowerCase()
   const shoe = searchParams.get('shoe') || 'mesh'
   const router = useRouter()
+  const { durations } = useDurations()
 
   const [selected, setSelected] = useState<string | null>(null)
 
@@ -51,10 +62,9 @@ function CareContent() {
   }
 
   const getBadge = (careId: string) => {
-    if (service === 'cleaning') {
-      return { gentle: '10 MM', normal: '5 MM', strong: '0 MM' }[careId] ?? '—'
-    }
-    return { gentle: '1 min', normal: '3 min', strong: '5 min' }[careId] ?? '—'
+    const sec = durations[service]?.[careId]
+    if (sec == null || !Number.isFinite(sec)) return '—'
+    return formatDurationBadge(sec)
   }
 
   const handleProceed = () => {

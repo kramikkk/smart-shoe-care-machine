@@ -9,10 +9,10 @@ import { Label } from '@/components/ui/label'
 const CARE_TYPES = ['gentle', 'normal', 'strong'] as const
 const COLOR = 'var(--chart-1)' // same as cleaning
 
-// Firmware hardcoded defaults
+// Matches firmware cleaningSideTargetSteps (mm): gentle 90, normal 95, strong 100
 const FIRMWARE_DEFAULTS: Record<string, number> = {
-  gentle: 93,
-  normal: 98,
+  gentle: 90,
+  normal: 95,
   strong: 100,
 }
 

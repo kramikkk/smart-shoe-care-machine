@@ -1,12 +1,15 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { PartyPopper } from "lucide-react";
+import { OctagonAlert } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-export default function ProcessSuccess() {
+/**
+ * Shown after emergency stop: same card layout as service success, neutral “stopped” messaging.
+ */
+export default function KioskStoppedPage() {
   const searchParams = useSearchParams();
   const shoe = searchParams.get("shoe") || "mesh";
   const service = searchParams.get("service");
@@ -34,22 +37,6 @@ export default function ProcessSuccess() {
     }
   }, [countdown, router]);
 
-  const getMessage = () => {
-    if (service === "package") {
-      return "Your shoes have been cleaned, dried, and sterilized to perfection!";
-    }
-    if (service === "cleaning") {
-      return "Your shoes are now clean and fresh!";
-    }
-    if (service === "drying") {
-      return "Your shoes are now completely dry!";
-    }
-    if (service === "sterilizing") {
-      return "Your shoes have been sterilized and sanitized!";
-    }
-    return "Service completed successfully!";
-  };
-
   const getServiceName = () => {
     if (service === "package") return "Package";
     if (service === "cleaning") return "Cleaning";
@@ -73,15 +60,15 @@ export default function ProcessSuccess() {
     <div className="flex min-h-screen flex-col items-center justify-center px-4 py-6 text-center">
       <div className="w-[500px] rounded-3xl bg-white/80 px-10 py-8 shadow-2xl backdrop-blur-md">
         <div className="mb-4 flex justify-center">
-          <div className="flex h-32 w-32 items-center justify-center rounded-full bg-gradient-to-br from-green-400 to-emerald-500 shadow-xl">
-            <PartyPopper className="h-16 w-16 text-white" strokeWidth={2} />
+          <div className="flex h-32 w-32 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-orange-500 shadow-xl">
+            <OctagonAlert className="h-16 w-16 text-white" strokeWidth={2} />
           </div>
         </div>
 
-        <p className="mb-1 text-2xl font-bold bg-gradient-to-r from-green-600 via-cyan-600 to-blue-600 bg-clip-text text-transparent">
-          Thank you!
+        <p className="mb-1 text-2xl font-bold text-orange-600">
+          Session ended
         </p>
-        <h1 className="mb-3 text-3xl font-bold text-green-600">Service Complete!</h1>
+        <h1 className="mb-3 text-3xl font-bold text-red-600">Emergency stopped</h1>
 
         <div className="mb-4 flex flex-wrap justify-center gap-2">
           <span className="inline-block rounded-full bg-gradient-to-r from-purple-100 to-pink-100 px-4 py-1.5 text-sm font-semibold text-purple-800 shadow-sm">
@@ -95,7 +82,10 @@ export default function ProcessSuccess() {
           </span>
         </div>
 
-        <p className="mb-4 text-base leading-relaxed text-gray-700">{getMessage()}</p>
+        <p className="mb-4 text-base leading-relaxed text-gray-700">
+          The machine was stopped safely. This cycle did not finish. You can start again from the
+          home screen when you are ready.
+        </p>
 
         <div className="mb-6 rounded-xl bg-gradient-to-r from-blue-50 to-cyan-50 px-5 py-3">
           <p className="text-base text-gray-600">Returning home in</p>

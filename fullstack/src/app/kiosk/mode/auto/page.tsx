@@ -7,6 +7,13 @@ import { Progress } from "@/components/ui/progress"
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 import { useDurations } from '@/hooks/useDurations'
+import {
+  normalizeServiceStage,
+  packageRemainingSecondsForAuto,
+  parseServiceStatusActive,
+  tryParseServiceStatusRemainingSeconds,
+} from '@/lib/service-status-fields'
+import { KioskEmergencyStopButton } from '@/components/kiosk/KioskEmergencyStopButton'
 
 // Recommended care types for each shoe type and service
 // Optimized settings for the best care based on material properties
@@ -48,35 +55,52 @@ const Auto = () => {
 
   const { durations, isLoaded: isDurationsLoaded } = useDurations()
 
+  const careTierFallback = useMemo(
+    () =>
+      ({
+        gentle: 60,
+        normal: 180,
+        strong: 300,
+      }) as Record<CareType, number>,
+    []
+  )
+
   // Calculate stage durations based on shoe type recommendations and fetched durations
   const stageDurations = useMemo(() => ({
-    cleaning:    durations.cleaning?.[recommendations.cleaning]    ?? 300,
-    drying:      durations.drying?.[recommendations.drying]        ?? 120,
-    sterilizing: durations.sterilizing?.[recommendations.sterilizing] ?? 60,
-  }), [durations, recommendations])
+    cleaning:
+      durations.cleaning?.[recommendations.cleaning] ??
+      careTierFallback[recommendations.cleaning],
+    drying:
+      durations.drying?.[recommendations.drying] ?? careTierFallback[recommendations.drying],
+    sterilizing:
+      durations.sterilizing?.[recommendations.sterilizing] ??
+      careTierFallback[recommendations.sterilizing],
+  }), [durations, recommendations, careTierFallback])
 
   // Calculate total time based on recommended care types for each service
   const totalTime = useMemo(() => {
     return stageDurations.cleaning + stageDurations.drying + stageDurations.sterilizing
   }, [stageDurations])
 
-  const [timeRemaining, setTimeRemaining] = useState(totalTime)
+  /** Wall-clock seconds left for the full package (ESP32 + stage tail model). */
+  const [packageRemainingDisplay, setPackageRemainingDisplay] = useState(0)
+  const [deviceSynced, setDeviceSynced] = useState(false)
   const [currentStage, setCurrentStage] = useState<ServiceType>('cleaning')
   const [serviceStarted, setServiceStarted] = useState(false)
 
-  // Tracks previous connection state for freeze/resume logging across effect re-runs
+  const packageAnchorRef = useRef({ remaining: 0, atMs: 0 })
+  const stageDurationsRef = useRef(stageDurations)
+  useEffect(() => {
+    stageDurationsRef.current = stageDurations
+  }, [stageDurations])
+
   const prevConnectedRef = useRef(false)
 
-  // Re-initialize timer once durations have been fetched
-  const hasInitializedTimer = useRef(false)
-  useEffect(() => {
-    if (isDurationsLoaded && !hasInitializedTimer.current) {
-      hasInitializedTimer.current = true
-      setTimeRemaining(totalTime)
-    }
-  }, [isDurationsLoaded, totalTime])
-
-  const progress = ((totalTime - timeRemaining) / totalTime) * 100
+  const displayRemaining = deviceSynced ? packageRemainingDisplay : totalTime
+  const progress =
+    deviceSynced && totalTime > 0
+      ? Math.min(100, Math.max(0, (100 * (totalTime - displayRemaining)) / totalTime))
+      : 0
 
   // Get the care type for the current stage
   const getCurrentCareType = (): CareType => {
@@ -84,10 +108,11 @@ const Auto = () => {
   }
 
   // Use centralized WebSocket context
-  const { isConnected, deviceId, sendMessage, onMessage, camSynced } = useKioskWebSocket()
+  const { isConnected, deviceId, sendMessage, onMessage } = useKioskWebSocket()
   const lastSentStageRef = useRef<string>('')
   const sendMessageRef = useRef(sendMessage)
   const deviceIdRef = useRef(deviceId)
+  const skipUnmountStopRef = useRef(false)
 
   // Keep refs in sync with current values
   useEffect(() => {
@@ -95,13 +120,45 @@ const Auto = () => {
     deviceIdRef.current = deviceId
   }, [sendMessage, deviceId])
 
-  // Listen for ESP32 messages
+  // ESP32 is source of truth: service-status drives package time + active stage; service-complete advances stages / finishes.
   useEffect(() => {
-    const unsubscribe = onMessage((_message) => {
-      // handled by firmware; no UI action needed here
+    const unsubscribe = onMessage((message) => {
+      if (message.type === 'service-status') {
+        const m = message as Record<string, unknown>
+        // Only process active status updates. The firmware sends a final service-status
+        // with status="completed" right after service-complete; if we let it through it
+        // resets currentStage back to the just-finished stage, causing the stage-change
+        // effect to re-send start-service for the wrong stage.
+        if (!parseServiceStatusActive(m)) return
+        const st = normalizeServiceStage(String(m.serviceType ?? ''))
+        if (st) setCurrentStage(st)
+        const rem = tryParseServiceStatusRemainingSeconds(m)
+        if (st && rem !== null) {
+          const pkg = packageRemainingSecondsForAuto(st, rem, stageDurationsRef.current)
+          packageAnchorRef.current = { remaining: pkg, atMs: Date.now() }
+          setPackageRemainingDisplay(pkg)
+          setDeviceSynced(true)
+        }
+      } else if (message.type === 'service-complete') {
+        const m = message as Record<string, unknown>
+        const done = normalizeServiceStage(String(m.serviceType ?? ''))
+        if (done === 'cleaning') {
+          setCurrentStage('drying')
+        } else if (done === 'drying') {
+          setCurrentStage('sterilizing')
+        } else if (done === 'sterilizing') {
+          // Service finished normally — don't send stop-service on unmount (would abort the
+          // 15s post-sterilization exhaust purge the firmware runs automatically).
+          skipUnmountStopRef.current = true
+          packageAnchorRef.current = { remaining: 0, atMs: Date.now() }
+          setPackageRemainingDisplay(0)
+          debug.log(`[Auto] All stages complete — redirecting to success (shoe: ${shoe})`)
+          router.push(`/kiosk/success/service?shoe=${shoe}&service=package`)
+        }
+      }
     })
     return unsubscribe
-  }, [onMessage])
+  }, [onMessage, router, shoe])
 
   // Send initial cleaning command when connected
   useEffect(() => {
@@ -114,12 +171,21 @@ const Auto = () => {
       shoeType: shoe,
       serviceType: 'cleaning',
       careType: cleaningCareType,
-      duration: durations['cleaning']?.[cleaningCareType],
+      duration: stageDurations.cleaning,
     })
     debug.log(`[Auto] Service started — shoe: ${shoe}, stage: cleaning, care: ${cleaningCareType}`)
     lastSentStageRef.current = 'cleaning'
     setServiceStarted(true)
-  }, [isConnected, deviceId, serviceStarted, recommendations, shoe, sendMessage, isDurationsLoaded])
+  }, [
+    isConnected,
+    deviceId,
+    serviceStarted,
+    recommendations.cleaning,
+    shoe,
+    sendMessage,
+    isDurationsLoaded,
+    stageDurations.cleaning,
+  ])
 
   // Send stage change command when stage updates
   useEffect(() => {
@@ -132,69 +198,51 @@ const Auto = () => {
       shoeType: shoe,
       serviceType: currentStage,
       careType: stageCareType,
-      duration: durations[currentStage]?.[stageCareType],
+      duration: stageDurations[currentStage],
     })
     debug.log(`[Auto] Stage change → ${currentStage} (care: ${stageCareType})`)
     lastSentStageRef.current = currentStage
-  }, [currentStage, isConnected, serviceStarted, deviceId, shoe, recommendations, sendMessage, durations])
+  }, [
+    currentStage,
+    isConnected,
+    serviceStarted,
+    deviceId,
+    shoe,
+    recommendations,
+    sendMessage,
+    stageDurations,
+  ])
 
-  // Timer — pauses when WebSocket disconnects
+  // Smooth countdown between 1s firmware service-status ticks; freeze when disconnected.
   useEffect(() => {
     if (!isDurationsLoaded) return
 
     const timer = setInterval(() => {
       if (!isConnected) {
-        if (prevConnectedRef.current) {
-          debug.log('[Auto] Timer frozen — WebSocket disconnected')
+        if (deviceSynced && prevConnectedRef.current) {
+          debug.log('[Auto] Countdown frozen — WebSocket disconnected')
           prevConnectedRef.current = false
         }
         return
       }
-      if (!prevConnectedRef.current) {
-        debug.log('[Auto] Timer resumed — WebSocket reconnected')
+      if (deviceSynced && !prevConnectedRef.current) {
+        debug.log('[Auto] Countdown resumed — WebSocket reconnected')
         prevConnectedRef.current = true
       }
-      setTimeRemaining((prev) => {
-        if (prev <= 0) {
-          clearInterval(timer)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
+      if (!deviceSynced) return
+
+      const { remaining, atMs } = packageAnchorRef.current
+      const next = Math.max(0, remaining - Math.floor((Date.now() - atMs) / 1000))
+      setPackageRemainingDisplay(next)
+    }, 250)
 
     return () => clearInterval(timer)
-  }, [isDurationsLoaded, isConnected])
-
-  // Separate effect to update stage based on timeRemaining
-  useEffect(() => {
-    const cleaningEnd = totalTime - stageDurations.cleaning
-    const dryingEnd = cleaningEnd - stageDurations.drying
-
-    let newStage: ServiceType
-    if (timeRemaining > cleaningEnd) {
-      newStage = 'cleaning'
-    } else if (timeRemaining > dryingEnd) {
-      newStage = 'drying'
-    } else {
-      newStage = 'sterilizing'
-    }
-
-    if (newStage !== currentStage) {
-      setCurrentStage(newStage)
-    }
-  }, [timeRemaining, totalTime, stageDurations, currentStage])
-
-  useEffect(() => {
-    if (timeRemaining === 0) {
-      debug.log(`[Auto] All stages complete — redirecting to success (shoe: ${shoe})`)
-      router.push(`/kiosk/success/service?shoe=${shoe}&service=package`)
-    }
-  }, [timeRemaining, router, shoe])
+  }, [isDurationsLoaded, isConnected, deviceSynced])
 
   // Send stop-service message on unmount (handles back-navigation)
   useEffect(() => {
     return () => {
+      if (skipUnmountStopRef.current) return
       if (deviceIdRef.current) {
         sendMessageRef.current({ type: 'stop-service', deviceId: deviceIdRef.current })
       }
@@ -292,7 +340,7 @@ const Auto = () => {
       <div className="flex items-center justify-center gap-2 mb-6">
         <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`} />
         <p className="text-xs text-gray-600">
-          {isConnected ? 'Connected to device' : 'Reconnecting — timer paused'}
+          {isConnected ? 'Connected to device' : 'Reconnecting — time frozen at last device update'}
         </p>
       </div>
 
@@ -300,7 +348,7 @@ const Auto = () => {
       <div className="mb-6">
         <p className="text-xl text-gray-500 text-center mb-1">Time Remaining</p>
         <p className="text-6xl font-bold text-center bg-gradient-to-r from-blue-600 via-cyan-600 to-green-600 bg-clip-text text-transparent">
-          {formatTime(timeRemaining)}
+          {formatTime(displayRemaining)}
         </p>
       </div>
 
@@ -317,6 +365,17 @@ const Auto = () => {
       <p className="text-center text-gray-500 text-lg max-w-2xl leading-relaxed">
         Please wait while we take care of your shoes. You will be automatically redirected when complete.
       </p>
+
+      <div className="mt-8 flex w-full max-w-2xl justify-center">
+        <KioskEmergencyStopButton
+          deviceId={deviceId}
+          sendMessage={sendMessage}
+          exitHref={`/kiosk/stopped?shoe=${encodeURIComponent(shoe)}&service=package`}
+          onEmergencyInitiated={() => {
+            skipUnmountStopRef.current = true
+          }}
+        />
+      </div>
     </div>
   )
 }

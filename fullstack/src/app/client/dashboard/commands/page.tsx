@@ -3,6 +3,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useDeviceFilter } from '@/contexts/DeviceFilterContext'
 import { useDashboardWebSocket } from '@/contexts/DashboardWebSocketContext'
+import {
+  parseServiceStatusProgress,
+  tryParseServiceStatusRemainingSeconds,
+} from '@/lib/service-status-fields'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -286,7 +290,13 @@ export default function CommandsPage() {
       }
 
       if (msg.type === 'service-status') {
-        addLog('service', `Progress: ${msg.progress}% — ${msg.timeRemaining}s remaining`)
+        const m = msg as Record<string, unknown>
+        const pct = parseServiceStatusProgress(m)
+        const rem = tryParseServiceStatusRemainingSeconds(m)
+        addLog(
+          'service',
+          `Progress: ${pct}% — ${rem === null ? '--' : `${rem}s`} remaining`
+        )
         return
       }
       if (msg.type === 'service-complete') {

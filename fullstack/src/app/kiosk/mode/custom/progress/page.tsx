@@ -5,11 +5,17 @@ import Image from 'next/image'
 import { Progress } from "@/components/ui/progress"
 import { useSearchParams, useRouter } from 'next/navigation'
 import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
+import {
+  parseServiceStatusDurationSeconds,
+  parseServiceStatusProgress,
+  tryParseServiceStatusRemainingSeconds,
+} from '@/lib/service-status-fields'
+import { KioskEmergencyStopButton } from '@/components/kiosk/KioskEmergencyStopButton'
 
 const DEFAULT_DURATIONS: Record<string, Record<string, number>> = {
-  cleaning:    { gentle: 300, normal: 300, strong: 300 },
-  drying:      { gentle: 60,  normal: 120, strong: 180 },
-  sterilizing: { gentle: 60,  normal: 120, strong: 180 },
+  cleaning: { gentle: 60, normal: 180, strong: 300 },
+  drying: { gentle: 60, normal: 180, strong: 300 },
+  sterilizing: { gentle: 60, normal: 180, strong: 300 },
 }
 
 const CustomProgress = () => {
@@ -22,25 +28,34 @@ const CustomProgress = () => {
   const { isConnected, deviceId, sendMessage, onMessage } = useKioskWebSocket()
 
   const fallbackDuration = DEFAULT_DURATIONS[service.toLowerCase()]?.[care.toLowerCase()] ?? 120
-  const [totalTime, setTotalTime]         = useState(fallbackDuration)
-  const [timeRemaining, setTimeRemaining] = useState(fallbackDuration)
+  const [totalTime, setTotalTime] = useState(fallbackDuration)
   const [resolvedDuration, setResolvedDuration] = useState<number | null>(null)
+  /** Seconds left — interpolated from last firmware service-status (ESP32 source of truth). */
+  const [displayRemaining, setDisplayRemaining] = useState(fallbackDuration)
+  /** When set, progress bar uses firmware `progress` field. */
+  const [firmwareProgress, setFirmwareProgress] = useState<number | null>(null)
 
+  const remainingAnchorRef = useRef({ value: fallbackDuration, atMs: Date.now() })
   const serviceStartedRef = useRef(false)
 
   // Refs for stop-service on unmount
   const sendMessageRef = useRef(sendMessage)
   const deviceIdRef    = useRef(deviceId)
+  const skipUnmountStopRef = useRef(false)
+  const abortedByEmergencyRef = useRef(false)
   useEffect(() => {
     sendMessageRef.current = sendMessage
     deviceIdRef.current    = deviceId
   }, [sendMessage, deviceId])
 
-  const safeRemaining = Number.isFinite(timeRemaining) && timeRemaining >= 0 ? timeRemaining : 0
+  const safeRemaining =
+    Number.isFinite(displayRemaining) && displayRemaining >= 0 ? displayRemaining : 0
   const progress =
-    resolvedDuration !== null && totalTime > 0
-      ? Math.min(100, Math.max(0, ((totalTime - safeRemaining) / totalTime) * 100))
-      : 0
+    firmwareProgress !== null
+      ? firmwareProgress
+      : resolvedDuration !== null && totalTime > 0
+        ? Math.min(100, Math.max(0, ((totalTime - safeRemaining) / totalTime) * 100))
+        : 0
 
   // Fetch configured duration from API
   useEffect(() => {
@@ -61,7 +76,8 @@ const CustomProgress = () => {
           const duration = entry?.duration ?? fallbackDuration
           if (duration > 0) {
             setTotalTime(duration)
-            setTimeRemaining(duration)
+            setDisplayRemaining(duration)
+            remainingAnchorRef.current = { value: duration, atMs: Date.now() }
           }
           setResolvedDuration(duration > 0 ? duration : fallbackDuration)
         } else {
@@ -91,50 +107,59 @@ const CustomProgress = () => {
     })
   }, [isConnected, deviceId, resolvedDuration, shoe, service, care, sendMessage])
 
-  // Drive countdown entirely from WS messages — firmware sends remainingSeconds / durationSeconds
+  // Firmware service-status: anchor remaining + progress; smooth ticks between 1s ESP updates.
   useEffect(() => {
     const unsubscribe = onMessage((message) => {
       if (message.type === 'service-status') {
-        const m = message as {
-          remainingSeconds?: unknown
-          timeRemaining?: unknown
-          durationSeconds?: unknown
+        const m = message as Record<string, unknown>
+        const rem = tryParseServiceStatusRemainingSeconds(m)
+        if (rem !== null) {
+          remainingAnchorRef.current = { value: rem, atMs: Date.now() }
+          setDisplayRemaining(rem)
+          setFirmwareProgress(parseServiceStatusProgress(m))
         }
-        const parseNonNegInt = (v: unknown): number | null => {
-          const n = typeof v === 'number' ? v : Number(v)
-          if (!Number.isFinite(n) || n < 0) return null
-          return Math.floor(n)
-        }
-        const remaining = parseNonNegInt(m.remainingSeconds ?? m.timeRemaining)
-        if (remaining !== null) {
-          setTimeRemaining(remaining)
-        }
-        const duration = parseNonNegInt(m.durationSeconds)
-        if (duration !== null && duration > 0) {
+        const duration = parseServiceStatusDurationSeconds(m)
+        if (duration !== null) {
           setTotalTime(duration)
         }
       } else if (message.type === 'service-complete') {
-        setTimeRemaining(0)
+        remainingAnchorRef.current = { value: 0, atMs: Date.now() }
+        setDisplayRemaining(0)
+        setFirmwareProgress(100)
       }
     })
     return unsubscribe
   }, [onMessage])
 
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!isConnected) return
+      const { value, atMs } = remainingAnchorRef.current
+      const next = Math.max(0, value - Math.floor((Date.now() - atMs) / 1000))
+      setDisplayRemaining(next)
+    }, 250)
+    return () => clearInterval(id)
+  }, [isConnected])
+
   // Send stop-service on unmount (back-navigation guard)
   useEffect(() => {
     return () => {
+      if (skipUnmountStopRef.current) return
       if (deviceIdRef.current) {
         sendMessageRef.current({ type: 'stop-service', deviceId: deviceIdRef.current })
       }
     }
   }, [])
 
-  // Redirect on completion
+  // Redirect only after a run was started — avoids spurious success if remaining parsed as 0 from bad payloads
   useEffect(() => {
-    if (timeRemaining === 0) {
-      router.push(`/kiosk/success/service?shoe=${shoe}&service=${service}&care=${care}`)
-    }
-  }, [timeRemaining, router, shoe, service, care])
+    if (!serviceStartedRef.current || displayRemaining !== 0) return
+    if (abortedByEmergencyRef.current) return
+    // Service completed normally — don't send stop-service on unmount so the firmware's
+    // 15s post-drying/sterilizing exhaust purge is not aborted.
+    skipUnmountStopRef.current = true
+    router.push(`/kiosk/success/service?shoe=${shoe}&service=${service}&care=${care}`)
+  }, [displayRemaining, router, shoe, service, care])
 
   const formatTime = (seconds: number) => {
     if (!Number.isFinite(seconds) || seconds < 0) return '--:--'
@@ -222,7 +247,7 @@ const CustomProgress = () => {
       <div className="flex items-center justify-center gap-2 mb-6">
         <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`} />
         <p className="text-xs text-gray-600">
-          {isConnected ? 'Connected to device' : 'Connecting...'}
+          {isConnected ? 'Connected to device' : 'Reconnecting — time frozen at last device update'}
         </p>
       </div>
 
@@ -230,9 +255,9 @@ const CustomProgress = () => {
       <div className="mb-6">
         <p className="text-xl text-gray-500 text-center mb-1">Time Remaining</p>
         <p className="text-6xl font-bold text-center bg-gradient-to-r from-blue-600 via-cyan-600 to-green-600 bg-clip-text text-transparent">
-          {resolvedDuration === null || !Number.isFinite(timeRemaining)
+          {resolvedDuration === null || !Number.isFinite(displayRemaining)
             ? '--:--'
-            : formatTime(timeRemaining)}
+            : formatTime(displayRemaining)}
         </p>
       </div>
 
@@ -249,6 +274,18 @@ const CustomProgress = () => {
       <p className="text-center text-gray-500 text-lg max-w-2xl leading-relaxed">
         Please wait while we take care of your shoes. You will be automatically redirected when complete.
       </p>
+
+      <div className="mt-8 flex w-full max-w-2xl justify-center">
+        <KioskEmergencyStopButton
+          deviceId={deviceId}
+          sendMessage={sendMessage}
+          exitHref={`/kiosk/stopped?shoe=${encodeURIComponent(shoe)}&service=${encodeURIComponent(service)}&care=${encodeURIComponent(care)}`}
+          onEmergencyInitiated={() => {
+            skipUnmountStopRef.current = true
+            abortedByEmergencyRef.current = true
+          }}
+        />
+      </div>
     </div>
   )
 }
