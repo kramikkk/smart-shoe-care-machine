@@ -201,7 +201,6 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
       sendGoingOffline();
       webSocket.disconnect();
       delay(1000);
-      delay(2000);
       ESP.restart();
     } else if (message.indexOf("\"type\":\"serial-command\"") != -1) {
       int cmdIndex = message.indexOf("\"command\":\"");

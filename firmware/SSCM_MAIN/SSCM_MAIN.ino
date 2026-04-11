@@ -141,10 +141,14 @@ bool classificationLedOn = false;
 /* ===================== COIN SLOT ===================== */
 #define COIN_SLOT_PIN 5
 volatile unsigned long lastCoinPulseTime = 0;
+volatile unsigned long lastCoinProcessedTime = 0;
 volatile unsigned int currentCoinPulses = 0;
 unsigned int totalCoinPesos = 0;
 const unsigned long COIN_PULSE_DEBOUNCE_TIME = 100;
-const unsigned long COIN_COMPLETE_TIMEOUT = 500;
+const unsigned long COIN_COMPLETE_TIMEOUT = 200;
+// Dead time after a coin batch is processed — prevents trailing ghost pulses
+// from the coin acceptor mechanism from starting a new ₱1 count.
+const unsigned long COIN_GUARD_TIME = 100;
 
 /* ===================== BILL ACCEPTOR ===================== */
 #define BILL_PULSE_PIN 4
@@ -153,7 +157,7 @@ volatile unsigned int currentBillPulses = 0;
 unsigned int totalBillPesos = 0;
 unsigned int totalPesos = 0;
 const unsigned long BILL_PULSE_DEBOUNCE_TIME = 100;
-const unsigned long BILL_COMPLETE_TIMEOUT = 500;
+const unsigned long BILL_COMPLETE_TIMEOUT = 200;
 
 /* ===================== PAYMENT CONTROL ===================== */
 volatile bool paymentEnabled = false;
@@ -161,7 +165,7 @@ bool totalsDirty = false;
 unsigned long lastTotalsSave = 0;
 #define TOTALS_SAVE_INTERVAL 30000
 volatile unsigned long paymentEnableTime = 0;
-const unsigned long PAYMENT_STABILIZATION_DELAY = 3000;
+const unsigned long PAYMENT_STABILIZATION_DELAY = 100;
 static portMUX_TYPE paymentMux = portMUX_INITIALIZER_UNLOCKED;
 
 /* ===================== 8-CHANNEL RELAY ===================== */
@@ -526,6 +530,7 @@ void loop() {
       portENTER_CRITICAL(&paymentMux);
       unsigned int coinValue = currentCoinPulses;
       currentCoinPulses = 0;
+      lastCoinProcessedTime = millis();
       portEXIT_CRITICAL(&paymentMux);
       totalCoinPesos += coinValue;
       totalPesos = totalCoinPesos + totalBillPesos;
