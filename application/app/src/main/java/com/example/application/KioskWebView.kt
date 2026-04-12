@@ -3,7 +3,9 @@ package com.example.application
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -21,8 +23,25 @@ class KioskWebView @JvmOverloads constructor(
     private var kioskUrl: String = ""
     private val retryRunnable = Runnable { loadUrl(kioskUrl) }
 
+    // Tap detection for admin gesture (5 taps within 3 seconds)
+    var onAdminGestureDetected: (() -> Unit)? = null
+    private val tapTimestamps = mutableListOf<Long>()
+
     init {
         applyKioskSettings()
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_DOWN) {
+            val now = SystemClock.uptimeMillis()
+            tapTimestamps.removeAll { now - it > TAP_WINDOW_MS }
+            tapTimestamps.add(now)
+            if (tapTimestamps.size >= REQUIRED_TAPS) {
+                tapTimestamps.clear()
+                onAdminGestureDetected?.invoke()
+            }
+        }
+        return super.onTouchEvent(event)
     }
 
     private fun applyKioskSettings() {
@@ -77,5 +96,7 @@ class KioskWebView @JvmOverloads constructor(
 
     companion object {
         private const val RETRY_DELAY_MS = 10_000L
+        private const val TAP_WINDOW_MS = 3_000L
+        private const val REQUIRED_TAPS = 5
     }
 }
