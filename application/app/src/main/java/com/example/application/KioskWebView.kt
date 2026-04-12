@@ -1,6 +1,7 @@
 package com.example.application
 
 import android.content.Context
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -28,6 +29,11 @@ class KioskWebView @JvmOverloads constructor(
     private val tapTimestamps = mutableListOf<Long>()
 
     init {
+        isFocusable = true
+        isFocusableInTouchMode = true
+        // Suppress long-press context menu (select / copy / paste popup)
+        setOnLongClickListener { true }
+        isHapticFeedbackEnabled = false
         applyKioskSettings()
     }
 
@@ -55,9 +61,13 @@ class KioskWebView @JvmOverloads constructor(
         }
         webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                if (request.url.toString() != kioskUrl) {
-                    view.loadUrl(kioskUrl)
+                val kioskHost = Uri.parse(kioskUrl).host
+                if (request.url.host == kioskHost) {
+                    // Same-origin navigation — let the web app handle its own routing
+                    return false
                 }
+                // External URL — block and stay on kiosk
+                view.loadUrl(kioskUrl)
                 return true
             }
 
