@@ -7,6 +7,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +20,7 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.webkit.WebStorage
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -33,19 +36,36 @@ class MainActivity : AppCompatActivity() {
     private lateinit var drawerLayout: DrawerLayout
     private lateinit var powerManager: PowerManager
     private lateinit var devicePolicyManager: DevicePolicyManager
+    private lateinit var connectivityManager: ConnectivityManager
     private lateinit var adminComponent: ComponentName
     private lateinit var backCallback: OnBackPressedCallback
     private var wakeLock: PowerManager.WakeLock? = null
+    private var networkWasLost = false
 
     private val prefs by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
     private var isKioskModeActive = true
 
-    private val chargingReceiver = object : BroadcastReceiver() {
+    // Handles power connect/disconnect and screen-on events
+    private val systemReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_POWER_CONNECTED -> onPowerConnected()
                 Intent.ACTION_POWER_DISCONNECTED -> onPowerDisconnected()
+                Intent.ACTION_SCREEN_ON -> kioskWebView.loadKioskUrl(KIOSK_URL)
             }
+        }
+    }
+
+    // Reloads only when network comes back after being lost — avoids interrupting active sessions
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            if (networkWasLost) {
+                networkWasLost = false
+                runOnUiThread { kioskWebView.loadKioskUrl(KIOSK_URL) }
+            }
+        }
+        override fun onLost(network: Network) {
+            networkWasLost = true
         }
     }
 
@@ -61,11 +81,13 @@ class MainActivity : AppCompatActivity() {
 
         powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         adminComponent = ComponentName(this, KioskDeviceAdminReceiver::class.java)
 
         setupDrawerMenu()
         setupBackCallback()
-        registerChargingReceiver()
+        registerSystemReceiver()
+        registerNetworkCallback()
         applyInitialPowerState()
         requestDeviceAdminIfNeeded()
 
@@ -90,7 +112,8 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         releaseWakeLock()
         kioskWebView.stopRetry()
-        unregisterReceiver(chargingReceiver)
+        unregisterReceiver(systemReceiver)
+        connectivityManager.unregisterNetworkCallback(networkCallback)
     }
 
     // region Drawer
@@ -108,6 +131,13 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<LinearLayout>(R.id.menuChangePin).setOnClickListener {
             showChangePinDialog()
+        }
+        findViewById<LinearLayout>(R.id.menuClearCache).setOnClickListener {
+            kioskWebView.clearCache(true)
+            WebStorage.getInstance().deleteAllData()
+            kioskWebView.loadKioskUrl(KIOSK_URL)
+            drawerLayout.closeDrawer(Gravity.START)
+            Toast.makeText(this, "Cache cleared", Toast.LENGTH_SHORT).show()
         }
         findViewById<LinearLayout>(R.id.menuExit).setOnClickListener {
             finishAndRemoveTask()
@@ -286,12 +316,17 @@ class MainActivity : AppCompatActivity() {
 
     // region Charging / power
 
-    private fun registerChargingReceiver() {
+    private fun registerSystemReceiver() {
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(Intent.ACTION_SCREEN_ON)
         }
-        ContextCompat.registerReceiver(this, chargingReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        ContextCompat.registerReceiver(this, systemReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+    }
+
+    private fun registerNetworkCallback() {
+        connectivityManager.registerDefaultNetworkCallback(networkCallback)
     }
 
     private fun applyInitialPowerState() {
@@ -305,13 +340,13 @@ class MainActivity : AppCompatActivity() {
     @Suppress("DEPRECATION")
     private fun onPowerConnected() {
         releaseWakeLock()
-        // ACQUIRE_CAUSES_WAKEUP turns the screen on immediately even if the device is sleeping
+        // ACQUIRE_CAUSES_WAKEUP wakes the screen immediately — ACTION_SCREEN_ON then fires
+        // and handles the reload, so no explicit reload is needed here.
         wakeLock = powerManager.newWakeLock(
             PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
             WAKE_LOCK_TAG
         ).also { it.acquire(10_000L) }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        kioskWebView.loadKioskUrl(KIOSK_URL)
     }
 
     private fun onPowerDisconnected() {
