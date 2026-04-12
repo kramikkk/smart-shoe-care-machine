@@ -19,8 +19,8 @@ const KioskHomePage = () => {
         transition={{ duration: 3.5, repeat: Infinity, ease: 'easeInOut' }}
       >
         <Image
-          src="/SSCMlogoTrans.webp"
-          alt="Smart Shoe Care Machine Logo"
+          src="/SSCMLogoCircle.webp"
+          alt="SSCM Kiosk"
           width={300}
           height={300}
           priority
@@ -29,7 +29,7 @@ const KioskHomePage = () => {
       </motion.div>
 
       <h1 className="text-5xl font-bold text-center mb-4 bg-gradient-to-r from-blue-600 via-cyan-600 to-green-600 bg-clip-text text-transparent">
-        Smart Shoe Care Machine
+        SSCM Kiosk
       </h1>
       <p className="text-center text-2xl text-gray-700 mb-12">
         Keep your shoes fresh, clean, and ready to wear.
