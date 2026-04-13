@@ -1,6 +1,16 @@
+import type { Metadata } from 'next'
 import './kiosk.css'
 import PairingWrapper from '@/components/kiosk/PairingWrapper'
 import { KioskWebSocketProvider } from '@/contexts/KioskWebSocketContext'
+
+export const metadata: Metadata = {
+  title: 'SSCM Kiosk',
+  description: 'Self-service kiosk for Smart Shoe Care Machine',
+  icons: {
+    icon: '/SSCMLogoCircle.webp',
+    apple: '/SSCMLogoCircle.webp',
+  },
+}
 
 const isDebug = process.env.NEXT_PUBLIC_DEBUG === 'true'
 

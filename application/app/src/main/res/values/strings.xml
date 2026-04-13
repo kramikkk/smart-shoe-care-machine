@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">SSCM Kiosk App</string>
+    <string name="accessibility_service_description">Keeps the kiosk locked to the screen by detecting when another app comes to the foreground and immediately returning to the kiosk.</string>
+</resources>

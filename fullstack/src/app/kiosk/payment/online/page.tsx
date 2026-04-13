@@ -142,7 +142,7 @@ const OnlinePayment = () => {
         headers: { 'Content-Type': 'application/json', 'X-Group-Token': groupToken },
         body: JSON.stringify({
           amount: selectedServiceData.price,
-          description: `Smart Shoe Care - ${selectedServiceData.name}`,
+          description: `SSCM Kiosk - ${selectedServiceData.name}`,
           deviceId,
           shoeType: selectedShoe.charAt(0).toUpperCase() + selectedShoe.slice(1),
           careType: selectedService === 'package'
