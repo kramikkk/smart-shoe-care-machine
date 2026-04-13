@@ -629,9 +629,11 @@ void loop() {
     wifiPostConnectPending = true;
   }
 
-  // Post-connect actions deferred 3s so TCP/IP stack settles without blocking loop().
-  // Stepper homing continues uninterrupted during this window.
-  if (wifiPostConnectPending && millis() - wifiPostConnectAt >= WIFI_STABILISE_MS) {
+  // Post-connect: wait for TCP/IP to settle (3s) AND stepper homing to finish
+  // before opening the WebSocket. beginSSL() blocks the loop during the SSL
+  // handshake — starting it mid-move stalls the stepper bit-banging.
+  if (wifiPostConnectPending && millis() - wifiPostConnectAt >= WIFI_STABILISE_MS
+      && !stepper1Moving && !stepper2Moving) {
     wifiPostConnectPending = false;
     if (!isPaired)
       sendDeviceRegistration();
@@ -689,10 +691,9 @@ void loop() {
     }
     if (isPaired && millis() - lastUltrasonicRead >= ULTRASONIC_READ_INTERVAL) {
       lastUltrasonicRead = millis();
-      bool s1 = readAtomizerLevel();
-      bool s2 = readFoamLevel();
-      if (s1 || s2)
-        sendUltrasonicDataViaWebSocket();
+      readAtomizerLevel();
+      readFoamLevel();
+      sendUltrasonicDataViaWebSocket();
     }
   }
 
