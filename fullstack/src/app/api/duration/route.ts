@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
       const defaults = SERVICE_TYPES.flatMap(st =>
         CARE_TYPES.map(ct => ({ serviceType: st, careType: ct, duration: DEFAULT_DURATIONS[st][ct], deviceId: null }))
       )
-      await prisma.serviceDuration.createMany({ data: defaults })
+      await prisma.serviceDuration.createMany({ data: defaults, skipDuplicates: true })
       globalDurations = await prisma.serviceDuration.findMany({ where: { deviceId: null } })
     }
 
@@ -82,13 +82,24 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    const existing = await prisma.serviceDuration.findFirst({
-      where: { deviceId: targetDeviceId, serviceType, careType },
-    })
-
-    const updated = existing
-      ? await prisma.serviceDuration.update({ where: { id: existing.id }, data: { duration } })
-      : await prisma.serviceDuration.create({ data: { serviceType, careType, duration, deviceId: targetDeviceId } })
+    let updated
+    if (targetDeviceId !== null) {
+      // Device-specific: compound unique key is reliable for upsert
+      updated = await prisma.serviceDuration.upsert({
+        where: { deviceId_serviceType_careType: { deviceId: targetDeviceId, serviceType, careType } },
+        update: { duration },
+        create: { serviceType, careType, duration, deviceId: targetDeviceId },
+      })
+    } else {
+      // Global (deviceId: null): PostgreSQL NULLs are not equal in unique constraints,
+      // so find by fields then update or create
+      const existing = await prisma.serviceDuration.findFirst({
+        where: { deviceId: null, serviceType, careType },
+      })
+      updated = existing
+        ? await prisma.serviceDuration.update({ where: { id: existing.id }, data: { duration } })
+        : await prisma.serviceDuration.create({ data: { serviceType, careType, duration, deviceId: null } })
+    }
 
     return NextResponse.json({ success: true, duration: updated })
   } catch (error) {

@@ -36,8 +36,14 @@ void sendDeviceRegistration() {
   http.setTimeout(10000);
   http.addHeader("Content-Type", "application/json");
 
+  // Backend /api/device/register requires pairingCode (6 digits) and accepts optional groupToken.
+  // Without pairingCode the API returns 400 and the kiosk never receives a QR / pairing code.
   String payload = "{";
   payload += "\"deviceId\":\"" + deviceId + "\",";
+  payload += "\"pairingCode\":\"" + pairingCode + "\",";
+  if (groupToken.length() == 8) {
+    payload += "\"groupToken\":\"" + groupToken + "\",";
+  }
   payload += "\"deviceName\":\"Smart Shoe Care Machine\",";
   payload += "\"firmwareVersion\":\"" + String(FIRMWARE_VERSION) + "\"";
   payload += "}";

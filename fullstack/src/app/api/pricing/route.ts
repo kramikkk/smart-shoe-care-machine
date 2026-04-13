@@ -5,7 +5,7 @@ import { z } from 'zod'
 
 const PricingUpdateSchema = z.object({
   serviceType: z.enum(['cleaning', 'drying', 'sterilizing', 'package']),
-  price: z.number().nonnegative('Price must be a non-negative number').max(10000),
+  price: z.number().nonnegative('Price must be a non-negative number').max(10000).nullable(),
   deviceId: z.string().optional(),
 })
 

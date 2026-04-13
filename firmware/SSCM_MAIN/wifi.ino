@@ -150,8 +150,8 @@ void setupOTA() {
   char hostname[24];
   snprintf(hostname, sizeof(hostname), "sscm-main-%02X%02X", mac[4], mac[5]);
   ArduinoOTA.setHostname(hostname);
-  if (groupToken.length() == 8) {
-    ArduinoOTA.setPassword(groupToken.c_str());
+  if (deviceId.length() > 0) {
+    ArduinoOTA.setPassword(deviceId.c_str());
   } else {
     ArduinoOTA.setPassword("SSCM-OTA");
   }

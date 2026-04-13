@@ -95,7 +95,7 @@ model Transaction {
 model ServicePricing {
   id          String   @id @default(cuid())
   serviceType String
-  price       Float
+  price       Float?   // null = not configured, use hardware/firmware default
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   deviceId    String?

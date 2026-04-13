@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "tsx --env-file=.env server.ts",
     "build:server": "node_modules/.bin/esbuild server.ts --bundle --packages=external --platform=node --target=node20 --tsconfig=tsconfig.json --outfile=dist/server.js",
-    "build": "NEXT_TELEMETRY_DISABLED=1 next build && npm run build:server",
+    "build": "prisma generate && NEXT_TELEMETRY_DISABLED=1 next build && npm run build:server",
     "start": "NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--max-old-space-size=460 node dist/server.js"
   },
   "dependencies": {

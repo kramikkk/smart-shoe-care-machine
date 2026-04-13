@@ -52,21 +52,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid group token' }, { status: 403 })
     }
 
-    // Fetch device-specific pricing, fall back to global
+    // Fetch device-specific pricing, fall back to global.
+    // If device-specific row exists but price is null (use hardware default),
+    // fall through to global pricing which should have a configured price.
     let pricing = await prisma.servicePricing.findFirst({
       where: { deviceId, serviceType: serviceType.toLowerCase() },
     })
-    if (!pricing) {
+    if (!pricing || pricing.price === null) {
       pricing = await prisma.servicePricing.findFirst({
         where: { deviceId: null, serviceType: serviceType.toLowerCase() },
       })
     }
-    if (!pricing) {
+    if (!pricing || pricing.price === null) {
       return NextResponse.json(
-        { success: false, error: `No pricing found for service type: ${serviceType}` },
+        { success: false, error: `No pricing configured for service type: ${serviceType}` },
         { status: 400 }
       )
     }
+
+    const amount = pricing.price
 
     const transaction = await prisma.transaction.create({
       data: {
@@ -75,12 +79,12 @@ export async function POST(req: NextRequest) {
         serviceType,
         shoeType,
         careType,
-        amount: pricing.price,
+        amount,
         deviceId,
       },
     })
 
-    console.log(`[Transaction] Cash transaction created — id: ${transaction.id}, device: ${deviceId}, service: ${serviceType}, amount: ₱${pricing.price}`)
+    console.log(`[Transaction] Cash transaction created — id: ${transaction.id}, device: ${deviceId}, service: ${serviceType}, amount: ₱${amount}`)
     return NextResponse.json({
       success: true,
       transaction: { id: transaction.id, dateTime: transaction.dateTime },

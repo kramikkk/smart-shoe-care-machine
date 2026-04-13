@@ -25,12 +25,9 @@ void setupOTA() {
   snprintf(hostname, sizeof(hostname), "sscm-cam-%02X%02X", mac[4], mac[5]);
   ArduinoOTA.setHostname(hostname);
 
-  // Use stored group token as OTA password after pairing
-  String token = prefs.getString("groupToken", "");
-  if (token.length() == 8) {
-    ArduinoOTA.setPassword(token.c_str());
+  if (camOwnDeviceId.length() > 0) {
+    ArduinoOTA.setPassword(camOwnDeviceId.c_str());
   } else {
-    // Derive fallback from MAC
     char fallback[9];
     snprintf(fallback, sizeof(fallback), "%02X%02X%02X%02X", mac[2], mac[3],
              mac[4], mac[5]);
@@ -44,7 +41,7 @@ void setupOTA() {
   });
 
   ArduinoOTA.begin();
-  LOG("[OTA] Ready on " + String(hostname) + " (Pass: token or MAC)");
+  LOG("[OTA] Ready on " + String(hostname) + " (password = device ID, e.g. SSCM-CAM-XXXXXX)");
 }
 
 /**

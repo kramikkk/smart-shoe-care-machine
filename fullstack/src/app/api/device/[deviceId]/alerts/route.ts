@@ -89,16 +89,23 @@ export async function POST(
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 })
   }
 
-  const existing = await prisma.deviceAlert.findFirst({
-    where: { deviceId, alertKey, resolvedAt: null },
-  })
-  if (existing) {
-    return NextResponse.json(existing, { status: 200 })
-  }
+  // Serializable transaction prevents a race condition where two concurrent
+  // requests both pass the findFirst check and both execute create, producing
+  // duplicate unresolved alerts for the same alertKey.
+  const { alert, isNew } = await prisma.$transaction(async (tx) => {
+    const existing = await tx.deviceAlert.findFirst({
+      where: { deviceId, alertKey, resolvedAt: null },
+    })
+    if (existing) return { alert: existing, isNew: false }
+    const created = await tx.deviceAlert.create({
+      data: { deviceId, alertKey, severity, title, description },
+    })
+    return { alert: created, isNew: true }
+  }, { isolationLevel: 'Serializable' })
 
-  const alert = await prisma.deviceAlert.create({
-    data: { deviceId, alertKey, severity, title, description },
-  })
+  if (!isNew) {
+    return NextResponse.json(alert, { status: 200 })
+  }
 
   // Fire-and-forget alert email — never blocks the response
   sendAlertEmail({ userId: authResult.user.id, deviceId, title, description, severity }).catch(
