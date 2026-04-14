@@ -22,9 +22,9 @@ class KioskWebView @JvmOverloads constructor(
 
     private val handler = Handler(Looper.getMainLooper())
     private var kioskUrl: String = ""
-    private val retryRunnable = Runnable { loadUrl(kioskUrl) }
+    private val retryRunnable = Runnable { loadUrlIgnoringCache(kioskUrl) }
 
-    // Tap detection for admin gesture (5 taps within 3 seconds)
+    // Tap detection for admin gesture (5 taps within 1 second).
     var onAdminGestureDetected: (() -> Unit)? = null
     private val tapTimestamps = mutableListOf<Long>()
 
@@ -54,7 +54,9 @@ class KioskWebView @JvmOverloads constructor(
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+            // Prefer network + HTTP cache headers. LOAD_CACHE_ELSE_NETWORK kept stale
+            // HTML/API responses after dashboard changes until the user cleared cache.
+            cacheMode = WebSettings.LOAD_DEFAULT
             setSupportZoom(false)
             builtInZoomControls = false
             displayZoomControls = false
@@ -67,7 +69,7 @@ class KioskWebView @JvmOverloads constructor(
                     return false
                 }
                 // External URL — block and stay on kiosk
-                view.loadUrl(kioskUrl)
+                view.loadUrl(kioskUrl, NO_CACHE_HEADERS)
                 return true
             }
 
@@ -92,7 +94,12 @@ class KioskWebView @JvmOverloads constructor(
     fun loadKioskUrl(url: String) {
         kioskUrl = url
         stopRetry()
-        loadUrl(url)
+        // Ask origin/CDN for a fresh document; avoids stale kiosk shell after remote settings change.
+        loadUrl(url, NO_CACHE_HEADERS)
+    }
+
+    private fun loadUrlIgnoringCache(url: String) {
+        loadUrl(url, NO_CACHE_HEADERS)
     }
 
     fun stopRetry() {
@@ -106,7 +113,12 @@ class KioskWebView @JvmOverloads constructor(
 
     companion object {
         private const val RETRY_DELAY_MS = 10_000L
-        private const val TAP_WINDOW_MS = 3_000L
+        private const val TAP_WINDOW_MS = 1_000L
         private const val REQUIRED_TAPS = 5
+
+        private val NO_CACHE_HEADERS = mapOf(
+            "Cache-Control" to "no-cache",
+            "Pragma" to "no-cache"
+        )
     }
 }

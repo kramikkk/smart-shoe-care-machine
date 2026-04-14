@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
@@ -128,8 +129,12 @@ class MainActivity : AppCompatActivity() {
             kioskWebView.loadKioskUrl(KIOSK_URL)
             drawerLayout.closeDrawer(Gravity.START)
         }
-        findViewById<LinearLayout>(R.id.menuEnterKiosk).setOnClickListener {
-            enableKioskMode()
+        
+        // Update the initial text based on the current mode status
+        updateKioskModeStatusText()
+        
+        findViewById<LinearLayout>(R.id.menuToggleKiosk).setOnClickListener {
+            showKioskModeDialog()
         }
         findViewById<LinearLayout>(R.id.menuChangePin).setOnClickListener {
             showChangePinDialog()
@@ -142,8 +147,49 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Cache cleared", Toast.LENGTH_SHORT).show()
         }
         findViewById<LinearLayout>(R.id.menuExit).setOnClickListener {
-            finishAndRemoveTask()
+            drawerLayout.closeDrawer(Gravity.START)
+            showExitAppDialog()
         }
+    }
+
+    private fun updateKioskModeStatusText() {
+        val statusText = findViewById<TextView>(R.id.tvKioskModeStatus)
+        statusText?.text = if (isKioskModeActive) "Status: ON (Screen Locked)" else "Status: OFF (Normal Usage)"
+    }
+
+    private fun showKioskModeDialog() {
+        val view = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(60, 40, 60, 20)
+
+            val details = android.widget.TextView(this@MainActivity).apply {
+                text = "Kiosk Mode locks the app to screen.\n\nTo disable kiosk, use the admin 5-tap gesture and enter the PIN."
+                textSize = 14f
+                // Keep details readable in the app's dark drawer theme.
+                setTextColor(android.graphics.Color.WHITE)
+                setPadding(0, 0, 0, 12)
+            }
+            addView(details)
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Kiosk Mode")
+            .setView(view)
+            .setNegativeButton("Cancel", null)
+
+        if (isKioskModeActive) {
+            builder
+                .setPositiveButton("OK", null)
+                .setMessage("Kiosk Mode is already ON.")
+        } else {
+            builder.setPositiveButton("Turn On") { _, _ ->
+                enableKioskMode()
+                updateKioskModeStatusText()
+                drawerLayout.closeDrawer(Gravity.START)
+            }
+        }
+
+        builder.show()
     }
 
     // endregion
@@ -153,6 +199,7 @@ class MainActivity : AppCompatActivity() {
     private fun enableKioskMode() {
         isKioskModeActive = true
         prefs.edit().putBoolean(PREF_KIOSK_ACTIVE, true).apply()
+        updateKioskModeStatusText()
         applyImmersiveMode()
         backCallback.isEnabled = true
         drawerLayout.closeDrawer(Gravity.START)
@@ -218,22 +265,70 @@ class MainActivity : AppCompatActivity() {
     private fun disableKioskMode() {
         isKioskModeActive = false
         prefs.edit().putBoolean(PREF_KIOSK_ACTIVE, false).apply()
+        updateKioskModeStatusText()
         backCallback.isEnabled = false
         drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED)
     }
 
+    /**
+     * Turning off kiosk in prefs stops [KioskAccessibilityService] from calling
+     * [KioskAccessibilityService.bringKioskToFront], which otherwise immediately
+     * reopens this activity after [finishAndRemoveTask].
+     */
+    private fun showExitAppDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Exit app")
+            .setMessage(
+                "Kiosk lock will be turned off for this session so the app does not pull you back.\n\n" +
+                    "To leave completely: disable the \"${getString(R.string.app_name)}\" " +
+                    "accessibility service (otherwise Android may still treat this app as a kiosk helper). " +
+                    "If this app is your default Home app, choose another launcher in Home settings " +
+                    "so Home does not reopen it."
+            )
+            .setPositiveButton("Exit") { _, _ ->
+                disableKioskMode()
+                finishAndRemoveTask()
+            }
+            .setNeutralButton("Accessibility") { _, _ ->
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            .setNegativeButton("Home app") { _, _ ->
+                startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
+            }
+            .setCancelable(true)
+            .show()
+    }
+
     private fun showPinDialog() {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val padding = (20 * resources.displayMetrics.density).toInt()
+            setPadding(padding, padding, padding, 0)
+        }
+        val helper = TextView(this).apply {
+            text = "Enter admin PIN to disable kiosk mode."
+            textSize = 13f
+            setTextColor(ContextCompat.getColor(this@MainActivity, android.R.color.darker_gray))
+            setPadding(0, 0, 0, (8 * resources.displayMetrics.density).toInt())
+        }
         val input = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
             hint = "Enter PIN"
+            transformationMethod = PasswordTransformationMethod.getInstance()
+            setSingleLine(true)
         }
+        container.addView(helper)
+        container.addView(input)
+
         AlertDialog.Builder(this)
             .setTitle("Admin Access")
-            .setView(input)
+            .setView(container)
             .setPositiveButton("Confirm") { _, _ ->
                 val entered = input.text.toString()
                 val stored = prefs.getString(PREF_PIN, DEFAULT_PIN) ?: DEFAULT_PIN
-                if (entered == stored) {
+                if (entered.isBlank()) {
+                    Toast.makeText(this, "PIN is required", Toast.LENGTH_SHORT).show()
+                } else if (entered == stored) {
                     disableKioskMode()
                 } else {
                     Toast.makeText(this, "Incorrect PIN", Toast.LENGTH_SHORT).show()

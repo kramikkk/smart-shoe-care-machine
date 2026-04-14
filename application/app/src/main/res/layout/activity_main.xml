@@ -122,9 +122,9 @@
             android:layout_marginStart="62dp"
             android:background="#2D2D44" />
 
-        <!-- Enter Kiosk Mode -->
+        <!-- Toggle Kiosk Mode -->
         <LinearLayout
-            android:id="@+id/menuEnterKiosk"
+            android:id="@+id/menuToggleKiosk"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
@@ -138,7 +138,7 @@
                 android:layout_width="24dp"
                 android:layout_height="24dp"
                 android:src="@drawable/ic_drawer_lock"
-                android:contentDescription="Enter kiosk mode" />
+                android:contentDescription="Toggle kiosk mode" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -150,16 +150,17 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Enter Kiosk Mode"
+                    android:text="Kiosk Mode"
                     android:textColor="#FFFFFF"
                     android:textSize="15sp"
                     android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/tvKioskModeStatus"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="Lock screen in kiosk mode"
+                    android:text="Configure screen lock mode"
                     android:textColor="#8888AA"
                     android:textSize="12sp" />
 
