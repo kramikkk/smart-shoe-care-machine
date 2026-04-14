@@ -230,7 +230,12 @@ export default function ClassifyPage() {
 
     if (isConnected && camSynced && !classificationSentRef.current) {
       classificationSentRef.current = true
-      sendMessage({ type: 'start-classification', deviceId: deviceId })
+      // Re-enable classification LED before each retry.
+      // Dashboard camera tools may have turned it off after the previous attempt.
+      sendMessage({ type: 'enable-classification', deviceId: deviceId })
+      window.setTimeout(() => {
+        sendMessage({ type: 'start-classification', deviceId: deviceId })
+      }, 50)
 
       timeoutRef.current = setTimeout(() => {
         setState((currentState) => {
