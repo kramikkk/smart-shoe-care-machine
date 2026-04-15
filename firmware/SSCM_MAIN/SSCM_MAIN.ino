@@ -29,16 +29,16 @@ void IRAM_ATTR handleBillPulse();
 
 /* ===================== WIFI ===================== */
 Preferences prefs;
-WiFiServer wifiServer(80);
+WiFiServer wifiServer(80);          // HTTP server for captive portal (SoftAP provisioning mode)
 bool wifiConnected = false;
-unsigned long wifiRetryDelay = 5000;
-unsigned long wifiRetryStart = 0;
+unsigned long wifiRetryDelay = 5000; // Exponential backoff seed (ms); doubles each timeout, caps at 30s
+unsigned long wifiRetryStart = 0;    // Timestamp when current backoff window began (0 = not in backoff)
 bool softAPStarted = false;
-unsigned long wifiStartTime = 0;
-unsigned long lastWiFiRetry = 0;
+unsigned long wifiStartTime = 0;     // Timestamp of the most recent connect attempt start
+unsigned long lastWiFiRetry = 0;     // Timestamp of the last retry poll tick
 
-#define WIFI_TIMEOUT 60000
-#define WIFI_RETRY_INTERVAL 5000
+#define WIFI_TIMEOUT        60000    // ms before giving up on the current connect attempt and retrying
+#define WIFI_RETRY_INTERVAL  5000    // ms between retry poll checks in loop()
 
 /* ===================== WEBSOCKET ===================== */
 WebSocketsClient webSocket;
@@ -52,6 +52,8 @@ const unsigned long STATUS_UPDATE_INTERVAL = 5000;
 
 /* ===================== ESP-NOW - ESP32-CAM COMMUNICATION =====================
  */
+// Pairing broadcast from MAIN to discover/configure a CAM board.
+// Includes WiFi + backend endpoint so CAM can fully self-provision.
 typedef struct {
   uint8_t type;
   char groupToken[10];
@@ -62,12 +64,14 @@ typedef struct {
   uint16_t wsPort;
 } PairingBroadcast;
 
+// CAM response confirming pairing + providing current CAM LAN IP.
 typedef struct {
   uint8_t type;
   char camOwnDeviceId[24];
   char camIp[20];
 } PairingAck;
 
+// Generic command/result message for CAM control and classification outcomes.
 typedef struct {
   uint8_t type;
   uint8_t status;
@@ -100,14 +104,17 @@ unsigned long lastCamHeartbeat = 0;
 unsigned long lastCamPing = 0;
 #define CAM_PING_INTERVAL 30000
 
+// Actions deferred from ESP-NOW callback to loop() to avoid heavy work in radio context.
 enum EspNowPending : uint8_t {
-  ESPNOW_NONE = 0,
-  ESPNOW_CLASSIFY_OK = 1,
-  ESPNOW_CLASSIFY_ERROR = 2,
-  ESPNOW_CAM_PAIRED = 3,
-  ESPNOW_API_HANDLED = 4
+  ESPNOW_NONE           = 0, // Queue slot is empty
+  ESPNOW_CLASSIFY_OK    = 1, // CAM returned a valid shoe classification (shoeType + confidence)
+  ESPNOW_CLASSIFY_ERROR = 2, // CAM reported a capture or API failure (errorCode populated)
+  ESPNOW_CAM_PAIRED     = 3, // CAM completed the pairing handshake; notify backend
+  ESPNOW_API_HANDLED    = 4  // CAM sent CAM_STATUS_API_HANDLED (Gemini path); log only
 };
 #define ESPNOW_QUEUE_SIZE 4
+// Small lock-protected queue used to hand off ESP-NOW callback work to loop().
+// This avoids heavy operations inside radio callback context.
 struct EspNowEntry {
   EspNowPending action;
   char shoeType[32];
@@ -139,25 +146,29 @@ float lastClassificationConfidence = 0.0;
 bool classificationLedOn = false;
 
 /* ===================== COIN SLOT ===================== */
+// Coin acceptor outputs pulses on falling edge: ₱1 = 1 pulse, ₱5 = 5 pulses, ₱10 = 10 pulses.
+// ISR counts pulses; loop() finalises the value after the inter-pulse timeout expires.
 #define COIN_SLOT_PIN 5
-volatile unsigned long lastCoinPulseTime = 0;
-volatile unsigned long lastCoinProcessedTime = 0;
-volatile unsigned int currentCoinPulses = 0;
+volatile unsigned long lastCoinPulseTime = 0;        // Timestamp of most recent pulse (ISR-updated)
+volatile unsigned long lastCoinProcessedTime = 0;    // Timestamp of last batch finalization
+volatile unsigned int currentCoinPulses = 0;         // Running pulse count for the current coin burst
 unsigned int totalCoinPesos = 0;
-const unsigned long COIN_PULSE_DEBOUNCE_TIME = 100;
-const unsigned long COIN_COMPLETE_TIMEOUT = 200;
+const unsigned long COIN_PULSE_DEBOUNCE_TIME = 100;  // ms — ignore pulses within this window of each other
+const unsigned long COIN_COMPLETE_TIMEOUT = 200;     // ms of silence after last pulse = burst is done
 // Dead time after a coin batch is processed — prevents trailing ghost pulses
 // from the coin acceptor mechanism from starting a new ₱1 count.
 const unsigned long COIN_GUARD_TIME = 100;
 
 /* ===================== BILL ACCEPTOR ===================== */
+// Bill acceptor outputs 1 pulse per ₱10 inserted (e.g. ₱20 bill = 2 pulses, ₱100 = 10 pulses).
+// Pulse counting and value calculation mirrors the coin slot pattern.
 #define BILL_PULSE_PIN 4
-volatile unsigned long lastBillPulseTime = 0;
-volatile unsigned int currentBillPulses = 0;
+volatile unsigned long lastBillPulseTime = 0;       // Timestamp of most recent bill pulse (ISR-updated)
+volatile unsigned int currentBillPulses = 0;        // Running pulse count for the current bill burst
 unsigned int totalBillPesos = 0;
-unsigned int totalPesos = 0;
-const unsigned long BILL_PULSE_DEBOUNCE_TIME = 100;
-const unsigned long BILL_COMPLETE_TIMEOUT = 200;
+unsigned int totalPesos = 0;                        // totalCoinPesos + totalBillPesos
+const unsigned long BILL_PULSE_DEBOUNCE_TIME = 100; // ms — ignore pulses within this window
+const unsigned long BILL_COMPLETE_TIMEOUT = 200;    // ms of silence after last pulse = bill accepted
 
 /* ===================== PAYMENT CONTROL ===================== */
 volatile bool paymentEnabled = false;
@@ -169,16 +180,18 @@ const unsigned long PAYMENT_STABILIZATION_DELAY = 100;
 static portMUX_TYPE paymentMux = portMUX_INITIALIZER_UNLOCKED;
 
 /* ===================== 8-CHANNEL RELAY ===================== */
-#define RELAY_1_PIN 3
-#define RELAY_2_PIN 8
-#define RELAY_3_PIN 18
-#define RELAY_4_PIN 17
-#define RELAY_5_PIN 16
-#define RELAY_6_PIN 15
-#define RELAY_7_PIN 7
-#define RELAY_8_PIN 6
+// Relay board is active-HIGH (RELAY_ON = HIGH energises the coil).
+// Actuator assignments (confirmed from service.ino):
+#define RELAY_1_PIN 3   // Coin/bill acceptor power rail (enable-payment turns ON; disable-payment turns OFF)
+#define RELAY_2_PIN 8   // Bottom exhaust fan (purge after drying/sterilizing)
+#define RELAY_3_PIN 18  // Drying fan
+#define RELAY_4_PIN 17  // Left PTC heater (drying)
+#define RELAY_5_PIN 16  // Diaphragm pump (cleaning — soap/water spray)
+#define RELAY_6_PIN 15  // Right PTC heater (drying)
+#define RELAY_7_PIN 7   // Mist maker (sterilizing)
+#define RELAY_8_PIN 6   // UVC light (sterilizing)
 
-#define RELAY_ON HIGH
+#define RELAY_ON  HIGH
 #define RELAY_OFF LOW
 
 bool relay1State = false;
@@ -209,21 +222,30 @@ String purgeCareType = "";
 const unsigned long PURGE_DURATION_MS = 15000;
 
 /* ===================== DRYING TEMPERATURE CONTROL ===================== */
-const float DRYING_TEMP_LOW = 35.0;
-const float DRYING_TEMP_HIGH = 40.0;
-bool dryingHeaterOn = false;
-bool dryingExhaustOn = false;
+// PTC heaters and exhaust fan are cycled to maintain the drying chamber within a
+// 5°C hysteresis band. The band prevents rapid relay chatter near the setpoint.
+const float DRYING_TEMP_LOW  = 35.0; // °C — heaters turn ON below this threshold
+const float DRYING_TEMP_HIGH = 40.0; // °C — heaters turn OFF and exhaust turns ON above this
+bool dryingHeaterOn  = false;        // True when relays 4 + 6 (PTC heaters) are active
+bool dryingExhaustOn = false;        // True when relay 2 (bottom exhaust) is active for cooling
 
 /* ===================== CLEANING SERVICE STATE ===================== */
-const long CLEANING_MAX_POSITION = 4800;
-int cleaningPhase = 0;
-const unsigned long BRUSH_DURATION_MS = 30000;
-const unsigned long BRUSH_COAST_MS = 500;
-const int BRUSH_TOTAL_CYCLES = 10;
-const int BRUSH_MOTOR_SPEED = 255;
-int brushCurrentCycle = 0;
-unsigned long brushPhaseStartTime = 0;
-int brushNextPhase = 0;
+// Cleaning uses a multi-phase state machine (cleaningPhase 1–6):
+//   1: top brush descending (pump ON + side moving simultaneously)
+//   2: top brush returning upward (pump still ON)
+//   3: waiting for side to reach depth
+//   4: CW brush segment
+//   5: CCW brush segment
+//   6: coast gap between CW/CCW transitions
+const long CLEANING_MAX_POSITION = 4800; // Top brush parked position (steps = 480mm up)
+int cleaningPhase = 0;                   // 0 = idle, 1–6 = active phase (see above)
+const unsigned long BRUSH_DURATION_MS = 30000; // ms per CW or CCW brush segment (one direction = one segment)
+const unsigned long BRUSH_COAST_MS    = 500;   // ms coast pause between CW↔CCW direction reversals
+const int BRUSH_TOTAL_CYCLES   = 10;           // Total CW+CCW pairs before cleaning ends
+const int BRUSH_MOTOR_SPEED    = 255;          // Full-speed PWM duty for brush motors during cleaning
+int brushCurrentCycle      = 0;               // Completed CW+CCW cycle count
+unsigned long brushPhaseStartTime = 0;        // millis() at start of current phase
+int brushNextPhase         = 0;               // Phase to transition to after a coast gap
 
 /* ===================== DHT11 SENSOR ===================== */
 #define DHT_PIN 9
@@ -247,62 +269,76 @@ unsigned long lastUltrasonicRead = 0;
 const unsigned long ULTRASONIC_READ_INTERVAL = 5000;
 
 /* ===================== SERVO MOTORS ===================== */
-#define SERVO_LEFT_PIN 19
+// Left and right servos are mirrored: leftPos + rightPos always = 180°.
+// They hold the shoe in place; 0° = open/release, 90° = mid, 180° = clamped.
+#define SERVO_LEFT_PIN  19
 #define SERVO_RIGHT_PIN 14
 Servo servoLeft;
 Servo servoRight;
-int currentLeftPosition = 0;
-int currentRightPosition = 180;
-int targetLeftPosition = 0;
-int targetRightPosition = 180;
+int currentLeftPosition  = 0;    // Current angle (degrees) of left servo
+int currentRightPosition = 180;  // Current angle (degrees) of right servo
+int targetLeftPosition   = 0;    // Destination angle for left servo
+int targetRightPosition  = 180;  // Destination angle for right servo
 bool servosMoving = false;
 unsigned long lastServoUpdate = 0;
-const unsigned long SERVO_UPDATE_INTERVAL = 15;
+const unsigned long SERVO_UPDATE_INTERVAL = 15;    // ms between each step tick in updateServoPositions()
+// Speed control: each tick advances by 1° only when servoStepCounter reaches servoStepInterval.
+// SLOW = 105 ticks × 15ms = ~1.575s to travel 180° (smooth clamping motion during cleaning sweep).
+// FAST = 1  tick  × 15ms = ~2.7s  to travel 180° at maximum step rate (open/release).
 const int SERVO_SLOW_STEP_INTERVAL = 105;
 const int SERVO_FAST_STEP_INTERVAL = 1;
-int servoStepInterval = SERVO_SLOW_STEP_INTERVAL;
-int servoStepCounter = 0;
+int servoStepInterval = SERVO_SLOW_STEP_INTERVAL;  // Active speed — switched by setServoPositions()
+int servoStepCounter  = 0;                          // Counts update ticks; resets when it hits servoStepInterval
 
-/* ===================== DC MOTORS ===================== */
-#define MOTOR_LEFT_IN1_PIN 21
-#define MOTOR_LEFT_IN2_PIN 47
+/* ===================== DC MOTORS (DRV8871) ===================== */
+// Two DRV8871 H-bridge drivers control the brush motors (left = CW, right = CCW mirror).
+// Speed is PWM duty on IN1/IN2; both HIGH = brake, both LOW = coast.
+#define MOTOR_LEFT_IN1_PIN  21
+#define MOTOR_LEFT_IN2_PIN  47
 #define MOTOR_RIGHT_IN1_PIN 48
 #define MOTOR_RIGHT_IN2_PIN 45
-const int MOTOR_PWM_FREQ = 1000;
-const int MOTOR_PWM_RESOLUTION = 8;
-int currentLeftMotorSpeed = 0;
+const int MOTOR_PWM_FREQ       = 1000; // 1 kHz — above audible range, within DRV8871 spec
+const int MOTOR_PWM_RESOLUTION = 8;    // 8-bit = 0–255 speed range via ledcWrite()
+int currentLeftMotorSpeed  = 0;        // Active duty (-255 to 255; negative = reverse)
 int currentRightMotorSpeed = 0;
 
-/* ===================== STEPPER 1 (TOP) ===================== */
+/* ===================== STEPPER 1 — TOP BRUSH (TB6600) ===================== */
+// Drives the vertical axis (top brush descends/ascends over the shoe).
+// Lead screw pitch: 2mm/rev × 200 steps/rev full-step = 10 steps/mm.
+// Travel range: 0 (bottom / brush contact) → CLEANING_MAX_POSITION 4800 steps (48mm, parked up).
 #define STEPPER1_STEP_PIN 40
-#define STEPPER1_DIR_PIN 38
-const int STEPPER1_STEPS_PER_REV = 200;
-const int STEPPER1_MICROSTEPS = 1;
-const int STEPPER1_STEPS_PER_MM = 10;
-const int STEPPER1_MAX_SPEED = 800;
-const unsigned long STEPPER1_MIN_PULSE_WIDTH = 2;
-long currentStepper1Position = 0;
-long targetStepper1Position = 0;
-int stepper1Speed = 800;
-bool stepper1Moving = false;
-unsigned long lastStepper1Update = 0;
-unsigned long stepper1StepInterval = 1250;
+#define STEPPER1_DIR_PIN  38
+const int STEPPER1_STEPS_PER_REV  = 200;   // Full-step 1.8° motor = 200 steps/revolution
+const int STEPPER1_MICROSTEPS     = 1;     // TB6600 set to full-step mode
+const int STEPPER1_STEPS_PER_MM   = 10;    // 2mm lead screw pitch: 200 steps / 20mm = 10 steps/mm
+const int STEPPER1_MAX_SPEED      = 800;   // Steps/sec cap (~80mm/s); above this the motor stalls
+const unsigned long STEPPER1_MIN_PULSE_WIDTH = 2; // µs — minimum TB6600 STEP pulse high time
+long currentStepper1Position = 0;          // Steps from home (0 = brush contact point)
+long targetStepper1Position  = 0;
+int  stepper1Speed       = 800;            // Active steps/sec
+bool stepper1Moving      = false;
+unsigned long lastStepper1Update  = 0;     // micros() timestamp of last step
+unsigned long stepper1StepInterval = 1250; // µs between steps at 800 steps/sec (1,000,000/800)
 
-/* ===================== STEPPER 2 (SIDE) ===================== */
+/* ===================== STEPPER 2 — SIDE BRUSH (TB6600) ===================== */
+// Drives the horizontal axis (side brush pushes inward toward the shoe).
+// Lead screw pitch: 1mm/rev × 200 steps/rev full-step = 200 steps/mm.
+// Travel range: 0 (retracted / home) → STEPPER2_MAX_POSITION 20000 steps (100mm, full depth).
+// Care depth targets: gentle=18000 (90mm), normal=19000 (95mm), strong=20000 (100mm).
 #define STEPPER2_STEP_PIN 41
-#define STEPPER2_DIR_PIN 42
-const int STEPPER2_STEPS_PER_REV = 200;
-const int STEPPER2_MICROSTEPS = 1;
-const int STEPPER2_STEPS_PER_MM = 200;
-const int STEPPER2_MAX_SPEED = 24000;
-const long STEPPER2_MAX_POSITION = 20000;
-const unsigned long STEPPER2_MIN_PULSE_WIDTH = 2;
-long currentStepper2Position = 0;
-long targetStepper2Position = 0;
-int stepper2Speed = 1500;
-bool stepper2Moving = false;
-unsigned long lastStepper2Update = 0;
-unsigned long stepper2StepInterval = 667;
+#define STEPPER2_DIR_PIN  42
+const int STEPPER2_STEPS_PER_REV  = 200;    // Full-step 1.8° motor = 200 steps/revolution
+const int STEPPER2_MICROSTEPS     = 1;      // TB6600 set to full-step mode
+const int STEPPER2_STEPS_PER_MM   = 200;    // 1mm lead screw pitch: 200 steps / 1mm = 200 steps/mm
+const int STEPPER2_MAX_SPEED      = 24000;  // Steps/sec cap (~120mm/s); finer pitch allows higher rate
+const long STEPPER2_MAX_POSITION  = 20000;  // 20000 steps = 100mm total travel (hard rail limit)
+const unsigned long STEPPER2_MIN_PULSE_WIDTH = 2; // µs — minimum TB6600 STEP pulse high time
+long currentStepper2Position = 0;           // Steps from home (0 = fully retracted)
+long targetStepper2Position  = 0;
+int  stepper2Speed        = 1500;           // Active steps/sec
+bool stepper2Moving       = false;
+unsigned long lastStepper2Update   = 0;     // micros() timestamp of last step
+unsigned long stepper2StepInterval = 667;   // µs between steps at 1500 steps/sec (1,000,000/1500)
 
 /* ===================== WS2812B LED STRIP ===================== */
 #define RGB_DATA_PIN 39
@@ -328,6 +364,8 @@ static unsigned long wifiPostConnectAt = 0;
 #define WIFI_STABILISE_MS 3000
 
 /* ===================== BACKEND URL ===================== */
+// WARNING: set USE_LOCAL_BACKEND to 0 before flashing production firmware.
+// Leaving it as 1 points the device at a local IP that will not be reachable in the field.
 #define USE_LOCAL_BACKEND 0
 #if USE_LOCAL_BACKEND
 #define BACKEND_HOST_STR "192.168.43.147"
@@ -344,6 +382,10 @@ const int BACKEND_PORT = BACKEND_PORT_NUM;
 const char *BACKEND_URL = BACKEND_URL_STR;
 
 /* ===================== SETUP ===================== */
+// Boot sequence initializes:
+// - persisted machine state (IDs, pair status, counters, actuator positions)
+// - all hardware drivers/IO
+// - network stack (STA or SoftAP fallback)
 void setup() {
   Serial.begin(115200);
   delay(100);
@@ -357,7 +399,7 @@ void setup() {
   currentStepper1Position = prefs.getLong("s1pos", 0);
   currentStepper2Position = prefs.getLong("s2pos", 0);
 
-  // Factory reset via BOOT button
+  // Physical failsafe: hold BOOT during power-on to wipe configuration.
   pinMode(0, INPUT_PULLUP);
   if (digitalRead(0) == LOW) {
     delay(3000);
@@ -365,65 +407,73 @@ void setup() {
       factoryReset();
   }
 
+  // --- Sensors ---
   dht.begin();
 
   pinMode(ATOMIZER_TRIG_PIN, OUTPUT);
   pinMode(ATOMIZER_ECHO_PIN, INPUT);
-  digitalWrite(ATOMIZER_TRIG_PIN, LOW);
+  digitalWrite(ATOMIZER_TRIG_PIN, LOW);  // Idle state: TRIG must be LOW before a measurement
 
   pinMode(FOAM_TRIG_PIN, OUTPUT);
   pinMode(FOAM_ECHO_PIN, INPUT);
   digitalWrite(FOAM_TRIG_PIN, LOW);
 
+  // --- Servo motors (shoe holder) ---
   servoLeft.attach(SERVO_LEFT_PIN);
   servoRight.attach(SERVO_RIGHT_PIN);
-  servoLeft.write(0);
-  servoRight.write(180);
-  currentLeftPosition = 0;
+  servoLeft.write(0);    // Open position
+  servoRight.write(180); // Mirrored open position
+  currentLeftPosition  = 0;
   currentRightPosition = 180;
-  targetLeftPosition = 0;
-  targetRightPosition = 180;
+  targetLeftPosition   = 0;
+  targetRightPosition  = 180;
 
+  // --- DC brush motors (DRV8871) ---
   pinMode(MOTOR_LEFT_IN1_PIN, OUTPUT);
   pinMode(MOTOR_LEFT_IN2_PIN, OUTPUT);
   pinMode(MOTOR_RIGHT_IN1_PIN, OUTPUT);
   pinMode(MOTOR_RIGHT_IN2_PIN, OUTPUT);
+  // Drive LOW before attaching LEDC to avoid a brief unintended output
   digitalWrite(MOTOR_LEFT_IN1_PIN, LOW);
   digitalWrite(MOTOR_LEFT_IN2_PIN, LOW);
   digitalWrite(MOTOR_RIGHT_IN1_PIN, LOW);
   digitalWrite(MOTOR_RIGHT_IN2_PIN, LOW);
 
-  ledcAttach(MOTOR_LEFT_IN1_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_RESOLUTION);
-  ledcWrite(MOTOR_LEFT_IN1_PIN, 0);
-  ledcAttach(MOTOR_LEFT_IN2_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_RESOLUTION);
-  ledcWrite(MOTOR_LEFT_IN2_PIN, 0);
+  ledcAttach(MOTOR_LEFT_IN1_PIN,  MOTOR_PWM_FREQ, MOTOR_PWM_RESOLUTION);
+  ledcWrite(MOTOR_LEFT_IN1_PIN,  0);
+  ledcAttach(MOTOR_LEFT_IN2_PIN,  MOTOR_PWM_FREQ, MOTOR_PWM_RESOLUTION);
+  ledcWrite(MOTOR_LEFT_IN2_PIN,  0);
   ledcAttach(MOTOR_RIGHT_IN1_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_RESOLUTION);
   ledcWrite(MOTOR_RIGHT_IN1_PIN, 0);
   ledcAttach(MOTOR_RIGHT_IN2_PIN, MOTOR_PWM_FREQ, MOTOR_PWM_RESOLUTION);
   ledcWrite(MOTOR_RIGHT_IN2_PIN, 0);
-  motorsCoast();
+  motorsCoast();  // Both IN pins LOW = high-impedance coast (no braking)
 
+  // --- Stepper motors (TB6600) ---
   pinMode(STEPPER1_STEP_PIN, OUTPUT);
-  pinMode(STEPPER1_DIR_PIN, OUTPUT);
+  pinMode(STEPPER1_DIR_PIN,  OUTPUT);
   digitalWrite(STEPPER1_STEP_PIN, LOW);
-  digitalWrite(STEPPER1_DIR_PIN, LOW);
-  setStepper1Speed(800);
+  digitalWrite(STEPPER1_DIR_PIN,  LOW);
+  setStepper1Speed(800);   // 800 steps/sec = ~80mm/s on top axis
 
   pinMode(STEPPER2_STEP_PIN, OUTPUT);
-  pinMode(STEPPER2_DIR_PIN, OUTPUT);
+  pinMode(STEPPER2_DIR_PIN,  OUTPUT);
   digitalWrite(STEPPER2_STEP_PIN, LOW);
-  digitalWrite(STEPPER2_DIR_PIN, LOW);
-  setStepper2Speed(1500);
+  digitalWrite(STEPPER2_DIR_PIN,  LOW);
+  setStepper2Speed(1500);  // 1500 steps/sec = ~7.5mm/s on side axis
 
+  // Restore mechanical baseline after reboot before accepting operations.
   if (currentStepper1Position != CLEANING_MAX_POSITION)
-    stepper1MoveTo(CLEANING_MAX_POSITION);
+    stepper1MoveTo(CLEANING_MAX_POSITION); // Park top brush at top (away from shoe)
   if (currentStepper2Position != 0)
-    stepper2MoveTo(0);
+    stepper2MoveTo(0);                     // Retract side brush fully
 
+  // --- LED strip (WS2812B) ---
   strip.begin();
   strip.setBrightness(100);
-  strip.show();
+  strip.show();  // Push blank/off state to clear any power-on garbage
 
+  // --- Relay board ---
   pinMode(RELAY_1_PIN, OUTPUT);
   pinMode(RELAY_2_PIN, OUTPUT);
   pinMode(RELAY_3_PIN, OUTPUT);
@@ -432,16 +482,15 @@ void setup() {
   pinMode(RELAY_6_PIN, OUTPUT);
   pinMode(RELAY_7_PIN, OUTPUT);
   pinMode(RELAY_8_PIN, OUTPUT);
-  allRelaysOff();
+  allRelaysOff();  // Ensure all actuators are off at boot
 
-  delay(200);
+  delay(200);  // Short settle before attaching payment interrupts
 
+  // --- Payment hardware (ISR-driven) ---
   pinMode(COIN_SLOT_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(COIN_SLOT_PIN), handleCoinPulse,
-                  FALLING);
+  attachInterrupt(digitalPinToInterrupt(COIN_SLOT_PIN), handleCoinPulse, FALLING);
   pinMode(BILL_PULSE_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(BILL_PULSE_PIN), handleBillPulse,
-                  FALLING);
+  attachInterrupt(digitalPinToInterrupt(BILL_PULSE_PIN), handleBillPulse, FALLING);
 
   totalCoinPesos = prefs.getUInt("totalCoinPesos", 0);
   totalBillPesos = prefs.getUInt("totalBillPesos", 0);
@@ -468,6 +517,7 @@ void setup() {
   }
 
   String storedSSID = prefs.getString("ssid", "");
+  // Provisioning mode if no WiFi credentials exist; otherwise boot into STA mode.
   if (storedSSID.length() == 0) {
     startSoftAP();
   } else {
@@ -483,12 +533,15 @@ void setup() {
 /* ===================== LOOP ===================== */
 bool otaInitialized = false;
 
+// Main scheduler loop: cooperatively advances IO, motion, payments, network,
+// service logic, and telemetry without long blocking delays.
 void loop() {
   if (otaInitialized)
     ArduinoOTA.handle();
   webSocket.loop();
 
-  // Dispatch deferred ESP-NOW results
+  // Consume deferred ESP-NOW actions produced by callbacks.
+  // All backend/WebSocket side-effects are executed here in normal task context.
   {
     portENTER_CRITICAL(&espNowMux);
     bool hasEntry = (espNowQueueHead != espNowQueueTail);
@@ -524,7 +577,8 @@ void loop() {
   updateStepper1Position();
   updateStepper2Position();
 
-  // Handle payments
+  // Coin/bill pulses are ISR-counted; loop finalizes a payment only after
+  // inter-pulse timeout confirms the pulse burst is complete.
   if (paymentEnabled && currentCoinPulses > 0) {
     if (millis() - lastCoinPulseTime >= COIN_COMPLETE_TIMEOUT) {
       portENTER_CRITICAL(&paymentMux);
@@ -570,7 +624,10 @@ void loop() {
     totalsDirty = false;
   }
 
-  // CAM heartbeats and pairing retries
+  // CAM liveness monitor:
+  // - periodic ping while paired/ready
+  // - mark offline on heartbeat timeout
+  // - resume pairing broadcasts until CAM is available again
   if (camIsReady && camMacPaired &&
       (millis() - lastCamPing >= CAM_PING_INTERVAL)) {
     lastCamPing = millis();
@@ -602,7 +659,9 @@ void loop() {
   if (softAPStarted)
     handleWiFiPortal();
 
-  // WiFi state machine
+  // WiFi state machine with exponential fallback:
+  // connected -> stabilize -> open WS
+  // disconnected -> retry STA -> temporary SoftAP portal
   if (wifiConnected && WiFi.status() != WL_CONNECTED) {
     wifiConnected = false;
     wsConnected = false;
@@ -629,6 +688,8 @@ void loop() {
     wifiPostConnectPending = true;
   }
 
+  // Post-connect gate: wait for TCP/IP settle + motion idle before SSL WS init.
+  // This prevents blocking handshake from starving time-critical stepper updates.
   // Post-connect: wait for TCP/IP to settle (3s) AND stepper homing to finish
   // before opening the WebSocket. beginSSL() blocks the loop during the SSL
   // handshake — starting it mid-move stalls the stepper bit-banging.
@@ -648,9 +709,9 @@ void loop() {
     if (millis() - lastWiFiRetry >= WIFI_RETRY_INTERVAL) {
       lastWiFiRetry = millis();
       wl_status_t status = WiFi.status();
-      if (status == WL_IDLE_STATUS || status == WL_DISCONNECTED) {
-        WiFi.begin(prefs.getString("ssid", "").c_str(),
-                   prefs.getString("pass", "").c_str());
+      if (status == WL_IDLE_STATUS || status == WL_DISCONNECTED ||
+          status == WL_CONNECT_FAILED) {
+        connectWiFi();
       }
       if (millis() - wifiStartTime > WIFI_TIMEOUT) {
         if (wifiRetryStart == 0) {
@@ -660,10 +721,7 @@ void loop() {
           wifiRetryDelay = min(wifiRetryDelay * 2, 30000UL);
           wifiRetryStart = 0;
           wifiStartTime = millis();
-          String ssid = prefs.getString("ssid", "");
-          String pass = prefs.getString("pass", "");
-          if (ssid.length() > 0)
-            WiFi.begin(ssid.c_str(), pass.c_str());
+          connectWiFi();
         }
       }
     }
@@ -672,7 +730,7 @@ void loop() {
   if (!wifiConnected)
     return;
 
-  // Status updates
+  // Lightweight health heartbeat for dashboard/backend synchronization.
   if (wsConnected && millis() - lastStatusUpdate >= STATUS_UPDATE_INTERVAL) {
     lastStatusUpdate = millis();
     String statusMsg = "{\"type\":\"status-update\",\"deviceId\":\"" +
@@ -682,7 +740,7 @@ void loop() {
     webSocket.sendTXT(statusMsg);
   }
 
-  // Sensor updates
+  // Sensor telemetry only when paired and motion is idle to reduce contention.
   if (wsConnected && !stepper1Moving && !stepper2Moving) {
     if (isPaired && millis() - lastDHTRead >= DHT_READ_INTERVAL) {
       lastDHTRead = millis();

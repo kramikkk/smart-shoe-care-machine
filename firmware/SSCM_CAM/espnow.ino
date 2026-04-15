@@ -1,12 +1,14 @@
 /**
- * Add a peer to ESP-NOW if not already added
+ * Register a MAC address as an ESP-NOW peer if not already registered.
+ * channel=0 means "use the current WiFi channel" (required when both STA and ESP-NOW share the radio).
+ * encrypt=false — no CCMP encryption; pairing token provides application-level authenticity.
  */
 void addPeerIfNeeded(uint8_t *mac) {
   if (!esp_now_is_peer_exist(mac)) {
     esp_now_peer_info_t peer;
     memset(&peer, 0, sizeof(peer));
     memcpy(peer.peer_addr, mac, 6);
-    peer.channel = 0;
+    peer.channel = 0;      // 0 = inherit current channel automatically
     peer.encrypt = false;
     esp_err_t result = esp_now_add_peer(&peer);
     if (result == ESP_OK) {
@@ -18,7 +20,9 @@ void addPeerIfNeeded(uint8_t *mac) {
 }
 
 /**
- * Send CamMessage to paired main board
+ * Send a CamMessage packet to the paired MAIN board.
+ * - For status-only responses (NOT_READY, BUSY, ERROR, API_HANDLED), pass "" and 0.0f.
+ * - For CLASSIFY_RESULT with CAM_STATUS_OK, pass the shoeType string and confidence (0.0–1.0).
  */
 void sendCamMessage(uint8_t type, uint8_t status, const char *shoeType, float confidence) {
   if (!mainBoardPaired) {
@@ -28,8 +32,8 @@ void sendCamMessage(uint8_t type, uint8_t status, const char *shoeType, float co
 
   CamMessage msg;
   memset(&msg, 0, sizeof(msg));
-  msg.type = type;
-  msg.status = status;
+  msg.type       = type;
+  msg.status     = status;
   msg.confidence = confidence;
   if (shoeType) strncpy(msg.shoeType, shoeType, sizeof(msg.shoeType) - 1);
 
@@ -63,7 +67,8 @@ void sendPairingAck(uint8_t *targetMac) {
 }
 
 /**
- * ESP-NOW Send Callback
+ * ESP-NOW send callback — fires after the radio has attempted transmission.
+ * Keep this function minimal: it runs in the radio interrupt context.
  */
 void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
   if (status != ESP_NOW_SEND_SUCCESS) {
@@ -72,7 +77,10 @@ void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
 }
 
 /**
- * ESP-NOW Receive Callback
+ * ESP-NOW receive callback — ALL incoming packets arrive here.
+ * This runs in the radio interrupt context, so no heavy work is done here:
+ * - Pairing: stores credentials and sets a pending flag; ACK is sent from loop().
+ * - Runtime commands: latch a volatile flag; actual work runs in loop().
  */
 void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
   if (len < 1) return;
@@ -90,6 +98,8 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int l
     PairingBroadcast pb;
     memcpy(&pb, data, sizeof(PairingBroadcast));
 
+    // If already paired to a MAIN board, only accept re-pairing from the same board.
+    // This prevents a rogue MAIN from hijacking a provisioned CAM.
     if (mainBoardPaired) {
       bool sameBoard = (memcmp(senderMac, mainBoardMac, 6) == 0);
       if (!sameBoard) return;
@@ -103,7 +113,8 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int l
       return;
     }
 
-    // HEX VALIDATION (Strict Parity)
+    // Strict hex validation — token must be exactly 8 uppercase hex digits [0-9A-F].
+    // Rejects tokens with non-hex characters that could pass a weaker length-only check.
     bool tokenValid = true;
     for (int i = 0; i < 8; i++) {
       char c = token[i];
@@ -118,12 +129,13 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int l
     }
     LOG("[CAM:PAIR] Valid pairing: token=" + token);
 
-    prefs.putString("ssid", String(pb.ssid));
-    prefs.putString("pass", String(pb.password));
-    prefs.putString("wsHost", String(pb.wsHost));
-    prefs.putUInt("wsPort", pb.wsPort);
+    // Persist all provisioning data to NVS so CAM survives a reboot without re-pairing.
+    prefs.putString("ssid",       String(pb.ssid));
+    prefs.putString("pass",       String(pb.password));
+    prefs.putString("wsHost",     String(pb.wsHost));
+    prefs.putUInt("wsPort",       pb.wsPort);
     prefs.putString("groupToken", token);
-    prefs.putString("mainId", String(pb.deviceId));
+    prefs.putString("mainId",     String(pb.deviceId)); // MAIN device ID used in classify endpoint path
 
     storedGroupToken = token;
     memcpy(mainBoardMac, senderMac, 6);
@@ -138,12 +150,15 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int l
       wifiConnectStartMs = millis();
     }
 
+    // Defer the PairingAck to loop() — we need an IP first.
+    // The ACK carries our IP so MAIN can reach the CAM's HTTP server.
     pairingAckPending = true;
     pairingTime = millis();
     return;
   }
 
-  // Runtime Messages
+  // Runtime messages — only accepted from the paired MAIN board (MAC guard).
+  // An unpaired CAM or a message from an unknown MAC is silently dropped.
   if (!mainBoardPaired || memcmp(senderMac, mainBoardMac, 6) != 0) return;
   if (len < (int)sizeof(CamMessage)) return;
 
@@ -154,29 +169,33 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int l
     case CAM_MSG_CLASSIFY_REQUEST:
       LOG("[CAM] Classification request from main");
       if (!is_initialised) {
+        // Camera driver failed at boot — inform MAIN immediately.
         LOG("[CAM] Camera not ready, sending NOT_READY");
         sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_NOT_READY, "", 0.0f);
       } else if (classificationInProgress) {
+        // A capture is already running in loop() — refuse without queuing.
         LOG("[CAM] Already classifying, sending BUSY");
         sendCamMessage(CAM_MSG_CLASSIFY_RESULT, CAM_STATUS_BUSY, "", 0.0f);
       } else {
+        // Latch the volatile flag; loop() will pick it up and run captureAndPostToBackend().
         LOG("[CAM] Classification queued");
         classificationRequested = true;
       }
       break;
 
     case CAM_MSG_STATUS_PING:
+      // MAIN uses this as a liveness check; reply with camera readiness state.
       LOG("[CAM] Status ping from main");
       sendCamMessage(CAM_MSG_STATUS_PONG, is_initialised ? CAM_STATUS_OK : CAM_STATUS_NOT_READY, "", 0.0f);
       break;
 
     case CAM_MSG_FACTORY_RESET:
+      // Latch flag; actual wipe + restart happens in loop() to avoid NVS writes in ISR context.
       LOG("[CAM] Factory reset requested from main");
       factoryResetRequested = true;
       break;
-    
-    // Original LED commands (placeholders in monolithic)
-    case CAM_MSG_LED_ENABLE: LOG("[CAM] LED_ENABLE"); break;
-    case CAM_MSG_LED_DISABLE: LOG("[CAM] LED_DISABLE"); break;
+
+    case CAM_MSG_LED_ENABLE:  LOG("[CAM] LED_ENABLE");  break; // Illumination LED on (future use)
+    case CAM_MSG_LED_DISABLE: LOG("[CAM] LED_DISABLE"); break; // Illumination LED off (future use)
   }
 }

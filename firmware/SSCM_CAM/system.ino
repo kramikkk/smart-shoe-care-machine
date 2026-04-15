@@ -3,20 +3,25 @@
  */
 
 /**
- * Generate a unique device ID based on MAC address
- * Format: SSCM-CAM-XXXXXX
+ * Generate a unique device ID from the lower 3 bytes of the chip's eFuse MAC address.
+ * Format: SSCM-CAM-XXXXXX (e.g. SSCM-CAM-A1B2C3)
+ * Lower bytes are used because the upper bytes are the Espressif OUI (same across all modules).
  */
 String generateCamOwnDeviceId() {
   uint64_t chipid = ESP.getEfuseMac();
   char id[24];
-  snprintf(id, sizeof(id), "SSCM-CAM-%02X%02X%02X", (uint8_t)(chipid >> 16),
-           (uint8_t)(chipid >> 8), (uint8_t)chipid);
+  snprintf(id, sizeof(id), "SSCM-CAM-%02X%02X%02X",
+           (uint8_t)(chipid >> 16),
+           (uint8_t)(chipid >> 8),
+           (uint8_t)chipid);
   return String(id);
 }
 
 /**
- * Setup Over-The-Air firmware updates
- * Hostname: sscm-cam-XXYY (last 2 bytes of MAC)
+ * Configure and start ArduinoOTA.
+ * Hostname: sscm-cam-XXYY (last 2 MAC bytes for easy identification on the network).
+ * Password: the full device ID (e.g. SSCM-CAM-A1B2C3) if available;
+ *           falls back to 8-hex-char MAC suffix if ID generation failed at boot.
  */
 void setupOTA() {
   uint8_t mac[6];
@@ -26,11 +31,12 @@ void setupOTA() {
   ArduinoOTA.setHostname(hostname);
 
   if (camOwnDeviceId.length() > 0) {
-    ArduinoOTA.setPassword(camOwnDeviceId.c_str());
+    ArduinoOTA.setPassword(camOwnDeviceId.c_str()); // e.g. "SSCM-CAM-A1B2C3"
   } else {
+    // Fallback: last 4 MAC bytes as hex string when device ID is unavailable
     char fallback[9];
-    snprintf(fallback, sizeof(fallback), "%02X%02X%02X%02X", mac[2], mac[3],
-             mac[4], mac[5]);
+    snprintf(fallback, sizeof(fallback), "%02X%02X%02X%02X",
+             mac[2], mac[3], mac[4], mac[5]);
     ArduinoOTA.setPassword(fallback);
   }
 
@@ -45,11 +51,13 @@ void setupOTA() {
 }
 
 /**
- * Clear all stored preferences and restart
+ * Wipe all NVS keys in the "cam" namespace and restart.
+ * This clears: paired MAC, group token, WiFi credentials, backend host/port, mainId.
+ * Called from loop() only — never call from ISR/callback context.
  */
 void factoryReset() {
   LOG("[SYSTEM] Factory reset: clearing all preferences and restarting...");
-  prefs.clear();
+  prefs.clear();  // Clears the "cam" NVS namespace opened in setup()
   delay(500);
   ESP.restart();
 }

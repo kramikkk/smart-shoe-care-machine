@@ -1,11 +1,17 @@
 /*
  * HTTP Server for Live Streaming and Snapshots
+ * Serves three endpoints on port 80:
+ *   GET /          — status page with device info and links
+ *   GET /stream    — MJPEG live stream (multipart/x-mixed-replace)
+ *   GET /snapshot  — single JPEG capture
+ * Used for diagnostics and manual verification; not part of the normal service flow.
  */
 
+// MJPEG multipart boundary string — separates individual JPEG frames in the stream response.
 #define PART_BOUNDARY "frameboundary"
 
 /**
- * Handle Root page
+ * Root status page — shows current device state and links to stream/snapshot.
  */
 void handleRoot() {
   String page = "<!DOCTYPE html><html><head><title>SSCM CAM</title>";
@@ -20,22 +26,28 @@ void handleRoot() {
 }
 
 /**
- * MJPEG Stream Handler
+ * MJPEG live stream handler.
+ * Sends an infinite multipart/x-mixed-replace response where each part is a JPEG frame.
+ * The browser renders this as a live video feed without JavaScript.
+ * Stream is capped at 60s to prevent long-lived connections starving the rest of loop().
  */
 void handleStream() {
   WiFiClient client = httpServer.client();
   unsigned long streamStartMs = millis();
-  const unsigned long STREAM_TIMEOUT_MS = 60000; // Disconnect stream after 60s
+  const unsigned long STREAM_TIMEOUT_MS = 60000; // Hard cutoff: disconnect after 60s
 
   client.print("HTTP/1.1 200 OK\r\n");
   client.print("Content-Type: multipart/x-mixed-replace; boundary=" PART_BOUNDARY "\r\n");
   client.print("Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n");
 
   while (client.connected()) {
-    yield();
-    if (classificationRequested) break; // Pause stream for classification capture
-    
-    // Prevent stream from blocking WiFi indefinitely
+    yield(); // Feed the watchdog timer and allow other ESP32 tasks to run between frames
+
+    // Classification takes priority over streaming — stop sending frames so the camera
+    // buffer is free and the next esp_camera_fb_get() in captureAndPostToBackend() gets
+    // a fresh, undisturbed frame.
+    if (classificationRequested) break;
+
     if ((millis() - streamStartMs) > STREAM_TIMEOUT_MS) {
       LOG("[HTTP] Stream timeout - closing connection");
       break;
@@ -53,7 +65,7 @@ void handleStream() {
     client.write(fb->buf, fb->len);
 
     esp_camera_fb_return(fb);
-    delay(50); // ~20 FPS limit
+    delay(50); // Cap at ~20 FPS; higher rates saturate the TCP send buffer
   }
 }
 
