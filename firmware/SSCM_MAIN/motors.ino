@@ -142,6 +142,17 @@ void setMotorsSameSpeed(int speed) {
 }
 
 /**
+ * Counter-rotate: left motor runs at +speed, right at -speed (or vice-versa).
+ * Used during the cleaning brush cycle so the brushes scrub inward from both
+ * sides simultaneously instead of both spinning the same direction.
+ * Positive speed → left CW / right CCW; negative speed → left CCW / right CW.
+ */
+void setMotorsOppositeSpeed(int speed) {
+  setLeftMotorSpeed(speed);
+  setRightMotorSpeed(-speed);
+}
+
+/**
  * Active brake: drive both IN1 and IN2 HIGH simultaneously.
  * DRV8871 responds by shorting both motor terminals to GND through the H-bridge,
  * creating a regenerative braking effect that quickly stops the brush.
@@ -220,8 +231,13 @@ void stepper1Step(bool direction) {
   }
 }
 
-/** Queue an absolute move to `position` steps. Movement is executed in updateStepper1Position(). */
+/**
+ * Queue an absolute move to `position` steps. Movement is executed in updateStepper1Position().
+ * Target is constrained to [0, CLEANING_MAX_POSITION] (0–4800 steps = 0–480mm)
+ * to prevent the top brush from over-travelling the physical rail end stops.
+ */
 void stepper1MoveTo(long position) {
+  position = constrain(position, 0, CLEANING_MAX_POSITION); // Hard limit: 480mm rail
   targetStepper1Position = position;
   if (targetStepper1Position != currentStepper1Position) {
     stepper1Moving = true;

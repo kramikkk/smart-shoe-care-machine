@@ -8,7 +8,9 @@ export const dynamic = 'force-dynamic'
 /**
  * GET /api/device/[deviceId]/status
  *
- * Called by ESP32 to check if it's paired and update lastSeen
+ * Called by ESP32/dashboard to check device pairing status and real-time online state.
+ * lastSeen is NOT written here — only the WebSocket disconnect handlers update it
+ * so it accurately reflects when the device was last connected, not when it was last polled.
  *
  * Returns device pairing status
  */
@@ -44,12 +46,6 @@ export async function GET(
         { status: 404 }
       )
     }
-
-    // Update lastSeen timestamp
-    await prisma.device.update({
-      where: { deviceId },
-      data: { lastSeen: new Date() }
-    })
 
     return NextResponse.json({
       paired: device.paired,

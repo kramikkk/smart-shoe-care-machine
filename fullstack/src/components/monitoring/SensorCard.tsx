@@ -1,11 +1,48 @@
 'use client'
 
+import { Thermometer, Droplets, Zap, Gauge } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Loader2 } from "lucide-react"
-import { SensorData } from "@/data/SensorData"
 import { useDashboardWebSocket } from "@/contexts/DashboardWebSocketContext"
+
+const SensorData = {
+  temperature: {
+    name: "Temperature",
+    icon: Thermometer,
+    color: "text-orange-600",
+    range: "30-40°C normal",
+    status: "Normal",
+  },
+  foamLevel: {
+    name: "Foam Level",
+    icon: Droplets,
+    color: "text-blue-600",
+    range: "0-5.3L",
+    status: "Normal",
+  },
+  atomizerLevel: {
+    name: "Atomizer Level",
+    icon: Gauge,
+    color: "text-cyan-600",
+    range: "0-5.3L",
+    status: "Normal",
+  },
+  humidity: {
+    name: "Humidity",
+    icon: Droplets,
+    color: "text-teal-600",
+    range: "60-70% normal",
+    status: "Normal",
+  },
+  systemStatus: {
+    name: "System Status",
+    icon: Zap,
+    color: "text-yellow-600",
+    range: "Timer: 00:00",
+    status: "Idle",
+  },
+} as const
 
 const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
   const sensor = SensorData[id]
@@ -23,6 +60,8 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
   if (!isConnected) {
     displayValue = '—'
     displayStatus = 'Offline'
+  } else if (isLoadingData) {
+    displayValue = '···'
   }
 
   if (id === 'temperature' && isConnected && sensorData.temperature > 0) {
@@ -101,6 +140,10 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
       displayValue = 'Device Offline'
       displayStatus = 'Offline'
       displayPercentage = 0
+    } else if (isLoadingData) {
+      displayValue = 'Connecting···'
+      displayStatus = 'Waiting'
+      displayPercentage = 0
     } else if (sensorData.serviceActive) {
       displayValue = `${sensorData.serviceType.charAt(0).toUpperCase() + sensorData.serviceType.slice(1)}`
       displayPercentage = sensorData.serviceProgress
@@ -137,6 +180,8 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
         return "bg-red-100 text-red-700 border-red-200 dark:bg-red-900/20 dark:text-red-400 dark:border-red-800"
       case "invalid":
         return "bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-800/40 dark:text-gray-400 dark:border-gray-700"
+      case "waiting":
+        return "bg-blue-100 text-blue-400 border-blue-200 dark:bg-blue-900/20 dark:text-blue-500 dark:border-blue-800"
       case "offline":
         return "bg-gray-100 text-gray-400 border-gray-200 dark:bg-gray-800/40 dark:text-gray-500 dark:border-gray-700"
       default:
@@ -151,27 +196,14 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
           <Icon className={`h-5 w-5 ${sensor.color}`} />
           <CardTitle className="text-sm">{sensor.name}</CardTitle>
         </div>
-        {!isLoadingData && (
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className={getBadgeClass(displayStatus)}>{displayStatus}</Badge>
-          </div>
-        )}
+        <Badge variant="outline" className={getBadgeClass(displayStatus)}>{displayStatus}</Badge>
       </CardHeader>
       <CardContent className="space-y-4">
-        {isLoadingData ? (
-          <div className="flex items-center justify-center py-4 gap-2 text-muted-foreground">
-            <Loader2 className="h-5 w-5 animate-spin" />
-            <span className="text-sm">Loading...</span>
-          </div>
-        ) : (
-          <>
-            <div className="flex justify-between items-center">
-              <span className="text-2xl font-bold">{displayValue}</span>
-              <span className="text-xs text-muted-foreground">{displayRange}</span>
-            </div>
-            <Progress value={displayPercentage} className="h-3" />
-          </>
-        )}
+        <div className="flex justify-between items-center">
+          <span className="text-2xl font-bold">{displayValue}</span>
+          <span className="text-xs text-muted-foreground">{displayRange}</span>
+        </div>
+        <Progress value={displayPercentage} className="h-3" />
       </CardContent>
     </Card>
   )

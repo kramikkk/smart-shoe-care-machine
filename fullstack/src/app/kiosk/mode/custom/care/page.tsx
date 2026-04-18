@@ -6,10 +6,18 @@ import { Button } from '@/components/ui/button'
 import { Item, ItemContent } from '@/components/ui/item'
 import Image from 'next/image'
 import { Suspense } from 'react'
+import { MoveHorizontal, Gauge } from 'lucide-react'
 import { BackButton } from '@/components/kiosk/BackButton'
 import { StepIndicator } from '@/components/kiosk/StepIndicator'
 import { CUSTOM_STEPS } from '@/lib/kiosk-constants'
 import { useDurations } from '@/hooks/useDurations'
+import { usePricing } from '@/hooks/usePricing'
+
+const CLEANING_TRAITS: Record<string, { pressure: string; speed: string }> = {
+  gentle: { pressure: 'Less Brush Pressure',    speed: 'Less Motor Speed'   },
+  normal: { pressure: 'Normal Brush Pressure',  speed: 'Normal Motor Speed' },
+  strong: { pressure: 'More Brush Pressure',    speed: 'High Motor Speed'   },
+}
 
 const careTypes = [
   { id: 'gentle', name: 'Gentle', image: '/Gentle3D.webp' },
@@ -32,6 +40,7 @@ function CareContent() {
   const shoe = searchParams.get('shoe') || 'mesh'
   const router = useRouter()
   const { durations } = useDurations()
+  const { getPrice } = usePricing()
 
   const [selected, setSelected] = useState<string | null>(null)
 
@@ -40,7 +49,7 @@ function CareContent() {
       cleaning: {
         gentle: 'For delicate materials',
         normal: 'Suitable for most shoes',
-        strong: 'For heavily soiled shoes'
+        strong: 'For sturdy shoes'
       },
       drying: {
         gentle: 'Mild dry',
@@ -55,7 +64,7 @@ function CareContent() {
       package: {
         gentle: 'Ideal for delicate shoes',
         normal: 'Suitable for most shoes',
-        strong: 'For heavily soiled shoes'
+        strong: 'For sturdy shoes'
       }
     }
     return descriptions[service]?.[careId] || descriptions.cleaning[careId]
@@ -93,12 +102,24 @@ function CareContent() {
               }`}
           >
             <Image src={care.image} alt={care.name} width={128} height={128} className="w-32 h-32" />
-            <ItemContent className="flex flex-col items-center">
-              <h2 className="text-2xl font-bold mb-2">{care.name}</h2>
-              <p className="text-xl text-gray-700 mb-3 px-2">{getDescription(care.id)}</p>
-              <span className="inline-block w-fit self-center px-4 py-1 bg-gradient-to-r from-green-100 to-emerald-100 rounded-full text-base font-bold text-green-800 shadow-sm">
-                {getBadge(care.id)}
-              </span>
+            <ItemContent className="flex flex-col items-center w-full">
+              <h2 className="text-2xl font-bold mb-1">{care.name}</h2>
+              <p className="text-xl text-gray-700 px-2">{getDescription(care.id)}</p>
+              {service === 'cleaning' && CLEANING_TRAITS[care.id] && (
+                <p className="text-sm text-gray-500 mt-1 mb-3 px-2">
+                  <span className="inline-flex items-center gap-1"><MoveHorizontal className="w-3.5 h-3.5" />{CLEANING_TRAITS[care.id].pressure}</span>
+                  <span className="mx-1.5 text-gray-300">·</span>
+                  <span className="inline-flex items-center gap-1"><Gauge className="w-3.5 h-3.5" />{CLEANING_TRAITS[care.id].speed}</span>
+                </p>
+              )}
+              <div className={`flex items-center gap-2 self-center flex-wrap justify-center ${service === 'cleaning' ? '' : 'mt-3'}`}>
+                <span className="inline-block w-fit px-4 py-1 bg-gradient-to-r from-green-100 to-emerald-100 rounded-full text-base font-bold text-green-800 shadow-sm">
+                  {getBadge(care.id)}
+                </span>
+                <span className="inline-block w-fit px-4 py-1 bg-gradient-to-r from-blue-100 to-cyan-100 rounded-full text-base font-bold text-blue-800 shadow-sm">
+                  ₱{getPrice(service, care.id)}
+                </span>
+              </div>
             </ItemContent>
           </Item>
         ))}

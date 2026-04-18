@@ -1,6 +1,6 @@
 'use client'
 
-import { Smartphone, Wifi, WifiOff, Check, X, Pencil, Loader2, RotateCcw, Camera, Clock, CalendarDays, User } from "lucide-react"
+import { Smartphone, Wifi, WifiOff, Check, X, Pencil, Camera, Clock, CalendarDays, User, Loader2 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -49,19 +49,13 @@ type DevicePairingCardProps = {
   pairingCode: string
   editingDeviceId: string | null
   editingDeviceName: string
-  restartingDeviceId: string | null
-  unpairConfirmId: string | null
   onPairingDialogOpenChange: (open: boolean) => void
   onPairingDeviceIdChange: (value: string) => void
   onPairingCodeChange: (value: string) => void
   onPairDevice: () => void
-  onUnpairDevice: (deviceId: string) => void
-  onRestartDevice: (deviceId: string) => void
   onEditingDeviceIdChange: (id: string | null) => void
   onEditingDeviceNameChange: (name: string) => void
   onSaveDeviceName: (deviceId: string, name: string) => Promise<void>
-  onUnpairConfirmIdChange: (id: string | null) => void
-  formatLastSeen: (dateString: string) => string
 }
 
 export function DevicePairingCard({
@@ -72,21 +66,15 @@ export function DevicePairingCard({
   pairingCode,
   editingDeviceId,
   editingDeviceName,
-  restartingDeviceId,
-  unpairConfirmId,
   onPairingDialogOpenChange,
   onPairingDeviceIdChange,
   onPairingCodeChange,
   onPairDevice,
-  onUnpairDevice,
-  onRestartDevice,
   onEditingDeviceIdChange,
   onEditingDeviceNameChange,
   onSaveDeviceName,
-  onUnpairConfirmIdChange,
-  formatLastSeen,
 }: DevicePairingCardProps) {
-  const { isConnected, sensorData } = useDashboardWebSocket()
+  const { isConnected } = useDashboardWebSocket()
   const { selectedDevice } = useDeviceFilter()
   const [now, setNow] = useState(Date.now())
 
@@ -96,41 +84,22 @@ export function DevicePairingCard({
     return () => clearInterval(timer)
   }, [])
 
-  const formatLiveLastSeen = (lastUpdate: Date | null) => {
-    if (!lastUpdate) return 'Just now'
-    const diffSecs = Math.floor((now - lastUpdate.getTime()) / 1000)
-    if (diffSecs < 1) return 'Just now'
-    if (diffSecs < 60) return `${diffSecs} sec${diffSecs > 1 ? 's' : ''} ago`
+  const formatLiveLastSeen = (date: Date | string | null): string => {
+    if (!date) return 'Never'
+    const d = date instanceof Date ? date : new Date(date)
+    if (isNaN(d.getTime())) return 'Never'
+    const diffSecs = Math.max(0, Math.floor((now - d.getTime()) / 1000))
+    if (diffSecs < 60) return diffSecs <= 1 ? 'Just now' : `${diffSecs} secs ago`
     const diffMins = Math.floor(diffSecs / 60)
-    return `${diffMins} min${diffMins > 1 ? 's' : ''} ago`
+    if (diffMins < 60) return diffMins === 1 ? '1 min ago' : `${diffMins} mins ago`
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return diffHours === 1 ? '1 hour ago' : `${diffHours} hours ago`
+    const diffDays = Math.floor(diffHours / 24)
+    return diffDays === 1 ? '1 day ago' : `${diffDays} days ago`
   }
 
   return (
     <>
-      {/* Unpair Confirm Dialog */}
-      <Dialog open={!!unpairConfirmId} onOpenChange={(open) => { if (!open) onUnpairConfirmIdChange(null) }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Unpair Device</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to unpair this device? The machine will need to be re-paired to reconnect.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => onUnpairConfirmIdChange(null)}>Cancel</Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (unpairConfirmId) onUnpairDevice(unpairConfirmId)
-                onUnpairConfirmIdChange(null)
-              }}
-            >
-              Unpair
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <Card className="glass-card border-none">
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:justify-between">
@@ -233,9 +202,12 @@ export function DevicePairingCard({
                   ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                   : 'bg-gray-500/10 text-gray-400 border-gray-500/20'
 
-                const lastSeenText = (isCurrentActive && isActuallyConnected)
-                  ? formatLiveLastSeen(sensorData.lastUpdate)
-                  : formatLastSeen(device.lastSeen)
+                // Online devices show "Active" — lastSeen in DB is updated on heartbeats
+                // so it's always nearly "now" for connected devices, making elapsed time meaningless.
+                // Only show elapsed time when the device is genuinely offline.
+                const lastSeenText = isActuallyConnected
+                  ? 'Active'
+                  : formatLiveLastSeen(device.lastSeen)
 
                 return (
                   <div
@@ -300,34 +272,6 @@ export function DevicePairingCard({
                         </div>
                       </div>
 
-                      {/* Actions: icon-only on mobile, labeled on sm+ */}
-                      {device.paired && (
-                        <div className="flex items-center gap-1 shrink-0">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onRestartDevice(device.deviceId)}
-                            disabled={restartingDeviceId === device.deviceId}
-                            className="h-7 w-7 sm:w-auto sm:px-2.5 text-xs text-amber-500 hover:text-amber-400 hover:bg-amber-500/10 gap-1"
-                          >
-                            {restartingDeviceId === device.deviceId ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : (
-                              <RotateCcw className="h-3 w-3" />
-                            )}
-                            <span className="hidden sm:inline">Restart</span>
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onUnpairConfirmIdChange(device.deviceId)}
-                            className="h-7 w-7 sm:w-auto sm:px-2.5 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 gap-1"
-                          >
-                            <X className="h-3 w-3" />
-                            <span className="hidden sm:inline">Unpair</span>
-                          </Button>
-                        </div>
-                      )}
                     </div>
 
                     {/* Metadata grid */}

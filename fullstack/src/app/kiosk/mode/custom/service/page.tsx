@@ -22,8 +22,7 @@ const ServicePage = () => {
   const router = useRouter()
 
   const [selected, setSelected] = useState<string | null>(null)
-  const { services } = usePricing()
-  const prices: Record<string, number> = Object.fromEntries(services.map(s => [s.id, s.price]))
+  const { getPrice } = usePricing()
 
   const handleProceed = () => {
     if (selected) router.push(`/kiosk/mode/custom/care?shoe=${shoe}&service=${selected}`)
@@ -55,7 +54,7 @@ const ServicePage = () => {
               <h2 className="text-2xl font-bold mb-2">{svc.label}</h2>
               <p className="text-xl text-gray-600 mb-2">{svc.desc}</p>
               <span className="inline-block w-fit self-center px-4 py-1 bg-gradient-to-r from-blue-100 to-cyan-100 rounded-full text-base font-bold text-blue-800 shadow-sm">
-                ₱{prices[svc.id]}
+                {svc.id === 'package' ? `₱${getPrice(svc.id, 'auto')}` : `From ₱${getPrice(svc.id, 'gentle')}`}
               </span>
             </ItemContent>
           </Item>

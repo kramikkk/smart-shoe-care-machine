@@ -5,35 +5,31 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
+import type { ServicePricing } from "@/hooks/useServicePricing"
+import { CARE_TYPES_BY_SERVICE } from "@/hooks/useServicePricing"
 
-type ServicePricing = {
-  id: string
-  serviceType: string
-  price: number
-  createdAt: string
-  updatedAt: string
-}
+const SERVICE_TYPES = ['cleaning', 'drying', 'sterilizing', 'package'] as const
 
 const serviceIcons = {
-  cleaning: { icon: <Sparkles className="h-5 w-5" />, color: 'var(--chart-1)' },
-  drying: { icon: <Wind className="h-5 w-5" />, color: 'var(--chart-2)' },
+  cleaning:    { icon: <Sparkles className="h-5 w-5" />,    color: 'var(--chart-1)' },
+  drying:      { icon: <Wind className="h-5 w-5" />,        color: 'var(--chart-2)' },
   sterilizing: { icon: <ShieldCheck className="h-5 w-5" />, color: 'var(--chart-3)' },
-  package: { icon: <Package className="h-5 w-5" />, color: 'var(--chart-4)' },
+  package:     { icon: <Package className="h-5 w-5" />,     color: 'var(--chart-4)' },
 }
 
-const serviceNames = {
-  cleaning: 'Cleaning',
-  drying: 'Drying',
-  sterilizing: 'Sterilizing',
-  package: 'Package',
+const serviceNames: Record<string, string> = {
+  cleaning: 'Cleaning', drying: 'Drying', sterilizing: 'Sterilizing', package: 'Package',
 }
 
-// System default prices (seeded values)
-const FIRMWARE_PRICE_DEFAULTS: Record<string, number> = {
-  cleaning:    45,
-  drying:      25,
-  sterilizing: 25,
-  package:     100,
+const careLabels: Record<string, string> = {
+  gentle: 'Gentle', normal: 'Normal', strong: 'Strong', auto: 'Package Price',
+}
+
+const PRICE_DEFAULTS: Record<string, Record<string, number>> = {
+  cleaning:    { gentle: 40, normal: 45, strong: 50 },
+  drying:      { gentle: 20, normal: 25, strong: 30 },
+  sterilizing: { gentle: 20, normal: 25, strong: 30 },
+  package:     { auto: 100 },
 }
 
 type ServicePricingCardProps = {
@@ -41,9 +37,9 @@ type ServicePricingCardProps = {
   editedPrices: Record<string, number | string>
   isSaving: boolean
   selectedDevice: string | null
-  onPriceChange: (serviceType: string, value: string) => void
-  onSave: (serviceType: string) => void
-  hasChanges: (serviceType: string) => boolean
+  onPriceChange: (serviceType: string, careType: string, value: string) => void
+  onSave: (serviceType: string, careType: string) => void
+  hasChanges: (serviceType: string, careType: string) => boolean
 }
 
 export function ServicePricingCard({
@@ -63,80 +59,97 @@ export function ServicePricingCard({
           <CardTitle className="text-lg">Service Pricing</CardTitle>
         </div>
         <CardDescription>
-          Update prices for {selectedDevice}. These prices will only apply to this specific machine.
+          Set prices per care type for {selectedDevice}. These prices apply only to this machine.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {pricing.map((item) => {
-            const iconColor = serviceIcons[item.serviceType as keyof typeof serviceIcons].color
+          {SERVICE_TYPES.map((serviceType) => {
+            const meta = serviceIcons[serviceType]
+            const careTypes = CARE_TYPES_BY_SERVICE[serviceType]
+            const anyUnsaved = careTypes.some(ct => hasChanges(serviceType, ct))
+            const isPackage = serviceType === 'package'
+
             return (
               <div
-                key={item.id}
+                key={serviceType}
                 className="border rounded-lg p-4 space-y-4 transition-colors"
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = iconColor
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = ''
-                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = meta.color }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = '' }}
               >
+                {/* Service header */}
                 <div className="flex items-center gap-3">
                   <div
                     className="p-2 rounded-lg"
                     style={{
-                      backgroundColor: `color-mix(in srgb, ${serviceIcons[item.serviceType as keyof typeof serviceIcons].color} 15%, transparent)`,
-                      color: serviceIcons[item.serviceType as keyof typeof serviceIcons].color
+                      backgroundColor: `color-mix(in srgb, ${meta.color} 15%, transparent)`,
+                      color: meta.color,
                     }}
                   >
-                    {serviceIcons[item.serviceType as keyof typeof serviceIcons].icon}
+                    {meta.icon}
                   </div>
                   <div>
-                    <h3 className="font-semibold">
-                      {serviceNames[item.serviceType as keyof typeof serviceNames]}
-                    </h3>
-                    <p className="text-sm text-muted-foreground">
-                      Default: ₱{(FIRMWARE_PRICE_DEFAULTS[item.serviceType] ?? 0).toFixed(2)}
-                    </p>
+                    <h3 className="font-semibold">{serviceNames[serviceType]}</h3>
+                    {isPackage && (
+                      <p className="text-xs text-muted-foreground">Cleaning + Drying + Sterilizing</p>
+                    )}
+                    {anyUnsaved && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">Unsaved changes</p>
+                    )}
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor={`price-${item.serviceType}`}>Price (PHP)</Label>
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-                        ₱
-                      </span>
-                      <Input
-                        id={`price-${item.serviceType}`}
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={editedPrices[item.serviceType] ?? ''}
-                        onChange={(e) => onPriceChange(item.serviceType, e.target.value)}
-                        className="pl-7"
-                        disabled={isSaving}
-                      />
-                    </div>
-                    <Button
-                      onClick={() => onSave(item.serviceType)}
-                      disabled={!hasChanges(item.serviceType) || isSaving}
-                      size="icon"
-                      className="shrink-0"
-                    >
-                      {isSaving ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Save className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </div>
-                  {hasChanges(item.serviceType) && (
-                    <p className="text-sm text-amber-600 dark:text-amber-400">
-                      Unsaved changes
-                    </p>
-                  )}
+                {/* Price inputs */}
+                <div className="space-y-3">
+                  {careTypes.map((careType) => {
+                    const compositeKey = `${serviceType}:${careType}`
+                    const changed = hasChanges(serviceType, careType)
+
+                    return (
+                      <div key={careType} className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <Label
+                            htmlFor={`price-${serviceType}-${careType}`}
+                            className="text-sm font-medium"
+                          >
+                            {careLabels[careType]}
+                          </Label>
+                          <span className="text-xs text-muted-foreground">
+                            Default: ₱{(PRICE_DEFAULTS[serviceType][careType] ?? 0).toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex gap-2">
+                          <div className="relative flex-1">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                              ₱
+                            </span>
+                            <Input
+                              id={`price-${serviceType}-${careType}`}
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={editedPrices[compositeKey] ?? ''}
+                              onChange={(e) => onPriceChange(serviceType, careType, e.target.value)}
+                              className="pl-7 h-8 text-sm"
+                              disabled={isSaving}
+                            />
+                          </div>
+                          <Button
+                            onClick={() => onSave(serviceType, careType)}
+                            disabled={!changed || isSaving}
+                            size="icon"
+                            className="shrink-0 h-8 w-8"
+                          >
+                            {isSaving ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Save className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             )

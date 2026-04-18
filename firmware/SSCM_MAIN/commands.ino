@@ -7,6 +7,7 @@
  *   RESET_WIFI              — Erase stored WiFi credentials and restart (triggers SoftAP setup portal)
  *   RESET_PAIRING           — Clear paired flag, generate fresh pairing code, restart
  *   RESET_MONEY             — Zero all accumulated payment totals in RAM and NVS
+ *   QUERY_MONEY             — Send current coin/bill/total pesos as structured money-status WS message
  *   FACTORY_RESET           — Full factory reset (WiFi, pairing, CAM, NVS cleared; restart)
  *   STATUS                  — Dump device state to backend firmware log
  *   RELAY_ALL_OFF           — Cut all relay channels
@@ -55,6 +56,12 @@ void handleSerialCommand(String cmd) {
     currentBillPulses = 0;
     prefs.putUInt("totalCoinPesos", 0);
     prefs.putUInt("totalBillPesos", 0);
+    wsLog("info", "Money counters reset — Coins: 0, Bills: 0, Total: 0 PHP");
+  } else if (cmd == "QUERY_MONEY") {
+    // Log current coin/bill totals to the dashboard live response log.
+    wsLog("info", "Coins: " + String(totalCoinPesos) + " PHP");
+    wsLog("info", "Bills: " + String(totalBillPesos) + " PHP");
+    wsLog("info", "Total: " + String(totalPesos) + " PHP");
   } else if (cmd == "FACTORY_RESET") {
     factoryReset(); // Clears all NVS keys, resets CAM, restarts
   } else if (cmd == "STATUS") {
@@ -148,7 +155,7 @@ void handleSerialCommand(String cmd) {
     String subCmd = cmd.substring(9);
     if (subCmd == "STOP") stepper1Stop();
     else if (subCmd == "HOME") stepper1Home();
-    else if (subCmd == "RETURN") stepper1MoveTo(CLEANING_MAX_POSITION); // Park at top (48mm)
+    else if (subCmd == "RETURN") stepper1MoveTo(CLEANING_MAX_POSITION); // Park at top (480mm = 4800 steps)
     else if (subCmd == "INFO") wsLog("info", "S1 pos=" + String(currentStepper1Position));
     else if (subCmd.startsWith("SPEED_")) setStepper1Speed(subCmd.substring(6).toInt());
     else if (subCmd.startsWith("MOVE_")) stepper1MoveRelative(subCmd.substring(5).toInt());

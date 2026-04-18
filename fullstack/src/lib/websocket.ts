@@ -104,6 +104,8 @@ export function createWebSocketServer(server: Server) {
         deviceLiveConnections.delete(devId)
         deviceLastStatusTime.delete(devId)
         broadcastToDevice(devId, { type: 'device-offline', deviceId: devId })
+        // Write lastSeen at timeout so the dashboard shows the real offline time
+        prisma.device.update({ where: { deviceId: devId }, data: { lastSeen: new Date() } }).catch(() => {})
       }
     })
   }, 1_000)
@@ -405,15 +407,15 @@ export function createWebSocketServer(server: Server) {
             if (now - lastDbUpdate > 60_000 || !deviceCachedPairedStatus.has(updateDeviceId)) {
               const updatedDevice = await prisma.device.upsert({
                 where: { deviceId: updateDeviceId },
+                // lastSeen is intentionally NOT written on heartbeats — only on disconnect so
+                // the DB value accurately reflects "when was this device last online" rather than
+                // "when did it last send a heartbeat" (which makes it always look like "Just now").
                 create: { deviceId: updateDeviceId, lastSeen: new Date(), camSynced: message.camSynced, camDeviceId: message.camDeviceId },
-                update: { lastSeen: new Date(), camSynced: message.camSynced, camDeviceId: message.camDeviceId }
+                update: { camSynced: message.camSynced, camDeviceId: message.camDeviceId }
               })
               isPaired = updatedDevice.paired;
               deviceCachedPairedStatus.set(updateDeviceId, isPaired);
               deviceLastDbUpdateTime.set(updateDeviceId, now);
-
-              // Do not re-broadcast device-online here; it was already emitted above.
-              // This avoids duplicate online events during reconnect/session refresh.
             }
 
             // Send acknowledgment with current paired status for sync
@@ -589,24 +591,29 @@ export function createWebSocketServer(server: Server) {
           const serviceDeviceId = message.deviceId as string
           console.log(`[WebSocket] Start service on ${serviceDeviceId}: ${message.serviceType} (${message.careType})`)
 
-          // Inject cleaning distance (mm) for cleaning service so firmware uses DB value
+          // Inject cleaning distance (mm) and motor speed (PWM) for cleaning service
           let enrichedMessage = message
           if (message.serviceType === 'cleaning' && message.careType) {
             try {
-              const entry = await prisma.cleaningDistance.findFirst({
-                where: {
-                  careType: message.careType as string,
-                  deviceId: serviceDeviceId,
-                },
-              }) || await prisma.cleaningDistance.findFirst({
-                where: { careType: message.careType as string, deviceId: null },
-              })
-              if (entry) {
-                enrichedMessage = { ...message, cleaningDistanceMm: entry.distanceMm }
-                wsVerbose(`[WebSocket] Injecting cleaningDistanceMm=${entry.distanceMm} for ${message.careType}`)
+              const careType = message.careType as string
+
+              const [distEntry, speedEntry] = await Promise.all([
+                prisma.cleaningDistance.findFirst({ where: { careType, deviceId: serviceDeviceId } })
+                  .then(r => r ?? prisma.cleaningDistance.findFirst({ where: { careType, deviceId: null } })),
+                prisma.motorSpeed.findFirst({ where: { careType, deviceId: serviceDeviceId } })
+                  .then(r => r ?? prisma.motorSpeed.findFirst({ where: { careType, deviceId: null } })),
+              ])
+
+              if (distEntry) {
+                enrichedMessage = { ...enrichedMessage, cleaningDistanceMm: distEntry.distanceMm }
+                wsVerbose(`[WebSocket] Injecting cleaningDistanceMm=${distEntry.distanceMm} for ${careType}`)
+              }
+              if (speedEntry) {
+                enrichedMessage = { ...enrichedMessage, motorSpeedPwm: speedEntry.speedPwm }
+                wsVerbose(`[WebSocket] Injecting motorSpeedPwm=${speedEntry.speedPwm} for ${careType}`)
               }
             } catch (e) {
-              console.error('[WebSocket] Failed to fetch cleaning distance:', e)
+              console.error('[WebSocket] Failed to fetch cleaning settings:', e)
             }
           }
 
@@ -783,6 +790,8 @@ export function createWebSocketServer(server: Server) {
             deviceLastStatusTime.delete(offlineDeviceId)
             console.log(`[WebSocket] ESP32 graceful offline: ${offlineDeviceId} — broadcasting offline status`)
             broadcastToDevice(offlineDeviceId, { type: 'device-offline', deviceId: offlineDeviceId })
+            // Write lastSeen now so the dashboard shows the correct "last seen" time after disconnect
+            prisma.device.update({ where: { deviceId: offlineDeviceId }, data: { lastSeen: new Date() } }).catch(() => {})
           }
         }
 
@@ -824,6 +833,8 @@ export function createWebSocketServer(server: Server) {
                 deviceLastStatusTime.delete(closedDeviceId)
                 console.log(`[WebSocket] ESP32 device disconnected: ${closedDeviceId} — broadcasting offline status`)
                 broadcastToDevice(closedDeviceId, { type: 'device-offline', deviceId: closedDeviceId })
+                // Write lastSeen at the moment of confirmed disconnect
+                prisma.device.update({ where: { deviceId: closedDeviceId }, data: { lastSeen: new Date() } }).catch(() => {})
               }
               devicePendingOfflineTimers.delete(closedDeviceId)
             }, 7000)

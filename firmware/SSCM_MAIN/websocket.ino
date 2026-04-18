@@ -206,8 +206,18 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         customCleaningDistanceMm = message.substring(start, end).toInt();
       }
 
+      // motorSpeedPwm: optional brush motor speed (0–255); -1 = use firmware default (255)
+      int customMotorSpeedPwm = -1;
+      int motorSpeedIndex = message.indexOf("\"motorSpeedPwm\":");
+      if (motorSpeedIndex != -1) {
+        int start = motorSpeedIndex + 16;
+        int end   = message.indexOf(",", start);
+        if (end == -1) end = message.indexOf("}", start);
+        customMotorSpeedPwm = message.substring(start, end).toInt();
+      }
+
       if (serviceType == "cleaning" || serviceType == "drying" || serviceType == "sterilizing") {
-        startService(shoeType, serviceType, careType, customDuration, customCleaningDistanceMm);
+        startService(shoeType, serviceType, careType, customDuration, customCleaningDistanceMm, customMotorSpeedPwm);
         wsLog("info", "Service started: " + serviceType + " | shoe: " + shoeType);
       }
 

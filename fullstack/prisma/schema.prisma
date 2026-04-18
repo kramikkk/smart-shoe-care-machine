@@ -95,13 +95,14 @@ model Transaction {
 model ServicePricing {
   id          String   @id @default(cuid())
   serviceType String
+  careType    String   // gentle | normal | strong
   price       Float?   // null = not configured, use hardware/firmware default
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   deviceId    String?
   device      Device?  @relation(fields: [deviceId], references: [deviceId], onDelete: SetNull)
 
-  @@unique([deviceId, serviceType])
+  @@unique([deviceId, serviceType, careType])
   @@index([deviceId])
   @@map("service_pricing")
 }
@@ -141,6 +142,7 @@ model Device {
   transactions      Transaction[]
   alerts            DeviceAlert[]
   cleaningDistances CleaningDistance[]
+  motorSpeeds       MotorSpeed[]
 
   @@map("device")
 }
@@ -157,6 +159,20 @@ model CleaningDistance {
   @@unique([deviceId, careType])
   @@index([deviceId])
   @@map("cleaning_distance")
+}
+
+model MotorSpeed {
+  id        String   @id @default(cuid())
+  careType  String   // gentle | normal | strong
+  speedPwm  Int      // PWM 0-255; firmware uses this for brush motor speed during cleaning
+  deviceId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  device    Device?  @relation(fields: [deviceId], references: [deviceId], onDelete: SetNull)
+
+  @@unique([deviceId, careType])
+  @@index([deviceId])
+  @@map("motor_speed")
 }
 
 model DeviceAlert {

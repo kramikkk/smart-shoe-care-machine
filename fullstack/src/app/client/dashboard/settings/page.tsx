@@ -1,19 +1,18 @@
 "use client"
 
 import { motion } from "motion/react"
-import { Settings } from "lucide-react"
 import PageLoader from "@/components/ui/PageLoader"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
-import { useDashboardWebSocket } from "@/contexts/DashboardWebSocketContext"
 import { DevicePairingCard } from "@/components/settings/DevicePairingCard"
 import { ServicePricingCard } from "@/components/settings/ServicePricingCard"
 import { ServiceDurationCard } from "@/components/settings/ServiceDurationCard"
 import { CleaningDistanceCard } from "@/components/settings/CleaningDistanceCard"
+import { CleaningMotorSpeedCard } from "@/components/settings/CleaningMotorSpeedCard"
 import { useDevicePairing } from "@/hooks/useDevicePairing"
 import { useServicePricing } from "@/hooks/useServicePricing"
 import { useServiceDuration } from "@/hooks/useServiceDuration"
 import { useCleaningDistance } from "@/hooks/useCleaningDistance"
+import { useMotorSpeed } from "@/hooks/useMotorSpeed"
 
 const containerVariants = {
   hidden: { opacity: 0, y: 20 },
@@ -34,13 +33,13 @@ const itemVariants = {
 
 export default function SettingsPage() {
   const { selectedDevice } = useDeviceFilter()
-  const { isConnected } = useDashboardWebSocket()
   const pairing = useDevicePairing()
   const pricing = useServicePricing(selectedDevice)
   const duration = useServiceDuration(selectedDevice)
   const cleaningDist = useCleaningDistance(selectedDevice)
+  const motorSpeed = useMotorSpeed(selectedDevice)
 
-  if (pricing.isLoading || duration.isLoading || cleaningDist.isLoading) {
+  if (pricing.isLoading || duration.isLoading || cleaningDist.isLoading || motorSpeed.isLoading) {
     return (
       <div className="flex flex-1 flex-col w-full">
         <PageLoader label="Loading settings" />
@@ -71,19 +70,13 @@ export default function SettingsPage() {
           pairingCode={pairing.pairingCode}
           editingDeviceId={pairing.editingDeviceId}
           editingDeviceName={pairing.editingDeviceName}
-          restartingDeviceId={pairing.restartingDeviceId}
-          unpairConfirmId={pairing.unpairConfirmId}
           onPairingDialogOpenChange={pairing.setPairingDialogOpen}
           onPairingDeviceIdChange={pairing.setPairingDeviceId}
           onPairingCodeChange={pairing.setPairingCode}
           onPairDevice={pairing.handlePairDevice}
-          onUnpairDevice={pairing.handleUnpairDevice}
-          onRestartDevice={pairing.handleRestartDevice}
           onEditingDeviceIdChange={pairing.setEditingDeviceId}
           onEditingDeviceNameChange={pairing.setEditingDeviceName}
           onSaveDeviceName={pairing.handleSaveDeviceName}
-          onUnpairConfirmIdChange={pairing.setUnpairConfirmId}
-          formatLastSeen={pairing.formatLastSeen}
         />
       </motion.div>
 
@@ -120,6 +113,18 @@ export default function SettingsPage() {
           onDistanceChange={cleaningDist.handleDistanceChange}
           hasDistanceChanges={cleaningDist.hasDistanceChanges}
           onSaveDistance={cleaningDist.handleSaveDistance}
+        />
+      </motion.div>
+
+      <motion.div variants={itemVariants}>
+        <CleaningMotorSpeedCard
+          speeds={motorSpeed.speeds}
+          editedSpeeds={motorSpeed.editedSpeeds}
+          isSaving={motorSpeed.isSaving}
+          selectedDevice={selectedDevice}
+          onSpeedChange={motorSpeed.handleSpeedChange}
+          hasSpeedChanges={motorSpeed.hasSpeedChanges}
+          onSaveSpeed={motorSpeed.handleSaveSpeed}
         />
       </motion.div>
     </motion.div>

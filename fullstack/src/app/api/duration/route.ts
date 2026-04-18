@@ -7,9 +7,9 @@ const SERVICE_TYPES = ['cleaning', 'drying', 'sterilizing'] as const
 const CARE_TYPES = ['gentle', 'normal', 'strong'] as const
 
 const DEFAULT_DURATIONS: Record<string, Record<string, number>> = {
-  cleaning: { gentle: 60, normal: 180, strong: 300 },
-  drying: { gentle: 60, normal: 180, strong: 300 },
-  sterilizing: { gentle: 60, normal: 180, strong: 300 },
+  cleaning: { gentle: 180, normal: 360, strong: 540 },
+  drying: { gentle: 180, normal: 360, strong: 540 },
+  sterilizing: { gentle: 180, normal: 360, strong: 540 },
 }
 
 const DurationUpdateSchema = z.object({

@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.6"
+#define FIRMWARE_VERSION "1.0.7"
 #define BOARD_NAME "SSCM-MAIN"
 
 /**
@@ -242,7 +242,7 @@ int cleaningPhase = 0;                   // 0 = idle, 1–6 = active phase (see 
 const unsigned long BRUSH_DURATION_MS = 30000; // ms per CW or CCW brush segment (one direction = one segment)
 const unsigned long BRUSH_COAST_MS    = 500;   // ms coast pause between CW↔CCW direction reversals
 const int BRUSH_TOTAL_CYCLES   = 10;           // Total CW+CCW pairs before cleaning ends
-const int BRUSH_MOTOR_SPEED    = 255;          // Full-speed PWM duty for brush motors during cleaning
+int brushMotorSpeed            = 255;          // PWM duty for brush motors during cleaning (set per care type from dashboard)
 int brushCurrentCycle      = 0;               // Completed CW+CCW cycle count
 unsigned long brushPhaseStartTime = 0;        // millis() at start of current phase
 int brushNextPhase         = 0;               // Phase to transition to after a coast gap
@@ -592,6 +592,8 @@ void loop() {
       if (isPaired && wsConnected) {
         String coinMsg = "{\"type\":\"coin-inserted\",\"deviceId\":\"" +
                          deviceId + "\",\"coinValue\":" + String(coinValue) +
+                         ",\"totalCoinPesos\":" + String(totalCoinPesos) +
+                         ",\"totalBillPesos\":" + String(totalBillPesos) +
                          ",\"totalPesos\":" + String(totalPesos) + "}";
         webSocket.sendTXT(coinMsg);
       }
@@ -611,6 +613,8 @@ void loop() {
       if (isPaired && wsConnected) {
         String billMsg = "{\"type\":\"bill-inserted\",\"deviceId\":\"" +
                          deviceId + "\",\"billValue\":" + String(billValue) +
+                         ",\"totalCoinPesos\":" + String(totalCoinPesos) +
+                         ",\"totalBillPesos\":" + String(totalBillPesos) +
                          ",\"totalPesos\":" + String(totalPesos) + "}";
         webSocket.sendTXT(billMsg);
       }

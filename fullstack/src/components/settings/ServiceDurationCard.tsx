@@ -20,9 +20,9 @@ type ServiceDurationCardProps = {
 
 // Default seconds per care tier (aligned with /api/duration seed values)
 const FIRMWARE_DEFAULTS: Record<string, Record<string, number>> = {
-  cleaning: { gentle: 60, normal: 180, strong: 300 },
-  drying: { gentle: 60, normal: 180, strong: 300 },
-  sterilizing: { gentle: 60, normal: 180, strong: 300 },
+  cleaning: { gentle: 180, normal: 360, strong: 540 },
+  drying: { gentle: 180, normal: 360, strong: 540 },
+  sterilizing: { gentle: 180, normal: 360, strong: 540 },
 }
 
 const SERVICE_CONFIG = [

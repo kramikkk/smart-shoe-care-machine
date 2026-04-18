@@ -58,9 +58,9 @@ const Auto = () => {
   const careTierFallback = useMemo(
     () =>
       ({
-        gentle: 60,
-        normal: 180,
-        strong: 300,
+        gentle: 180,
+        normal: 360,
+        strong: 540,
       }) as Record<CareType, number>,
     []
   )
@@ -113,6 +113,9 @@ const Auto = () => {
   const sendMessageRef = useRef(sendMessage)
   const deviceIdRef = useRef(deviceId)
   const skipUnmountStopRef = useRef(false)
+  // Set to true when emergency stop is initiated so incoming service-complete
+  // messages don't advance to the next stage while the component is still mounted.
+  const emergencyStoppedRef = useRef(false)
 
   // Keep refs in sync with current values
   useEffect(() => {
@@ -140,6 +143,9 @@ const Auto = () => {
           setDeviceSynced(true)
         }
       } else if (message.type === 'service-complete') {
+        // Emergency stop already sent — ignore the abort-triggered service-complete
+        // so the stage-change effect doesn't fire and send start-service for the next stage.
+        if (emergencyStoppedRef.current) return
         const m = message as Record<string, unknown>
         const done = normalizeServiceStage(String(m.serviceType ?? ''))
         if (done === 'cleaning') {
@@ -373,6 +379,7 @@ const Auto = () => {
           exitHref={`/kiosk/stopped?shoe=${encodeURIComponent(shoe)}&service=package`}
           onEmergencyInitiated={() => {
             skipUnmountStopRef.current = true
+            emergencyStoppedRef.current = true
           }}
         />
       </div>

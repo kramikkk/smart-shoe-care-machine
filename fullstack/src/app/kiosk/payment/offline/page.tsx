@@ -4,10 +4,10 @@ import { Button } from '@/components/ui/button'
 import { debug } from '@/lib/debug'
 import { Card, CardContent } from '@/components/ui/card'
 import { Item, ItemContent } from '@/components/ui/item'
-import React, { useState, useMemo, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { AlertTriangle, Loader2, ArrowLeft } from 'lucide-react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { DEFAULT_SERVICES, Service, ServiceType } from '@/lib/kiosk-constants'
+import { ServiceType } from '@/lib/kiosk-constants'
 import { usePricing } from '@/hooks/usePricing'
 import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 
@@ -18,15 +18,9 @@ const Offline = () => {
   const service = searchParams.get('service') as ServiceType || 'package'
   const care = searchParams.get('care') || 'normal'
 
-  const { services } = usePricing()
+  const { getPrice } = usePricing()
 
-  // Get the service details based on the service parameter
-  const selectedService = useMemo(() => {
-    const found = services.find((s) => s.id === service)
-    return found || services[3] // default to package
-  }, [service, services])
-
-  const amountDue = selectedService.price
+  const amountDue = getPrice(service, care)
   const [amountInserted, setAmountInserted] = useState(0)
   const amountRemaining = Math.max(0, amountDue - amountInserted)
   const [isSaving, setIsSaving] = useState(false)
@@ -208,7 +202,7 @@ const Offline = () => {
             <div className="space-y-3 flex-1">
               <div className="bg-purple-50 p-3 rounded-lg border-2 border-purple-200">
                 <p className="text-sm font-bold text-gray-700">Service</p>
-                <p className="text-xl font-bold text-purple-600">{selectedService.name}</p>
+                <p className="text-xl font-bold text-purple-600">{service.charAt(0).toUpperCase() + service.slice(1)}</p>
               </div>
               
               <div className="bg-blue-50 p-3 rounded-lg">

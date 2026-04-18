@@ -35,18 +35,18 @@ static long cleaningSideTargetSteps(const String &care, long customMm) {
 /**
  * Return the default service duration (ms) when the start-service command omits duration.
  * Tiers mirror the app's pricing/time display so the machine behaves consistently:
- *   gentle → 60s (1 min), normal → 180s (3 min), strong → 300s (5 min)
+ *   gentle → 180s (3 min), normal → 360s (6 min), strong → 540s (9 min)
  * All three service types use the same tier mapping.
  */
 static unsigned long defaultServiceDurationMs(const String &svc,
                                               const String &care) {
   if (svc == "cleaning" || svc == "drying" || svc == "sterilizing") {
-    if (care == "gentle") return  60000UL; //  1 minute
-    if (care == "normal") return 180000UL; //  3 minutes
-    if (care == "strong") return 300000UL; //  5 minutes
-    return 180000UL; // Default to normal
+    if (care == "gentle") return 180000UL; //  3 minutes
+    if (care == "normal") return 360000UL; //  6 minutes
+    if (care == "strong") return 540000UL; //  9 minutes
+    return 360000UL; // Default to normal
   }
-  return 180000UL;
+  return 360000UL;
 }
 
 static void sendServiceCompleteMessage(const String &svcType, const String &shoe,
@@ -114,15 +114,21 @@ static void handoverEndPreviousService() {
  * care:     "gentle", "normal", or "strong"
  * customDurationSeconds: 0 = use tier default; >0 = override in seconds
  * customCleaningDistanceMm: -1 = use care-level default; >0 = override in mm
+ * customMotorSpeedPwm: -1 = keep current brushMotorSpeed; 0–255 = override PWM for brush motors
  *
  * If a service is already active (kiosk multi-stage flow), handoverEndPreviousService()
  * cleanly terminates the prior stage before this one begins.
  */
 void startService(String shoeType, String service, String care,
                   unsigned long customDurationSeconds,
-                  long customCleaningDistanceMm) {
+                  long customCleaningDistanceMm,
+                  int customMotorSpeedPwm) {
   if (serviceActive)
     handoverEndPreviousService();
+
+  // Apply dashboard motor speed override; -1 means leave at current value (default 255).
+  if (customMotorSpeedPwm >= 0 && customMotorSpeedPwm <= 255)
+    brushMotorSpeed = customMotorSpeedPwm;
 
   serviceActive       = true;
   classificationLedOn = false; // LED strip is now owned by the service, not the classify preview
@@ -382,7 +388,7 @@ void handleService() {
         cleaningPhase     = 4;
         brushCurrentCycle = 1;
         brushPhaseStartTime = millis();
-        setMotorsSameSpeed(BRUSH_MOTOR_SPEED); // CW rotation
+        setMotorsOppositeSpeed(brushMotorSpeed); // Left CW / right CCW
 
         // Dynamic servo interval: distribute remaining time evenly across 180 steps.
         // dynInterval (ms/step) = remaining_ms / 15 cycles / 180 degrees.
@@ -433,10 +439,10 @@ void handleService() {
         brushPhaseStartTime = millis();
         if (brushNextPhase == 5) {
           LOG("[CLEANING] → CCW");
-          setMotorsSameSpeed(-BRUSH_MOTOR_SPEED); // Negative speed = CCW
+          setMotorsOppositeSpeed(-brushMotorSpeed); // Left CCW / right CW
         } else {
           LOG("[CLEANING] → CW");
-          setMotorsSameSpeed(BRUSH_MOTOR_SPEED);
+          setMotorsOppositeSpeed(brushMotorSpeed); // Left CW / right CCW
         }
       }
     }

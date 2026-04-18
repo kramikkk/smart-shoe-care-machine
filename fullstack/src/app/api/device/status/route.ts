@@ -43,12 +43,6 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Update lastSeen timestamp
-    await prisma.device.update({
-      where: { deviceId },
-      data: { lastSeen: new Date() }
-    })
-
     return NextResponse.json({
       success: true,
       message: 'Device status updated',

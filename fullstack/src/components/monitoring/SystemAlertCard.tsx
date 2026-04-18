@@ -274,7 +274,7 @@ const SystemAlertCard = ({ className }: { className?: string }) => {
         </div>
       </CardHeader>
 
-      <CardContent className={className ? 'flex-1 min-h-0 overflow-auto' : undefined}>
+      <CardContent className="max-h-96 overflow-y-auto">
         {fetching ? (
           <div className="flex items-center justify-center py-8 gap-2 text-muted-foreground">
             <Loader2 className="h-5 w-5 animate-spin" />

@@ -1,20 +1,21 @@
 'use client'
 
-import { useCallback, useState, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useState, useEffect, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Loader2, XCircle, ArrowLeft } from 'lucide-react'
-import { DEFAULT_SERVICES, ServiceType } from '@/lib/kiosk-constants'
 import { usePricing } from '@/hooks/usePricing'
 import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 import { debug, isDebug } from '@/lib/debug'
+
+type ServiceType = 'cleaning' | 'drying' | 'sterilizing' | 'package'
 
 const OnlinePayment = () => {
   const searchParams = useSearchParams()
   const router = useRouter()
   const selectedShoe = searchParams.get('shoe') || 'mesh'
-  const selectedService = searchParams.get('service') as ServiceType || 'cleaning'
+  const selectedService = (searchParams.get('service') || 'cleaning') as ServiceType
   const selectedCare = searchParams.get('care') || 'normal'
 
   // Ref to prevent multiple payment creations
@@ -31,13 +32,11 @@ const OnlinePayment = () => {
     package: 'Complete care: cleaning, drying, and sterilizing',
   }
 
-  const { services, isLoaded: isPricingLoaded } = usePricing()
+  const { getPrice, isLoaded: isPricingLoaded } = usePricing()
   const { onMessage } = useKioskWebSocket()
 
-  // Get selected service data
-  const selectedServiceData = useMemo(() => {
-    return services.find(s => s.id === selectedService) || services[0]
-  }, [selectedService, services])
+  const selectedPrice = getPrice(selectedService, selectedCare)
+  const selectedServiceName = selectedService.charAt(0).toUpperCase() + selectedService.slice(1)
 
   // PayMongo API States
   const [paymentState, setPaymentState] = useState<'idle' | 'creating' | 'awaiting_payment' | 'checking' | 'success' | 'failed'>('idle')
@@ -129,20 +128,20 @@ const OnlinePayment = () => {
       setPaymentState('creating')
       setError(null)
 
-      if (selectedServiceData.price < 1) {
+      if (selectedPrice < 1) {
         throw new Error('Payment amount must be at least ₱1.00 for online payments. Please use offline payment for amounts less than ₱1.')
       }
 
       const deviceId = localStorage.getItem('kiosk_device_id')
       const groupToken = localStorage.getItem('kiosk_group_token') || ''
-      debug.log(`[Payment] Creating payment — device: ${deviceId}, service: ${selectedService}, shoe: ${selectedShoe}, care: ${selectedCare}, amount: ₱${selectedServiceData.price}`)
+      debug.log(`[Payment] Creating payment — device: ${deviceId}, service: ${selectedService}, shoe: ${selectedShoe}, care: ${selectedCare}, amount: ₱${selectedPrice}`)
 
       const response = await fetch('/api/payment/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Group-Token': groupToken },
         body: JSON.stringify({
-          amount: selectedServiceData.price,
-          description: `Smart Shoe Care - ${selectedServiceData.name}`,
+          amount: selectedPrice,
+          description: `Smart Shoe Care - ${selectedServiceName}`,
           deviceId,
           shoeType: selectedShoe.charAt(0).toUpperCase() + selectedShoe.slice(1),
           careType: selectedService === 'package'
@@ -170,7 +169,7 @@ const OnlinePayment = () => {
       setPaymentState('failed')
       isCreatingPayment.current = false
     }
-  }, [selectedServiceData, selectedShoe, selectedService, selectedCare, startPolling])
+  }, [selectedPrice, selectedServiceName, selectedShoe, selectedService, selectedCare, startPolling])
 
   // Auto-generate QR on page load - exactly once, after pricing is loaded
   useEffect(() => {
@@ -230,7 +229,7 @@ const OnlinePayment = () => {
             </div>
             <div className="bg-gradient-to-r from-blue-50 to-cyan-50 px-6 py-3 rounded-full border border-blue-200">
               <p className="text-base font-semibold text-blue-800">
-                {selectedServiceData.name} - ₱{selectedServiceData.price}
+                {selectedServiceName} - ₱{selectedPrice}
               </p>
             </div>
           </div>
@@ -264,11 +263,11 @@ const OnlinePayment = () => {
                 <div className="bg-white/70 backdrop-blur-sm p-4 rounded-xl border border-white/40 shadow-sm">
                   <div className="space-y-2">
                     <div>
-                      <h3 className="font-bold text-xl text-gray-800">{selectedServiceData.name}</h3>
-                      <p className="text-md text-gray-600">{serviceDescriptions[selectedServiceData.id] ?? ''}</p>
+                      <h3 className="font-bold text-xl text-gray-800">{selectedServiceName}</h3>
+                      <p className="text-md text-gray-600">{serviceDescriptions[selectedService] ?? ''}</p>
                     </div>
                     <div className="pt-2 border-t border-gray-200">
-                      <p className="text-4xl font-bold text-blue-600">₱{selectedServiceData.price}</p>
+                      <p className="text-4xl font-bold text-blue-600">₱{selectedPrice}</p>
                       <p className="text-md text-gray-600 mt-1">Total Amount</p>
                     </div>
                   </div>

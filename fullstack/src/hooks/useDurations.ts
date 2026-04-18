@@ -5,9 +5,9 @@ import { useState, useEffect } from 'react'
 type DurationMap = Record<string, Record<string, number>>
 
 const DEFAULT_DURATIONS: DurationMap = {
-  cleaning: { gentle: 60, normal: 180, strong: 300 },
-  drying: { gentle: 60, normal: 180, strong: 300 },
-  sterilizing: { gentle: 60, normal: 180, strong: 300 },
+  cleaning: { gentle: 180, normal: 360, strong: 540 },
+  drying: { gentle: 180, normal: 360, strong: 540 },
+  sterilizing: { gentle: 180, normal: 360, strong: 540 },
 }
 
 export function useDurations() {

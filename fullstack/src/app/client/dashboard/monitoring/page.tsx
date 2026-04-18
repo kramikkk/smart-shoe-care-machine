@@ -3,6 +3,7 @@
 import { motion } from "motion/react"
 import SensCard from "@/components/monitoring/SensorCard"
 import SystemAlertCard from "@/components/monitoring/SystemAlertCard"
+import { useDashboardWebSocket } from "@/contexts/DashboardWebSocketContext"
 
 const containerVariants = {
     hidden: { opacity: 0, y: 20 },
@@ -22,6 +23,8 @@ const itemVariants = {
 }
 
 export default function SystemPage() {
+  const { isConnected } = useDashboardWebSocket()
+
   return (
     <motion.div
       initial="hidden"
@@ -38,11 +41,13 @@ export default function SystemPage() {
         <SensCard id="systemStatus"/>
       </motion.div>
 
-      <motion.div variants={itemVariants} className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
-        <SensCard id="temperature"/>
-        <SensCard id="humidity"/>
-        <SensCard id="foamLevel"/>
-        <SensCard id="atomizerLevel"/>
+      <motion.div variants={itemVariants}>
+        <div className={`grid grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-6 transition-opacity duration-500 ${!isConnected ? 'opacity-40' : 'opacity-100'}`}>
+          <SensCard id="temperature"/>
+          <SensCard id="humidity"/>
+          <SensCard id="foamLevel"/>
+          <SensCard id="atomizerLevel"/>
+        </div>
       </motion.div>
 
       <motion.div variants={itemVariants}>

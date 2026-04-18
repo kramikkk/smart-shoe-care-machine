@@ -80,6 +80,8 @@ const RELAY_COLOR_MAP: Record<string, { icon: string; glow: string; ring: string
 
 export default function CommandsPage() {
   const { selectedDevice } = useDeviceFilter()
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
 
   const { sendMessage, isConnected, addMessageHandler } = useDashboardWebSocket()
   const [isDeviceReady, setIsDeviceReady] = useState(false)
@@ -92,6 +94,10 @@ export default function CommandsPage() {
   const wsConnectedPrevRef = useRef(false)
   /** Rate-limit firmware-log lines (high-frequency telemetry often arrives as sensor-data; logs can still spam). */
   const firmwareLogTimestampsRef = useRef<number[]>([])
+  /** Rate-limit sensor-data log entries — throttled to 1 per 15 s. */
+  const sensorLogLastRef = useRef<number>(0)
+  /** Rate-limit distance-data log entries — throttled to 1 per 15 s. */
+  const distanceLogLastRef = useRef<number>(0)
 
   const addLog = useCallback((type: string, message: string) => {
     const maxLen = 320
@@ -130,15 +136,13 @@ export default function CommandsPage() {
   // Stepper 1
   const [s1Pos, setS1Pos] = useState<number | null>(null)           // steps, from wsLog
   const [s1TargetMm, setS1TargetMm] = useState(0)                   // slider drag target
-  const [s1SpeedLevel, setS1SpeedLevel] = useState<'slow'|'normal'|'fast'>('normal')
 
   // Stepper 2
   const [s2Pos, setS2Pos] = useState<number | null>(null)           // steps, from wsLog
   const [s2TargetMm, setS2TargetMm] = useState(0)                   // slider drag target
-  const [s2SpeedLevel, setS2SpeedLevel] = useState<'slow'|'normal'|'fast'>('normal')
 
   // DC Motors
-  const [motorSpeed, setMotorSpeed] = useState<Record<MotorId, 0 | 50 | 100>>({ left: 0, right: 0, both: 0 })
+  const [motorSpeed, setMotorSpeed] = useState<Record<MotorId, number>>({ left: 0, right: 0, both: 0 })
   const [motorDir, setMotorDir] = useState<Record<MotorId, 'fwd' | 'rev'>>({ left: 'fwd', right: 'fwd', both: 'fwd' })
 
   // RGB
@@ -215,7 +219,7 @@ export default function CommandsPage() {
     if (prev === 'cam' && commandsTab !== 'cam' && selectedDevice) {
       sendMessage({ type: 'disable-classification', deviceId: selectedDevice })
     }
-  }, [commandsTab, selectedDevice, sendMessage])
+  }, [commandsTab, selectedDevice, sendMessage, isConnected])
 
   // Turn off classification LED on the previous unit when switching devices mid-session.
   useEffect(() => {
@@ -258,9 +262,47 @@ export default function CommandsPage() {
         setIsDeviceReady(true)
       }
 
-      // High-frequency telemetry — never mirror to this log (gauges still update elsewhere).
-      if (msg.type === 'sensor-data' || msg.type === 'distance-data') return
-      if (msg.type === 'coin-inserted' || msg.type === 'bill-inserted') return
+      // High-frequency telemetry — throttle to 1 log entry per 15 s so the log stays readable.
+      if (msg.type === 'sensor-data') {
+        if (!mid || mid === selectedDevice) {
+          const now = Date.now()
+          if (now - sensorLogLastRef.current >= 15_000) {
+            sensorLogLastRef.current = now
+            const temp = typeof msg.temperature === 'number' ? `${msg.temperature.toFixed(1)}°C` : '--'
+            const hum  = typeof msg.humidity    === 'number' ? `${msg.humidity.toFixed(0)}%`    : '--'
+            const cam  = msg.camSynced ? 'CAM synced' : 'CAM not synced'
+            addLog('sensor', `Temp: ${temp} · Humidity: ${hum} · ${cam}`)
+          }
+        }
+        return
+      }
+      if (msg.type === 'distance-data') {
+        if (!mid || mid === selectedDevice) {
+          const now = Date.now()
+          if (now - distanceLogLastRef.current >= 15_000) {
+            distanceLogLastRef.current = now
+            const atomizer = typeof msg.atomizerDistance === 'number' ? `${msg.atomizerDistance} cm` : '--'
+            const foam     = typeof msg.foamDistance     === 'number' ? `${msg.foamDistance} cm`     : '--'
+            addLog('sensor', `Atomizer: ${atomizer} · Foam: ${foam}`)
+          }
+        }
+        return
+      }
+      // Payment events are low-frequency — log every occurrence.
+      if (msg.type === 'coin-inserted') {
+        if (!mid || mid === selectedDevice) {
+          const val = typeof msg.coinValue === 'number' ? msg.coinValue : Number(msg.coinValue)
+          addLog('payment', `Coin inserted · +₱${val}`)
+        }
+        return
+      }
+      if (msg.type === 'bill-inserted') {
+        if (!mid || mid === selectedDevice) {
+          const val = typeof msg.billValue === 'number' ? msg.billValue : Number(msg.billValue)
+          addLog('payment', `Bill inserted · +₱${val}`)
+        }
+        return
+      }
 
       if (mid && mid !== selectedDevice) return
 
@@ -410,32 +452,39 @@ export default function CommandsPage() {
   }, [send])
 
   // ── Motor helper ──────────────────────────────────────────────────────────
-  const applyMotor = useCallback((id: MotorId, speed: 0 | 50 | 100, dir: 'fwd' | 'rev') => {
-    setMotorSpeed(p => ({ ...p, [id]: speed }))
+  const applyMotor = useCallback((id: MotorId, speed: number, dir: 'fwd' | 'rev') => {
+    const clamped = Math.min(100, Math.max(0, Math.round(speed)))
+    setMotorSpeed(p => ({ ...p, [id]: clamped }))
     setMotorDir(p => ({ ...p, [id]: dir }))
     const prefix = MOTOR_PREFIX[id]
-    if (speed === 0) { send(`${prefix}BRAKE`); return }
-    const pwm = speed === 100 ? 255 : 128
+    if (clamped === 0) { send(`${prefix}BRAKE`); return }
+    const pwm = Math.round(clamped / 100 * 255)
     send(`${prefix}${dir === 'fwd' ? pwm : -pwm}`)
   }, [send])
 
   // ── Shorthand: disabled when not connected, device not ready, OR servo demo is running ───────
   const disabled = !isConnected || !isDeviceReady || servoBusy
 
-  // ── Badge color ───────────────────────────────────────────────────────────
+  // ── Log entry styling ─────────────────────────────────────────────────────
 
-  const badgeVariant = (type: string): 'default' | 'secondary' | 'destructive' | 'outline' => {
-    switch (type.toLowerCase()) {
-      case 'error': return 'destructive'
-      case 'warn': return 'outline'
-      case 'sent': return 'secondary'
-      default: return 'default'
-    }
+  const logTypeConfig: Record<string, { dot: string; label: string; text: string }> = {
+    sent:     { dot: 'bg-sky-400',     label: 'text-sky-400',     text: 'text-sky-300/80'     },
+    system:   { dot: 'bg-violet-400',  label: 'text-violet-400',  text: 'text-foreground/70'  },
+    info:     { dot: 'bg-blue-400',    label: 'text-blue-400',    text: 'text-foreground/70'  },
+    warn:     { dot: 'bg-yellow-400',  label: 'text-yellow-400',  text: 'text-yellow-200/80'  },
+    error:    { dot: 'bg-red-500',     label: 'text-red-400',     text: 'text-red-300/80'     },
+    service:  { dot: 'bg-green-400',   label: 'text-green-400',   text: 'text-foreground/70'  },
+    classify: { dot: 'bg-orange-400',  label: 'text-orange-400',  text: 'text-foreground/70'  },
+    sensor:   { dot: 'bg-teal-400',    label: 'text-teal-400',    text: 'text-foreground/70'  },
+    payment:  { dot: 'bg-emerald-400', label: 'text-emerald-400', text: 'text-emerald-200/90' },
   }
+
+  const getLogStyle = (type: string) =>
+    logTypeConfig[type.toLowerCase()] ?? { dot: 'bg-muted-foreground', label: 'text-muted-foreground', text: 'text-foreground/70' }
 
   // ── Empty state ───────────────────────────────────────────────────────────
 
-  if (!selectedDevice) {
+  if (!mounted || !selectedDevice) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-4 text-muted-foreground">
         <Terminal className="w-12 h-12 opacity-30" />
@@ -849,10 +898,13 @@ export default function CommandsPage() {
                         </span>
                       </div>
 
-                      {/* Speed bar */}
-                      <div className="space-y-2">
+                      {/* Speed bar + slider */}
+                      <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/40">Speed</p>
+                          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/40">PWM</p>
+                          <span className={`text-xs font-bold tabular-nums ${running ? (dir === 'fwd' ? 'text-blue-400' : 'text-orange-400') : 'text-muted-foreground/40'}`}>
+                            {spd}% &rarr; {Math.round(spd / 100 * 255)}/255
+                          </span>
                         </div>
                         <div className="flex gap-1">
                           {Array.from({ length: 10 }).map((_, i) => {
@@ -865,27 +917,25 @@ export default function CommandsPage() {
                             )
                           })}
                         </div>
-                        <div className="rounded-xl bg-white/5 p-1 grid grid-cols-3 gap-1">
-                          {([0, 50, 100] as const).map(s => (
-                            <button
-                              type="button"
-                              key={s}
-                              disabled={disabled}
-                              onClick={() => applyMotor(id, s, dir)}
-                              className={`rounded-lg py-2 text-xs font-bold transition-all duration-150 ${
-                                spd === s
-                                  ? s === 0
-                                    ? 'bg-white/10 text-foreground shadow'
-                                    : dir === 'fwd'
-                                      ? 'bg-blue-600 text-white shadow-[0_0_12px_rgba(59,130,246,0.4)]'
-                                      : 'bg-orange-600 text-white shadow-[0_0_12px_rgba(249,115,22,0.4)]'
-                                  : 'text-muted-foreground/50 hover:text-foreground'
-                              } disabled:opacity-40 disabled:cursor-not-allowed`}
-                            >
-                              {s === 0 ? 'Off' : `${s}%`}
-                            </button>
-                          ))}
-                        </div>
+                        <input
+                          type="range"
+                          min={0} max={100} step={1}
+                          value={spd}
+                          disabled={disabled}
+                          onChange={e => setMotorSpeed(p => ({ ...p, [id]: Number(e.target.value) }))}
+                          onPointerUp={e => applyMotor(id, Number((e.target as HTMLInputElement).value), dir)}
+                          onKeyUp={() => applyMotor(id, spd, dir)}
+                          className="w-full disabled:opacity-40 cursor-pointer"
+                          style={{ accentColor: dir === 'fwd' ? 'rgb(59,130,246)' : 'rgb(249,115,22)' }}
+                        />
+                        <button
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => applyMotor(id, 0, dir)}
+                          className="w-full rounded-lg py-1.5 text-xs font-bold text-muted-foreground/50 hover:text-foreground bg-white/5 hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          Stop
+                        </button>
                       </div>
 
                       {/* Direction */}
@@ -950,36 +1000,32 @@ export default function CommandsPage() {
                 n: 1, label: 'Top Actuator', sub: '480 mm stroke',
                 maxMm: 480, stepsPerMm: 10, precision: 1,
                 pos: s1Pos, targetMm: s1TargetMm, setTargetMm: setS1TargetMm,
-                speedLevel: s1SpeedLevel, setSpeedLevel: setS1SpeedLevel,
                 jog: [-50, -10, 10, 50] as number[], step: 1,
                 color: 'violet' as const,
+                returnMm: 480,
                 onRefresh: () => send('STEPPER1_INFO'),
-                onReturn:  () => send('STEPPER1_RETURN'),
+                onReturn:  () => { send('STEPPER1_RETURN'); setS1Pos(4800); setS1TargetMm(480) },
                 onZero:    () => { send('STEPPER1_HOME'); setS1Pos(0); setS1TargetMm(0) },
                 onStop:    () => send('STEPPER1_STOP'),
                 onMove:    (delta: number) => send(`STEPPER1_MM_${delta}`),
-                onSpeed:   (lvl: string) => send(`STEPPER1_SPEED_${[200,400,800][['slow','normal','fast'].indexOf(lvl)]}`),
               },
               {
                 n: 2, label: 'Side Actuator', sub: '100 mm stroke',
                 maxMm: 100, stepsPerMm: 200, precision: 2,
                 pos: s2Pos, targetMm: s2TargetMm, setTargetMm: setS2TargetMm,
-                speedLevel: s2SpeedLevel, setSpeedLevel: setS2SpeedLevel,
                 jog: [-20, -5, 5, 20] as number[], step: 0.5,
                 color: 'teal' as const,
+                returnMm: 0,
                 onRefresh: () => send('STEPPER2_INFO'),
-                onReturn:  () => send('STEPPER2_RETURN'),
+                onReturn:  () => { send('STEPPER2_RETURN'); setS2Pos(0); setS2TargetMm(0) },
                 onZero:    () => { send('STEPPER2_HOME'); setS2Pos(0); setS2TargetMm(0) },
                 onStop:    () => send('STEPPER2_STOP'),
                 onMove:    (delta: number) => send(`STEPPER2_MM_${delta}`),
-                onSpeed:   (lvl: string) => send(`STEPPER2_SPEED_${[3000,12000,24000][['slow','normal','fast'].indexOf(lvl)]}`),
               },
             ]).map(({ n, label, sub, maxMm, stepsPerMm, precision, pos, targetMm, setTargetMm,
-                      speedLevel, setSpeedLevel, jog, step, color,
-                      onRefresh, onReturn, onZero, onStop, onMove, onSpeed }) => {
+                      jog, step, color, returnMm,
+                      onRefresh, onReturn, onZero, onStop, onMove }) => {
               const posMm  = pos !== null ? pos / stepsPerMm : null
-              const pct    = posMm !== null ? Math.min(100, Math.max(0, (posMm / maxMm) * 100)) : 0
-              const tgtPct = Math.min(100, Math.max(0, (targetMm / maxMm) * 100))
 
               const c = color === 'violet' ? {
                 icon:         'text-violet-400',
@@ -1035,30 +1081,7 @@ export default function CommandsPage() {
                       </div>
                     </div>
 
-                    {/* ── Position rail ── */}
-                    <div className="px-5 pt-5 pb-2">
-                      <div className="relative py-1.5">
-                        <div className="h-2 rounded-full bg-white/[0.06]" />
-                        {/* Target ghost fill */}
-                        <div className={`absolute top-1.5 left-0 h-2 ${c.fill} opacity-15 rounded-full transition-all duration-150`}
-                          style={{ width: `${tgtPct}%` }} />
-                        {/* Confirmed fill */}
-                        <div className={`absolute top-1.5 left-0 h-2 ${c.fill} opacity-65 rounded-full transition-all duration-500`}
-                          style={{ width: `${pct}%` }} />
-                        {/* Glowing head */}
-                        {posMm !== null && (
-                          <div className={`absolute top-1/2 -translate-y-1/2 w-5 h-5 rounded-full border-2 border-background transition-all duration-500 ${c.fill} ${c.glow}`}
-                            style={{ left: `clamp(0px, calc(${pct}% - 10px), calc(100% - 20px))` }} />
-                        )}
-                      </div>
-                      <div className="flex justify-between text-[10px] text-muted-foreground/40 font-medium mt-2.5">
-                        <span>0</span>
-                        <span>{maxMm / 2} mm</span>
-                        <span>{maxMm} mm</span>
-                      </div>
-                    </div>
-
-                    <div className="px-5 pb-5 space-y-4">
+                    <div className="px-5 pb-5 pt-5 space-y-4">
 
                       {/* ── Jog ── */}
                       <div>
@@ -1100,42 +1123,13 @@ export default function CommandsPage() {
                           min={0} max={maxMm} step={step} value={targetMm}
                           disabled={disabled}
                           onChange={e => setTargetMm(Number(e.target.value))}
+                          onPointerUp={e => onMove(Number((e.target as HTMLInputElement).value) - (posMm ?? 0))}
+                          onKeyUp={e => onMove(Number((e.target as HTMLInputElement).value) - (posMm ?? 0))}
                           className="w-full disabled:opacity-40 cursor-pointer"
                           style={{ accentColor: c.accentColor }}
                         />
-                        <div className="flex justify-between text-[10px] text-muted-foreground/40 font-medium mt-1 mb-3">
+                        <div className="flex justify-between text-[10px] text-muted-foreground/40 font-medium mt-1">
                           <span>0</span><span>{maxMm / 2} mm</span><span>{maxMm} mm</span>
-                        </div>
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => onMove(targetMm - (posMm ?? 0))}
-                          className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed ${c.moveBtn}`}
-                        >
-                          <MapPin className="w-4 h-4" />
-                          Move to {targetMm} mm
-                        </button>
-                      </div>
-
-                      {/* ── Speed ── */}
-                      <div>
-                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/40 mb-2">Speed</p>
-                        <div className="rounded-xl bg-white/5 p-1 grid grid-cols-3 gap-1">
-                          {(['slow', 'normal', 'fast'] as const).map(lvl => (
-                            <button
-                              type="button"
-                              key={lvl}
-                              disabled={disabled}
-                              onClick={() => { setSpeedLevel(lvl); onSpeed(lvl) }}
-                              className={`rounded-lg py-2 text-xs font-bold capitalize transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
-                                speedLevel === lvl
-                                  ? `${c.activeBg} text-white ${c.activeShadow}`
-                                  : 'text-muted-foreground/50 hover:text-foreground'
-                              }`}
-                            >
-                              {lvl}
-                            </button>
-                          ))}
                         </div>
                       </div>
 
@@ -1143,7 +1137,7 @@ export default function CommandsPage() {
                       <div className="grid grid-cols-2 gap-2 pt-3 border-t border-white/5">
                         <button type="button" disabled={disabled} onClick={onReturn}
                           className="flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold border border-white/10 bg-white/[0.02] text-muted-foreground/60 hover:text-foreground hover:bg-white/5 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-                          <Home className="w-3.5 h-3.5" /> Return to 0
+                          <Home className="w-3.5 h-3.5" /> Return to {returnMm} mm
                         </button>
                         <button type="button" disabled={disabled} onClick={onZero}
                           className="flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold border border-white/10 bg-white/[0.02] text-muted-foreground/60 hover:text-foreground hover:bg-white/5 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
@@ -1597,7 +1591,7 @@ export default function CommandsPage() {
         <TabsContent value="system" className="space-y-6">
 
           {/* Safe Operations */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Device Status */}
             <Card className="glass-card border-none">
               <CardContent className="p-5 flex items-start gap-4">
@@ -1615,7 +1609,40 @@ export default function CommandsPage() {
               </CardContent>
             </Card>
 
-            {/* Reset Money */}
+            {/* Restart Device */}
+            <Card className="glass-card border-none ring-1 ring-amber-500/20">
+              <CardContent className="p-5 flex items-start gap-4">
+                <div className="p-3 rounded-xl bg-amber-500/10 shrink-0">
+                  <RotateCcw className="w-5 h-5 text-amber-500" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <p className="font-semibold text-sm">Restart Device</p>
+                    <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500">Caution</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mb-3">Restarts the ESP32. Device offline for 10–30 seconds. Current service will be interrupted.</p>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button size="sm" variant="outline" className="border-amber-500/40 text-amber-500 hover:bg-amber-500/10 hover:text-amber-400" disabled={disabled}>Restart</Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Restart Device?</AlertDialogTitle>
+                        <AlertDialogDescription>The device will restart and be offline for 10–30 seconds. Any running service will be interrupted.</AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => { sendMessage({ type: 'restart-device', deviceId: selectedDevice! }); toast.info('Restart command sent — device will be back in 10–30 seconds.') }}>
+                          Restart
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Money Counters */}
             <Card className="glass-card border-none ring-1 ring-yellow-500/20">
               <CardContent className="p-5 flex items-start gap-4">
                 <div className="p-3 rounded-xl bg-yellow-500/10 shrink-0">
@@ -1623,25 +1650,28 @@ export default function CommandsPage() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <p className="font-semibold text-sm">Reset Money Counters</p>
+                    <p className="font-semibold text-sm">Money Counters</p>
                     <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-500">Caution</span>
                   </div>
-                  <p className="text-xs text-muted-foreground mb-3">Resets all coin and bill totals to ₱0. This cannot be undone.</p>
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button size="sm" variant="outline" className="border-yellow-500/40 text-yellow-500 hover:bg-yellow-500/10 hover:text-yellow-400" disabled={disabled}>Reset Money</Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Reset Money Counters?</AlertDialogTitle>
-                        <AlertDialogDescription>All coin and bill totals will be reset to ₱0. This cannot be undone.</AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => send('RESET_MONEY')}>Reset</AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
+                  <p className="text-xs text-muted-foreground mb-3">Query current coin/bill totals inside the device — response appears in the log below.</p>
+                  <div className="flex gap-2 flex-wrap">
+                    <Button size="sm" disabled={disabled} onClick={() => send('QUERY_MONEY')}>Query Money</Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button size="sm" variant="outline" className="border-yellow-500/40 text-yellow-500 hover:bg-yellow-500/10 hover:text-yellow-400" disabled={disabled}>Reset to ₱0</Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Reset Money Counters?</AlertDialogTitle>
+                          <AlertDialogDescription>All coin and bill totals will be reset to ₱0. This cannot be undone.</AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => send('RESET_MONEY')}>Reset</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -1765,21 +1795,43 @@ export default function CommandsPage() {
       {/* ── Live Response Log ── */}
       <Card className="glass-card border-none flex-shrink-0">
         <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Live Response Log</CardTitle>
-          <Button size="sm" variant="ghost" className="text-xs h-7" onClick={() => setLog([])}>Clear</Button>
+          <div className="flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Live Response Log</CardTitle>
+            {log.length > 0 && (
+              <span className="text-[10px] text-muted-foreground/50 font-mono">{log.length} entries</span>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-[10px] h-6 px-2 text-muted-foreground hover:text-foreground"
+            onClick={() => setLog([])}
+          >
+            Clear
+          </Button>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="h-40 overflow-y-auto font-mono text-xs px-4 pb-3 space-y-1">
-            {log.length === 0 && <p className="text-muted-foreground/50 pt-2">No messages yet…</p>}
-            {log.map(entry => (
-              <div key={entry.id} className="flex items-start gap-2">
-                <span className="text-muted-foreground/50 flex-shrink-0 pt-0.5">{entry.timestamp}</span>
-                <Badge variant={badgeVariant(entry.type)} className="text-[10px] px-1 py-0 h-4 flex-shrink-0 capitalize">
-                  {entry.type}
-                </Badge>
-                <span className="text-foreground/80 break-all">{entry.message}</span>
+          <div className="h-44 overflow-y-auto font-mono text-[11px] leading-relaxed px-3 pb-3">
+            {log.length === 0 ? (
+              <p className="text-muted-foreground/40 pt-2 text-center text-xs">No messages yet — send a command or wait for device events</p>
+            ) : (
+              <div className="space-y-0.5">
+                {log.map(entry => {
+                  const style = getLogStyle(entry.type)
+                  return (
+                    <div key={entry.id} className="flex items-start gap-2 py-0.5 group">
+                      <span className="text-muted-foreground/30 flex-shrink-0 tabular-nums w-[72px] text-right leading-[1.6]">{entry.timestamp}</span>
+                      <div className="flex items-center gap-1.5 flex-shrink-0 leading-[1.6]">
+                        <span className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 mt-[3px] ${style.dot}`} />
+                        <span className={`uppercase font-semibold tracking-wider text-[9px] w-[46px] leading-[1.6] ${style.label}`}>{entry.type}</span>
+                      </div>
+                      <span className={`break-all min-w-0 leading-relaxed ${style.text}`}>{entry.message}</span>
+                    </div>
+                  )
+                })}
               </div>
-            ))}
+            )}
           </div>
         </CardContent>
       </Card>

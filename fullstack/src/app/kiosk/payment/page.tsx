@@ -7,7 +7,7 @@ import { Item, ItemContent, ItemHeader } from '@/components/ui/item'
 import Image from 'next/image'
 import { BackButton } from '@/components/kiosk/BackButton'
 import { StepIndicator } from '@/components/kiosk/StepIndicator'
-import { CUSTOM_STEPS, AUTO_STEPS, Service, ServiceType } from '@/lib/kiosk-constants'
+import { CUSTOM_STEPS, AUTO_STEPS, ServiceType } from '@/lib/kiosk-constants'
 import { usePricing } from '@/hooks/usePricing'
 
 const paymentMethods = [
@@ -35,15 +35,18 @@ const Payment = () => {
   const care = searchParams.get('care')
 
   const [selected, setSelected] = useState<string | null>(null)
-  const { services } = usePricing()
+  const { getPrice } = usePricing()
 
-  const serviceDetails = services.find(s => s.id === service) || services.find(s => s.id === 'package')!
+  const effectiveCare = care || 'normal'
+  const serviceLabel = service ? service.charAt(0).toUpperCase() + service.slice(1) : 'Package'
+  const careLabel = !care ? (service === 'package' ? 'Auto' : 'N/A') : care.charAt(0).toUpperCase() + care.slice(1)
+  const price = service ? getPrice(service, effectiveCare) : 0
 
   const summaryData = [
     { label: 'Shoe Type', value: shoe.charAt(0).toUpperCase() + shoe.slice(1) },
-    { label: 'Service',   value: serviceDetails.name },
-    { label: 'Care Type', value: !care ? (service === 'package' ? 'Auto' : 'N/A') : care.charAt(0).toUpperCase() + care.slice(1) },
-    { label: 'Total',     value: `₱${serviceDetails.price}` },
+    { label: 'Service',   value: serviceLabel },
+    { label: 'Care Type', value: careLabel },
+    { label: 'Total',     value: `₱${price.toFixed(2)}` },
   ]
 
   const buildQueryString = () => {
