@@ -51,7 +51,7 @@ export function TransactionDataTable<TData, TValue>({
   return (
     <div className="flex flex-col h-full">
       {/* Table Container - no scroll, shows only what fits */}
-      <div className="rounded-md overflow-hidden">
+      <div className="rounded-md overflow-x-auto">
         <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (

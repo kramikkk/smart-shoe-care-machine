@@ -85,6 +85,7 @@ export async function POST(
   if (rateLimitResult) return rateLimitResult
 
   const { deviceId } = await params
+  console.log(`[Classify] POST received for ${deviceId}`)
 
   try {
     // Check image size before processing
@@ -99,6 +100,7 @@ export async function POST(
     // Validate X-Group-Token header
     const groupToken = request.headers.get('X-Group-Token')
     if (!groupToken) {
+      console.warn(`[Classify] Missing X-Group-Token for ${deviceId}`)
       return NextResponse.json({ error: 'Missing X-Group-Token' }, { status: 401 })
     }
 
@@ -109,10 +111,12 @@ export async function POST(
     })
 
     if (!device) {
+      console.warn(`[Classify] Device not found: ${deviceId}`)
       return NextResponse.json({ error: 'Device not found' }, { status: 404 })
     }
 
     if (!device.groupToken || device.groupToken !== groupToken) {
+      console.warn(`[Classify] Invalid group token for ${deviceId} — got "${groupToken}", stored "${device.groupToken}"`)
       return NextResponse.json({ error: 'Invalid group token' }, { status: 401 })
     }
 

@@ -36,17 +36,6 @@ function distanceToLiters(distance: number): number {
 export function deriveAlerts(sensorData: SensorData, isConnected: boolean): DerivedAlert[] {
   const alerts: DerivedAlert[] = []
 
-  if (!isConnected) {
-    alerts.push({
-      id: 'device-offline',
-      severity: 'critical',
-      title: 'Device Offline',
-      description: 'The machine is not connected. Check network and power.',
-    })
-    return alerts
-  }
-
-
   if (sensorData.atomizerDistance === -1 || sensorData.atomizerDistance > 21) {
     alerts.push({
       id: 'atomizer-invalid',
@@ -109,7 +98,7 @@ export function deriveAlerts(sensorData: SensorData, isConnected: boolean): Deri
         title: 'Temperature Critical',
         description: `Chamber temperature is dangerously high (${sensorData.temperature.toFixed(1)}°C). Check ventilation.`,
       })
-    } else if (sensorData.temperature > 40) {
+    } else if (sensorData.temperature > 45) {
       alerts.push({
         id: 'temp-high',
         severity: 'warning',
@@ -119,7 +108,7 @@ export function deriveAlerts(sensorData: SensorData, isConnected: boolean): Deri
     }
   }
 
-  if (sensorData.humidity > 0 && sensorData.humidity > 70) {
+  if (sensorData.humidity > 0 && sensorData.humidity > 50) {
     alerts.push({
       id: 'humidity-high',
       severity: 'warning',
@@ -184,6 +173,7 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
   // Debounce alert sync to avoid firing on every rapid sensor tick
   const alertSyncTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const reconnectAttemptsRef = useRef(0)
   const connectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const dataTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -243,6 +233,8 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
   useEffect(() => {
     if (!selectedDevice) return
 
+    reconnectAttemptsRef.current = 0
+
     // PARALLEL SYNC: Start the WebSocket connection immediately while the fetch check is running.
     // This removes 500ms-2s of delay before real-time data starts flowing.
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -270,6 +262,7 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
 
       ws.onopen = () => {
         if (connectTimeoutRef.current) { clearTimeout(connectTimeoutRef.current); connectTimeoutRef.current = null }
+        reconnectAttemptsRef.current = 0
         // Don't set isConnected here — only device-online message confirms the device is alive
         setIsLoadingData(true)
         ws.send(JSON.stringify({ type: 'subscribe', deviceId: selectedDevice }))
@@ -408,7 +401,9 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
         setIsLoadingData(false)
         if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
         wsRef.current = null
-        reconnectTimeoutRef.current = setTimeout(() => connect(), 5000)
+        reconnectAttemptsRef.current++
+        const delay = Math.min(3000 * Math.pow(2, reconnectAttemptsRef.current - 1), 30000)
+        reconnectTimeoutRef.current = setTimeout(() => connect(), delay)
       }
     }
 
@@ -421,6 +416,12 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
       if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current)
       // Reset alert key tracking so remount starts fresh (no stale re-POST surge)
       prevAlertKeysRef.current = new Set()
+      // Null out handlers before closing so the stale onclose doesn't schedule a
+      // reconnect that races with (or duplicates) the next effect run's connection.
+      if (wsRef.current) {
+        wsRef.current.onclose = null
+        wsRef.current.onerror = null
+      }
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         ws.close()
       }

@@ -500,7 +500,7 @@ export default function CommandsPage() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="flex flex-col gap-4 h-full pb-4"
+      className="flex flex-col gap-4 pb-8"
     >
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
@@ -529,7 +529,7 @@ export default function CommandsPage() {
       )}
 
       {/* Tabs */}
-      <Tabs value={commandsTab} onValueChange={setCommandsTab} className="flex flex-col gap-4 flex-1">
+      <Tabs value={commandsTab} onValueChange={setCommandsTab} className="flex flex-col gap-4">
         <div className="overflow-x-auto pb-1 -mx-1 px-1">
           <TabsList className="w-max min-w-full justify-start gap-1 h-9">
             <TabsTrigger value="relays" className="text-xs sm:text-sm">Relays</TabsTrigger>
@@ -565,7 +565,7 @@ export default function CommandsPage() {
             </button>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {RELAYS.map((relay, idx) => {
               const isOn = relayStates[idx]
               const iconMap: Record<string, React.ReactNode> = {

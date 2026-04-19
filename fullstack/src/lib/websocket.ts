@@ -314,31 +314,34 @@ export function createWebSocketServer(server: Server) {
           }
 
           // Push full pairing state async (pairingCode, groupToken, camSynced need DB).
-          ;(async () => {
-            try {
-              const device = await prisma.device.findUnique({
-                where: { deviceId: subscribeDeviceId },
-                select: { paired: true, pairedAt: true, name: true, pairingCode: true, groupToken: true, lastSeen: true, camSynced: true, camDeviceId: true },
-              })
-              if (device && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  type: 'device-update',
-                  deviceId: subscribeDeviceId,
-                  data: {
-                    paired: device.paired,
-                    pairedAt: device.pairedAt,
-                    deviceName: device.name,
-                    pairingCode: device.paired ? null : device.pairingCode,
-                    groupToken: device.paired ? device.groupToken : null,
-                    camSynced: device.camSynced,
-                    camDeviceId: device.camDeviceId,
-                  }
-                }))
+          // Skip if already auto-subscribed on connect — the eager push above already handled it.
+          if (subscribeDeviceId !== connDeviceId) {
+            ;(async () => {
+              try {
+                const device = await prisma.device.findUnique({
+                  where: { deviceId: subscribeDeviceId },
+                  select: { paired: true, pairedAt: true, name: true, pairingCode: true, groupToken: true, lastSeen: true, camSynced: true, camDeviceId: true },
+                })
+                if (device && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    type: 'device-update',
+                    deviceId: subscribeDeviceId,
+                    data: {
+                      paired: device.paired,
+                      pairedAt: device.pairedAt,
+                      deviceName: device.name,
+                      pairingCode: device.paired ? null : device.pairingCode,
+                      groupToken: device.paired ? device.groupToken : null,
+                      camSynced: device.camSynced,
+                      camDeviceId: device.camDeviceId,
+                    }
+                  }))
+                }
+              } catch (err) {
+                console.warn(`[WebSocket] Could not push initial device state for ${subscribeDeviceId}`)
               }
-            } catch (err) {
-              console.warn(`[WebSocket] Could not push initial device state for ${subscribeDeviceId}`)
-            }
-          })()
+            })()
+          }
         }
 
         // Handle device status update from ESP32

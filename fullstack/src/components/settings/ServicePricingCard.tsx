@@ -11,10 +11,10 @@ import { CARE_TYPES_BY_SERVICE } from "@/hooks/useServicePricing"
 const SERVICE_TYPES = ['cleaning', 'drying', 'sterilizing', 'package'] as const
 
 const serviceIcons = {
-  cleaning:    { icon: <Sparkles className="h-5 w-5" />,    color: 'var(--chart-1)' },
-  drying:      { icon: <Wind className="h-5 w-5" />,        color: 'var(--chart-2)' },
-  sterilizing: { icon: <ShieldCheck className="h-5 w-5" />, color: 'var(--chart-3)' },
-  package:     { icon: <Package className="h-5 w-5" />,     color: 'var(--chart-4)' },
+  cleaning:    { icon: <Sparkles className="h-4 w-4" />,    color: 'var(--chart-1)' },
+  drying:      { icon: <Wind className="h-4 w-4" />,        color: 'var(--chart-2)' },
+  sterilizing: { icon: <ShieldCheck className="h-4 w-4" />, color: 'var(--chart-3)' },
+  package:     { icon: <Package className="h-4 w-4" />,     color: 'var(--chart-4)' },
 }
 
 const serviceNames: Record<string, string> = {
@@ -22,7 +22,7 @@ const serviceNames: Record<string, string> = {
 }
 
 const careLabels: Record<string, string> = {
-  gentle: 'Gentle', normal: 'Normal', strong: 'Strong', auto: 'Package Price',
+  gentle: 'Gentle', normal: 'Normal', strong: 'Strong', auto: 'Bundle Price',
 }
 
 const PRICE_DEFAULTS: Record<string, Record<string, number>> = {
@@ -63,7 +63,7 @@ export function ServicePricingCard({
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {SERVICE_TYPES.map((serviceType) => {
             const meta = serviceIcons[serviceType]
             const careTypes = CARE_TYPES_BY_SERVICE[serviceType]
@@ -73,54 +73,59 @@ export function ServicePricingCard({
             return (
               <div
                 key={serviceType}
-                className="border rounded-lg p-4 space-y-4 transition-colors"
-                onMouseEnter={(e) => { e.currentTarget.style.borderColor = meta.color }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = '' }}
+                className="rounded-xl p-4 space-y-4"
+                style={{
+                  borderLeft: `3px solid ${meta.color}`,
+                  background: `color-mix(in srgb, ${meta.color} 5%, transparent)`,
+                }}
               >
-                {/* Service header */}
-                <div className="flex items-center gap-3">
-                  <div
-                    className="p-2 rounded-lg"
-                    style={{
-                      backgroundColor: `color-mix(in srgb, ${meta.color} 15%, transparent)`,
-                      color: meta.color,
-                    }}
-                  >
-                    {meta.icon}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className="p-1.5 rounded-lg"
+                      style={{
+                        background: `color-mix(in srgb, ${meta.color} 15%, transparent)`,
+                        color: meta.color,
+                      }}
+                    >
+                      {meta.icon}
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-semibold leading-none">{serviceNames[serviceType]}</h3>
+                      {isPackage && (
+                        <p className="text-xs text-muted-foreground mt-0.5">Cleaning · Drying · Sterilizing</p>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-semibold">{serviceNames[serviceType]}</h3>
-                    {isPackage && (
-                      <p className="text-xs text-muted-foreground">Cleaning + Drying + Sterilizing</p>
-                    )}
-                    {anyUnsaved && (
-                      <p className="text-xs text-amber-600 dark:text-amber-400">Unsaved changes</p>
-                    )}
-                  </div>
+                  {anyUnsaved && (
+                    <span className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full">
+                      Unsaved
+                    </span>
+                  )}
                 </div>
 
-                {/* Price inputs */}
-                <div className="space-y-3">
+                <div className="space-y-2.5">
                   {careTypes.map((careType) => {
                     const compositeKey = `${serviceType}:${careType}`
                     const changed = hasChanges(serviceType, careType)
+                    const defaultPrice = PRICE_DEFAULTS[serviceType][careType] ?? 0
 
                     return (
-                      <div key={careType} className="space-y-1">
-                        <div className="flex items-center justify-between">
+                      <div key={careType}>
+                        <div className="flex items-center justify-between mb-1">
                           <Label
                             htmlFor={`price-${serviceType}-${careType}`}
-                            className="text-sm font-medium"
+                            className="text-xs font-medium text-muted-foreground"
                           >
                             {careLabels[careType]}
                           </Label>
-                          <span className="text-xs text-muted-foreground">
-                            Default: ₱{(PRICE_DEFAULTS[serviceType][careType] ?? 0).toFixed(2)}
+                          <span className="text-xs text-muted-foreground/60">
+                            default ₱{defaultPrice.toFixed(2)}
                           </span>
                         </div>
                         <div className="flex gap-2">
                           <div className="relative flex-1">
-                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-medium">
                               ₱
                             </span>
                             <Input

@@ -132,6 +132,7 @@ const SideBar = () => {
       <style jsx global>{`
         [data-sidebar="sidebar"] {
           background: #050505 !important;
+          z-index: 30;
         }
         [data-sidebar="sidebar"][data-mobile="true"] {
           --primary: oklch(0.6 0.2 250);

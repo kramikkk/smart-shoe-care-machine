@@ -1,6 +1,6 @@
 'use client'
 
-import { Smartphone, Wifi, WifiOff, Check, X, Pencil, Camera, Clock, CalendarDays, User, Loader2 } from "lucide-react"
+import { Smartphone, Wifi, WifiOff, Check, X, Pencil, Camera, Clock, CalendarDays, User, Loader2, Plus } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -78,7 +78,6 @@ export function DevicePairingCard({
   const { selectedDevice } = useDeviceFilter()
   const [now, setNow] = useState(Date.now())
 
-  // Keep the relative time ticking every second for the "Live" experience
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
@@ -89,11 +88,11 @@ export function DevicePairingCard({
     const d = date instanceof Date ? date : new Date(date)
     if (isNaN(d.getTime())) return 'Never'
     const diffSecs = Math.max(0, Math.floor((now - d.getTime()) / 1000))
-    if (diffSecs < 60) return diffSecs <= 1 ? 'Just now' : `${diffSecs} secs ago`
+    if (diffSecs < 60) return diffSecs <= 1 ? 'Just now' : `${diffSecs}s ago`
     const diffMins = Math.floor(diffSecs / 60)
     if (diffMins < 60) return diffMins === 1 ? '1 min ago' : `${diffMins} mins ago`
     const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return diffHours === 1 ? '1 hour ago' : `${diffHours} hours ago`
+    if (diffHours < 24) return diffHours === 1 ? '1 hr ago' : `${diffHours} hrs ago`
     const diffDays = Math.floor(diffHours / 24)
     return diffDays === 1 ? '1 day ago' : `${diffDays} days ago`
   }
@@ -102,7 +101,8 @@ export function DevicePairingCard({
     <>
       <Card className="glass-card border-none">
         <CardHeader>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:justify-between">
+          {/* Always a single row — button stays in the header, icon-only on small screens */}
+          <div className="flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2">
                 <Smartphone className="h-5 w-5 text-muted-foreground" />
@@ -112,11 +112,12 @@ export function DevicePairingCard({
                 Manage connected shoe care machines. Pair devices using device ID and pairing code from kiosk.
               </CardDescription>
             </div>
+
             <Dialog open={pairingDialogOpen} onOpenChange={onPairingDialogOpenChange}>
               <DialogTrigger asChild>
-                <Button className="gap-2 w-full sm:w-auto sm:shrink-0">
-                  <Smartphone className="h-4 w-4" />
-                  Pair New Device
+                <Button className="shrink-0 gap-2">
+                  <Plus className="h-4 w-4" />
+                  <span className="hidden sm:inline">Pair New Device</span>
                 </Button>
               </DialogTrigger>
               <DialogContent>
@@ -180,146 +181,156 @@ export function DevicePairingCard({
         <CardContent>
           <div className="space-y-3">
             {initialDevices.length === 0 ? (
-              <div className="text-center py-12 border-2 border-dashed rounded-xl">
-                <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-muted mb-3">
-                  <Smartphone className="h-7 w-7 text-muted-foreground" />
+              <div className="flex flex-col items-center justify-center py-14 rounded-xl border-2 border-dashed border-border/40">
+                <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-muted mb-4">
+                  <Smartphone className="h-8 w-8 text-muted-foreground" />
                 </div>
-                <p className="font-medium text-muted-foreground">No devices paired yet</p>
-                <p className="text-sm text-muted-foreground mt-1">Click &quot;Pair New Device&quot; to get started</p>
+                <p className="font-semibold text-sm">No devices paired yet</p>
+                <p className="text-sm text-muted-foreground mt-1">Click the + button above to get started</p>
               </div>
             ) : (
               initialDevices.map((device) => {
-                // Real-time override for the active (selected) device
                 const isCurrentActive = device.deviceId === selectedDevice
                 const isActuallyConnected = isCurrentActive ? isConnected : (device.status === 'connected')
                 const isActuallyPairing = device.status === 'pairing'
-                
-                const accentColor = isActuallyConnected ? 'border-l-green-500' : isActuallyPairing ? 'border-l-amber-500' : 'border-l-gray-500'
-                const iconBg = isActuallyConnected ? 'bg-green-500/10 text-green-500 shadow-[0_0_15px_-5px_rgba(34,197,94,0.3)]' : isActuallyPairing ? 'bg-amber-500/10 text-amber-500' : 'bg-gray-500/10 text-gray-500'
+
+                const statusColor = isActuallyConnected ? '#22c55e' : isActuallyPairing ? '#f59e0b' : '#6b7280'
+                const iconBg = isActuallyConnected
+                  ? 'bg-green-500/10 text-green-500 shadow-[0_0_15px_-5px_rgba(34,197,94,0.3)]'
+                  : isActuallyPairing
+                  ? 'bg-amber-500/10 text-amber-500'
+                  : 'bg-gray-500/10 text-gray-500'
                 const badgeClass = isActuallyConnected
                   ? 'bg-green-500/10 text-green-400 border-green-500/20 shadow-[0_0_10px_-2px_rgba(34,197,94,0.2)]'
                   : isActuallyPairing
                   ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                   : 'bg-gray-500/10 text-gray-400 border-gray-500/20'
 
-                // Online devices show "Active" — lastSeen in DB is updated on heartbeats
-                // so it's always nearly "now" for connected devices, making elapsed time meaningless.
-                // Only show elapsed time when the device is genuinely offline.
-                const lastSeenText = isActuallyConnected
-                  ? 'Active'
-                  : formatLiveLastSeen(device.lastSeen)
+                const lastSeenText = isActuallyConnected ? 'Active' : formatLiveLastSeen(device.lastSeen)
 
                 return (
                   <div
                     key={device.id}
-                    className={`rounded-xl border border-white/5 border-l-2 ${accentColor} bg-white/[0.02] p-4 transition-all hover:bg-white/[0.04] ${isCurrentActive && isActuallyConnected ? 'shadow-[inset_0_1px_1px_rgba(255,255,255,0.05),0_10px_30px_-15px_rgba(0,0,0,0.5)]' : ''}`}
+                    className={`rounded-xl border border-white/5 p-4 transition-all hover:brightness-110 ${isCurrentActive && isActuallyConnected ? 'shadow-[inset_0_1px_1px_rgba(255,255,255,0.05),0_10px_30px_-15px_rgba(0,0,0,0.5)]' : ''}`}
+                    style={{
+                      borderLeft: `3px solid ${statusColor}`,
+                      background: `color-mix(in srgb, ${statusColor} 6%, transparent)`,
+                    }}
                   >
-                    {/* Top row: icon + name/status | actions icon-only on mobile, labeled on sm+ */}
-                    <div className="flex items-start gap-2 mb-3">
+                    <div className="flex items-start gap-3">
+                      {/* Status icon */}
                       <div className={`p-2.5 rounded-lg shrink-0 transition-all duration-500 ${iconBg}`}>
                         {isActuallyConnected ? <Wifi className="h-5 w-5" /> : <WifiOff className="h-5 w-5" />}
                       </div>
 
+                      {/* Main content */}
                       <div className="flex-1 min-w-0">
-                        {editingDeviceId === device.deviceId ? (
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <Input
-                              value={editingDeviceName}
-                              onChange={(e) => onEditingDeviceNameChange(e.target.value)}
-                              className="h-7 w-full max-w-[200px] text-sm"
-                              autoFocus
-                              onKeyDown={async (e) => {
-                                if (e.key === 'Enter') await onSaveDeviceName(device.deviceId, editingDeviceName)
-                                else if (e.key === 'Escape') onEditingDeviceIdChange(null)
-                              }}
-                            />
-                            <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => onSaveDeviceName(device.deviceId, editingDeviceName)}>
-                              <Check className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => onEditingDeviceIdChange(null)}>
-                              <X className="h-3.5 w-3.5" />
-                            </Button>
+                        {/* Name + status badge row */}
+                        <div className="flex items-start justify-between gap-2 mb-0.5">
+                          <div className="min-w-0 flex-1">
+                            {editingDeviceId === device.deviceId ? (
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <Input
+                                  value={editingDeviceName}
+                                  onChange={(e) => onEditingDeviceNameChange(e.target.value)}
+                                  className="h-7 w-full max-w-[200px] text-sm"
+                                  autoFocus
+                                  onKeyDown={async (e) => {
+                                    if (e.key === 'Enter') await onSaveDeviceName(device.deviceId, editingDeviceName)
+                                    else if (e.key === 'Escape') onEditingDeviceIdChange(null)
+                                  }}
+                                />
+                                <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => onSaveDeviceName(device.deviceId, editingDeviceName)}>
+                                  <Check className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => onEditingDeviceIdChange(null)}>
+                                  <X className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <span className="font-semibold text-sm leading-tight truncate">
+                                  {device.name || 'Smart Shoe Care Machine'}
+                                </span>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-5 w-5 shrink-0 opacity-30 hover:opacity-80 transition-opacity"
+                                  onClick={() => {
+                                    onEditingDeviceIdChange(device.deviceId)
+                                    onEditingDeviceNameChange(device.name || 'Smart Shoe Care Machine')
+                                  }}
+                                >
+                                  <Pencil className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            )}
+                            <p className="text-xs font-mono text-muted-foreground/50 mt-0.5 leading-none">
+                              {device.deviceId}
+                            </p>
                           </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="font-semibold text-sm leading-tight break-words">
-                              {device.name || 'Smart Shoe Care Machine'}
-                            </span>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-5 w-5 shrink-0 opacity-40 hover:opacity-100"
-                              onClick={() => {
-                                onEditingDeviceIdChange(device.deviceId)
-                                onEditingDeviceNameChange(device.name || 'Smart Shoe Care Machine')
-                              }}
-                            >
-                              <Pencil className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        )}
 
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          {isActuallyConnected && (
-                            <span className="relative flex h-1.5 w-1.5">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500 shadow-[0_0_8px_rgba(34,197,94,1)]" />
-                            </span>
-                          )}
-                          <Badge variant="outline" className={`text-[10px] h-4 px-1.5 transition-colors duration-500 ${badgeClass}`}>
-                            {isActuallyConnected ? 'Online' : isActuallyPairing ? 'Pairing' : 'Offline'}
-                          </Badge>
+                          {/* Status badge — anchored top-right, adjacent to name */}
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {isActuallyConnected && (
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500 shadow-[0_0_8px_rgba(34,197,94,1)]" />
+                              </span>
+                            )}
+                            <Badge variant="outline" className={`text-[10px] h-5 px-2 font-medium transition-colors duration-500 ${badgeClass}`}>
+                              {isActuallyConnected ? 'Online' : isActuallyPairing ? 'Pairing' : 'Offline'}
+                            </Badge>
+                          </div>
                         </div>
-                      </div>
 
-                    </div>
+                        {/* Metadata — flex-wrap row with · separators visible on sm+ */}
+                        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-y-1 sm:gap-x-0 pt-2.5 mt-2 border-t border-white/5 text-xs text-muted-foreground">
+                          <div className="flex items-center gap-1.5 min-w-0 sm:pr-3">
+                            <Camera className="h-3 w-3 shrink-0 opacity-50" />
+                            <span className="opacity-50 shrink-0">Camera</span>
+                            <span className="font-mono text-foreground/70 truncate">{device.camDeviceId || '—'}</span>
+                            <Badge
+                              variant="outline"
+                              className={`text-[10px] h-4 px-1.5 shrink-0 ${
+                                device.camSynced
+                                  ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                                  : 'bg-gray-500/10 text-gray-400 border-gray-500/20'
+                              }`}
+                            >
+                              {device.camSynced ? 'Synced' : 'Not Synced'}
+                            </Badge>
+                          </div>
 
-                    {/* Metadata grid */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 mt-1 pl-0 sm:pl-[52px]">
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
-                        <Smartphone className="h-3 w-3 shrink-0 opacity-60" />
-                        <span className="opacity-60 shrink-0">Device ID</span>
-                        <span className="font-mono text-foreground/80 truncate">{device.deviceId}</span>
-                      </div>
+                          <span className="hidden sm:inline opacity-20 select-none pr-3">·</span>
 
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
-                        <Camera className="h-3 w-3 shrink-0 opacity-60" />
-                        <span className="opacity-60 shrink-0">Camera</span>
-                        <span className="font-mono text-foreground/80 truncate flex-1">{device.camDeviceId || '—'}</span>
-                        <Badge
-                          variant="outline"
-                          className={`text-[10px] h-4 px-1.5 shrink-0 ${
-                            device.camSynced
-                              ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                              : 'bg-gray-500/10 text-gray-400 border-gray-500/20'
-                          }`}
-                        >
-                          {device.camSynced ? 'Synced' : 'Not Synced'}
-                        </Badge>
-                      </div>
+                          <div className="flex items-center gap-1.5 sm:pr-3">
+                            <Clock className="h-3 w-3 shrink-0 opacity-50" />
+                            <span className="opacity-50 shrink-0">Last seen</span>
+                            <span className={`tabular-nums ${isCurrentActive && isActuallyConnected ? 'text-green-400/80' : 'text-foreground/70'}`}>
+                              {lastSeenText}
+                            </span>
+                          </div>
 
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Clock className="h-3 w-3 shrink-0 opacity-60" />
-                        <span className="opacity-60 shrink-0">Last seen</span>
-                        <span className={`text-foreground/80 tabular-nums ${isCurrentActive && isActuallyConnected ? 'text-green-400/90' : ''}`}>
-                          {lastSeenText}
-                        </span>
-                      </div>
-
-                      {device.pairedAt && (
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-                          <CalendarDays className="h-3 w-3 shrink-0 opacity-60" />
-                          <span className="opacity-60 shrink-0">Paired</span>
-                          <span className="text-foreground/80">{new Date(device.pairedAt).toLocaleDateString()}</span>
-                          {device.pairedByUser && (
+                          {device.pairedAt && (
                             <>
-                              <User className="h-3 w-3 shrink-0 opacity-60" />
-                              <span className="opacity-60 shrink-0">by</span>
-                              <span className="text-foreground/80">{device.pairedByUser.name}</span>
+                              <span className="hidden sm:inline opacity-20 select-none pr-3">·</span>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <CalendarDays className="h-3 w-3 shrink-0 opacity-50" />
+                                <span className="opacity-50 shrink-0">Paired</span>
+                                <span className="text-foreground/70">{new Date(device.pairedAt).toLocaleDateString()}</span>
+                                {device.pairedByUser && (
+                                  <>
+                                    <User className="h-3 w-3 shrink-0 opacity-50" />
+                                    <span className="opacity-50 shrink-0">by</span>
+                                    <span className="text-foreground/70">{device.pairedByUser.name}</span>
+                                  </>
+                                )}
+                              </div>
                             </>
                           )}
                         </div>
-                      )}
+                      </div>
                     </div>
                   </div>
                 )

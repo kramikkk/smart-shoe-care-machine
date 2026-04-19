@@ -94,6 +94,8 @@ export default function TransactionsPage() {
         search === "" ||
         tx.id.toLowerCase().includes(searchLower) ||
         tx.serviceType.toLowerCase().includes(searchLower) ||
+        tx.shoeType.toLowerCase().includes(searchLower) ||
+        tx.careType.toLowerCase().includes(searchLower) ||
         tx.paymentMethod.toLowerCase().includes(searchLower) ||
         tx.dateTime.toLowerCase().includes(searchLower) ||
         tx.amount.toString().includes(searchLower)
@@ -215,7 +217,7 @@ export default function TransactionsPage() {
                   <div className="absolute inset-0 bg-primary/10 rounded-xl blur-lg opacity-0 group-focus-within:opacity-100 transition-opacity duration-500 pointer-events-none" />
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/50 group-focus-within:text-primary group-focus-within:scale-110 transition-all z-20" />
                   <Input
-                    placeholder="Search ID, service, or amount..."
+                    placeholder="Search ID, service, shoe type, care type, payment, or amount..."
                     className="relative z-10 pl-11 pr-11 h-10 border-white/10 bg-white/5 text-sm rounded-xl focus-visible:ring-primary/20 focus-visible:bg-white/[0.08] focus-visible:border-primary/30 transition-all"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}

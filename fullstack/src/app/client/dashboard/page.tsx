@@ -52,7 +52,7 @@ function DashboardInner() {
             initial="hidden"
             animate="visible"
             variants={containerVariants}
-            className="flex flex-col gap-6 w-full overflow-x-hidden overflow-y-auto pb-8"
+            className="flex flex-col gap-6 w-full pb-8"
         >
             {/* Header */}
             <motion.div variants={itemVariants} className="flex items-start justify-between gap-4 mb-2">

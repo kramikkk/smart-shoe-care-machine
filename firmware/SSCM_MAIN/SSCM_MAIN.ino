@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.7"
+#define FIRMWARE_VERSION "1.0.8"
 #define BOARD_NAME "SSCM-MAIN"
 
 /**
@@ -37,8 +37,8 @@ bool softAPStarted = false;
 unsigned long wifiStartTime = 0;     // Timestamp of the most recent connect attempt start
 unsigned long lastWiFiRetry = 0;     // Timestamp of the last retry poll tick
 
-#define WIFI_TIMEOUT        60000    // ms before giving up on the current connect attempt and retrying
-#define WIFI_RETRY_INTERVAL  5000    // ms between retry poll checks in loop()
+#define WIFI_CONNECT_TIMEOUT 15000   // ms before restarting a stale connection attempt
+#define WIFI_RETRY_INTERVAL   5000   // ms between retry poll checks in loop()
 
 /* ===================== WEBSOCKET ===================== */
 WebSocketsClient webSocket;
@@ -222,10 +222,13 @@ String purgeCareType = "";
 const unsigned long PURGE_DURATION_MS = 15000;
 
 /* ===================== DRYING TEMPERATURE CONTROL ===================== */
-// PTC heaters and exhaust fan are cycled to maintain the drying chamber within a
-// 5°C hysteresis band. The band prevents rapid relay chatter near the setpoint.
-const float DRYING_TEMP_LOW  = 35.0; // °C — heaters turn ON below this threshold
-const float DRYING_TEMP_HIGH = 40.0; // °C — heaters turn OFF and exhaust turns ON above this
+// Dual-actuator drying control: exhaust fine-regulates around the 40°C setpoint;
+// heaters are the coarse element with a 45°C safety cutoff.
+//   < SETPOINT  → heaters ON,  exhaust OFF   (heat up toward target)
+//   > SETPOINT  → exhaust ON                 (vent to hold at ~40°C)
+//   > CUTOFF    → heaters OFF                (safety: too hot)
+const float DRYING_TEMP_SETPOINT = 40.0; // °C — target; exhaust turns ON/OFF at this threshold
+const float DRYING_TEMP_CUTOFF   = 45.0; // °C — safety cutoff; heaters OFF above this
 bool dryingHeaterOn  = false;        // True when relays 4 + 6 (PTC heaters) are active
 bool dryingExhaustOn = false;        // True when relay 2 (bottom exhaust) is active for cooling
 
@@ -517,11 +520,12 @@ void setup() {
   }
 
   String storedSSID = prefs.getString("ssid", "");
-  // Provisioning mode if no WiFi credentials exist; otherwise boot into STA mode.
+  // Provisioning mode if no WiFi credentials exist; otherwise boot into AP_STA mode
+  // so the portal stays reachable while the STA connection attempt is in-flight.
   if (storedSSID.length() == 0) {
     startSoftAP();
   } else {
-    WiFi.mode(WIFI_STA);
+    WiFi.mode(WIFI_AP_STA);
     delay(100);
     initESPNow();
     delay(100);
@@ -538,7 +542,12 @@ bool otaInitialized = false;
 void loop() {
   if (otaInitialized)
     ArduinoOTA.handle();
-  webSocket.loop();
+  // Only drive the WS library after we have explicitly opened a connection via
+  // connectWebSocket() (wsInitialized = true). This prevents the library's
+  // internal auto-reconnect from firing between WiFi coming up and the 3s
+  // stabilisation window expiring, which would cause a double-connect sequence.
+  if (wifiConnected && wsInitialized)
+    webSocket.loop();
 
   // Consume deferred ESP-NOW actions produced by callbacks.
   // All backend/WebSocket side-effects are executed here in normal task context.
@@ -663,12 +672,14 @@ void loop() {
   if (softAPStarted)
     handleWiFiPortal();
 
-  // WiFi state machine with exponential fallback:
-  // connected -> stabilize -> open WS
-  // disconnected -> retry STA -> temporary SoftAP portal
   if (wifiConnected && WiFi.status() != WL_CONNECTED) {
+    LOG("[WIFI] Lost connection (status=" + String(wifiStatusStr(WiFi.status())) + ") — reconnecting");
     wifiConnected = false;
     wsConnected = false;
+    // Stop the WS library from attempting reconnects while WiFi is down.
+    // webSocket.loop() is gated on wifiConnected, so this call drains state cleanly.
+    webSocket.disconnect();
+    wsInitialized = false;
     wifiStartTime = millis();
     lastWiFiRetry = millis();
     connectWiFi();
@@ -687,7 +698,10 @@ void loop() {
     wifiRetryStart = 0;
     wifiServer.stop();
     WiFi.softAPdisconnect(true);
-    LOG("[WIFI] Connected — 3s non-blocking stabilisation (steppers keep running)");
+    LOG("[WIFI] Connected — IP: " + WiFi.localIP().toString() +
+        "  RSSI: " + String(WiFi.RSSI()) + " dBm" +
+        "  elapsed: " + String((millis() - wifiStartTime) / 1000) + "s");
+    LOG("[WIFI] Stabilising 3s before WebSocket (steppers keep running)");
     wifiPostConnectAt = millis();
     wifiPostConnectPending = true;
   }
@@ -709,24 +723,23 @@ void loop() {
     sendPairingBroadcast();
   }
 
-  if (!wifiConnected && !softAPStarted) {
+  if (!wifiConnected) {
     if (millis() - lastWiFiRetry >= WIFI_RETRY_INTERVAL) {
       lastWiFiRetry = millis();
       wl_status_t status = WiFi.status();
-      if (status == WL_IDLE_STATUS || status == WL_DISCONNECTED ||
-          status == WL_CONNECT_FAILED) {
+      unsigned long elapsed = (millis() - wifiStartTime) / 1000;
+      // Retry on definitive failures immediately.
+      // Also restart a stale attempt after WIFI_CONNECT_TIMEOUT — WL_DISCONNECTED
+      // is ambiguous (used both while associating and after a silent AP disappearance),
+      // so the timeout catches the case where no failure code is ever emitted.
+      bool definiteFail = (status == WL_CONNECT_FAILED ||
+                           status == WL_NO_SSID_AVAIL  ||
+                           status == WL_CONNECTION_LOST);
+      bool stale        = (millis() - wifiStartTime > WIFI_CONNECT_TIMEOUT);
+      if (definiteFail || stale) {
         connectWiFi();
-      }
-      if (millis() - wifiStartTime > WIFI_TIMEOUT) {
-        if (wifiRetryStart == 0) {
-          startSoftAP();
-          wifiRetryStart = millis();
-        } else if (millis() - wifiRetryStart >= wifiRetryDelay) {
-          wifiRetryDelay = min(wifiRetryDelay * 2, 30000UL);
-          wifiRetryStart = 0;
-          wifiStartTime = millis();
-          connectWiFi();
-        }
+      } else {
+        LOG("[WIFI] Waiting... " + String(elapsed) + "s");
       }
     }
   }

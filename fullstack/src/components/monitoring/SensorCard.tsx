@@ -11,7 +11,7 @@ const SensorData = {
     name: "Temperature",
     icon: Thermometer,
     color: "text-orange-600",
-    range: "30-40°C normal",
+    range: "30-45°C normal",
     status: "Normal",
   },
   foamLevel: {
@@ -32,7 +32,7 @@ const SensorData = {
     name: "Humidity",
     icon: Droplets,
     color: "text-teal-600",
-    range: "60-70% normal",
+    range: "Under 50% ideal",
     status: "Normal",
   },
   systemStatus: {
@@ -69,7 +69,7 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
     // Calculate percentage (0-50°C range)
     displayPercentage = Math.min(100, (sensorData.temperature / 50) * 100)
     // Status: Low (<30°C), Normal (30-40°C), High (>40°C)
-    if (sensorData.temperature > 40) {
+    if (sensorData.temperature > 45) {
       displayStatus = 'High'
     } else if (sensorData.temperature >= 30) {
       displayStatus = 'Normal'
@@ -81,13 +81,13 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
   if (id === 'humidity' && isConnected && sensorData.humidity > 0) {
     displayValue = `${sensorData.humidity.toFixed(1)}%`
     displayPercentage = Math.min(100, sensorData.humidity)
-    // Status: Low (<60%), Normal (60-70%), High (>70%)
-    if (sensorData.humidity > 70) {
+    // Status: Normal (<50%), Warning (50-65%), High (>65%) — lower humidity = better drying
+    if (sensorData.humidity > 65) {
       displayStatus = 'High'
-    } else if (sensorData.humidity >= 60) {
-      displayStatus = 'Normal'
+    } else if (sensorData.humidity > 50) {
+      displayStatus = 'Warning'
     } else {
-      displayStatus = 'Low'
+      displayStatus = 'Normal'
     }
   }
 

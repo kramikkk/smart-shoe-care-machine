@@ -87,6 +87,12 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
                        ",\"isPaired\":" + (isPaired ? "true" : "false") + "}";
     webSocket.sendTXT(statusMsg);
     lastStatusUpdate = millis();
+
+    // Re-provision the CAM with the current compiled backend config (BACKEND_HOST/PORT)
+    // on every WS connect. This ensures the CAM's stored wsHost/wsPort stays current
+    // after a main board firmware update (e.g. switching USE_LOCAL_BACKEND from 1→0).
+    // sendPairingBroadcast sends unicast to the paired CAM MAC when camMacPaired=true.
+    if (camMacPaired) sendPairingBroadcast();
     break;
   }
 

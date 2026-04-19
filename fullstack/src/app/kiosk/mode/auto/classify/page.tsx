@@ -45,10 +45,17 @@ export default function ClassifyPage() {
 
   // Seed local sync state from context so we don't get stuck waiting for
   // an extra sensor/cam event before starting classification.
+  // Only mark hasReceivedSyncStatus=true when context says camSynced=true —
+  // the context starts at false by default, so marking received from a stale
+  // false causes a brief "Camera Not Synced" flash before the real device-update arrives.
+  // The message handler below sets hasReceivedSyncStatus=true for both true/false
+  // once an actual WS message confirms the real value.
   useEffect(() => {
     if (!isConnected) return
     setCamSynced(contextCamSynced)
-    setHasReceivedSyncStatus(true)
+    if (contextCamSynced) {
+      setHasReceivedSyncStatus(true)
+    }
   }, [isConnected, contextCamSynced])
 
   useEffect(() => {
@@ -68,9 +75,6 @@ export default function ClassifyPage() {
       subscribe(deviceId)
     }
 
-    debug.log(`[Classify] Sending enable-classification — device: ${deviceId}, camSynced: ${camSynced}`)
-    sendMessage({ type: 'enable-classification', deviceId: deviceId })
-
     // Don't override success/error state with sync status updates
     if (hasResultRef.current) return
 
@@ -80,7 +84,11 @@ export default function ClassifyPage() {
     }
 
     if (!camSynced) {
-      setState('syncing')
+      // Don't override classifying state if the request is already in flight —
+      // a brief ESP-NOW drop should not interrupt Gemini processing.
+      if (!classificationSentRef.current) {
+        setState('syncing')
+      }
       return
     }
 
@@ -92,7 +100,7 @@ export default function ClassifyPage() {
       if (isConnected && camSynced && !classificationSentRef.current) {
         classificationSentRef.current = true
         setState('classifying')
-        console.log('[Classify] Sending start-classification')
+        debug.log('[Classify] Sending start-classification')
         sendMessage({ type: 'start-classification', deviceId: deviceId })
 
         timeoutRef.current = setTimeout(() => {
@@ -103,7 +111,7 @@ export default function ClassifyPage() {
             }
             return currentState
           })
-        }, 15000)
+        }, 20000)
       }
     }, 500)
 
@@ -112,11 +120,23 @@ export default function ClassifyPage() {
         clearTimeout(syncDelayRef.current)
         syncDelayRef.current = null
       }
-      if (timeoutRef.current) {
+      // Only cancel the 20s watchdog if classification hasn't been sent yet.
+      // Once in-flight, the watchdog must survive dep-change re-runs so the user
+      // always gets an error instead of being stuck indefinitely.
+      if (!classificationSentRef.current && timeoutRef.current) {
         clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
       }
     }
   }, [isConnected, deviceId, sendMessage, subscribe, camSynced, hasReceivedSyncStatus])
+
+  // Send enable-classification once when connected — not in the state-machine effect
+  // so it doesn't re-fire on every camSynced / hasReceivedSyncStatus update.
+  useEffect(() => {
+    if (!isConnected || !deviceId || deviceId === 'No device configured') return
+    debug.log(`[Classify] Sending enable-classification — device: ${deviceId}`)
+    sendMessage({ type: 'enable-classification', deviceId })
+  }, [isConnected, deviceId, sendMessage])
 
   const deviceIdRef = useRef(deviceId)
   const sendMessageRef = useRef(sendMessage)
@@ -245,7 +265,7 @@ export default function ClassifyPage() {
           }
           return currentState
         })
-      }, 15000)
+      }, 20000)
     }
   }
 

@@ -3,6 +3,19 @@
  * Handles connection, SoftAP portal for configuration, and Over-The-Air updates.
  */
 
+const char *wifiStatusStr(wl_status_t s) {
+  switch (s) {
+    case WL_IDLE_STATUS:    return "IDLE";
+    case WL_NO_SSID_AVAIL:  return "NO_SSID";
+    case WL_SCAN_COMPLETED: return "SCAN_DONE";
+    case WL_CONNECTED:      return "CONNECTED";
+    case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST:return "CONNECTION_LOST";
+    case WL_DISCONNECTED:   return "DISCONNECTED";
+    default:                return "UNKNOWN";
+  }
+}
+
 /**
  * Scan for available WiFi networks and return an HTML <option> list for the portal page.
  * SSID values are sanitised by stripping quotes and angle brackets to prevent
@@ -142,11 +155,6 @@ void handleWiFiPortal() {
   client.stop();
 }
 
-// Minimum gap between WiFi.begin() calls to avoid STA reconnect spam
-// when the AP is down or unstable.
-const unsigned long WIFI_BEGIN_MIN_GAP_MS = 15000;
-static unsigned long lastWiFiBeginMs = 0;
-
 void connectWiFi() {
   String ssid = prefs.getString("ssid", "");
   String pass = prefs.getString("pass", "");
@@ -157,19 +165,22 @@ void connectWiFi() {
     return;
   }
 
-  // Guard repeated begin() calls while an attempt is already in-flight.
-  // Reissuing begin() too quickly can flood logs and thrash the STA state.
-  if (lastWiFiBeginMs > 0 &&
-      (millis() - lastWiFiBeginMs) < WIFI_BEGIN_MIN_GAP_MS &&
-      WiFi.status() != WL_CONNECTED) {
-    return;
+  // Keep the portal reachable while retrying STA: AP_STA lets both run together.
+  if (!softAPStarted) {
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAP("Smart Shoe Care Machine Setup");
+    wifiServer.begin();
+    softAPStarted = true;
+    LOG("[WIFI:AP] Portal ready on http://192.168.4.1 (retrying STA)");
   }
 
-  LOG("[WIFI] Attempting connection to: " + ssid);
-  WiFi.mode(WIFI_STA);
+  // Disconnect any in-flight attempt before starting a new one. Without this,
+  // WiFi.begin() returns "sta is connecting, cannot set config" when the driver
+  // is still associating from the previous call.
+  WiFi.disconnect(false);
+  LOG("[WIFI] Connecting to: " + ssid + " (status=" + wifiStatusStr(WiFi.status()) + ")");
   WiFi.begin(ssid.c_str(), pass.c_str());
   wifiStartTime = millis();
-  lastWiFiBeginMs = wifiStartTime;
 }
 
 void setupOTA() {

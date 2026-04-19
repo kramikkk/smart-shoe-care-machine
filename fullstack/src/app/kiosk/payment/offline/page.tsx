@@ -101,6 +101,7 @@ const Offline = () => {
             shoeType: shoe.charAt(0).toUpperCase() + shoe.slice(1),
             careType: service === 'package' ? 'Auto' : care.charAt(0).toUpperCase() + care.slice(1),
             deviceId,
+            amountPaid: amountInserted,
           }),
         })
         const saveData = await res.json()

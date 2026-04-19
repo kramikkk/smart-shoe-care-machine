@@ -51,15 +51,18 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
   const prevIsPairedRef = useRef<boolean | null>(null)
 
   const connectWebSocket = useCallback((devId: string) => {
-    // This connect attempt is active/expected.
-    intentionalCloseRef.current = false
-
     // Prevent duplicate connections
     if (connectionStateRef.current === ConnectionState.CONNECTING ||
         connectionStateRef.current === ConnectionState.CONNECTED) {
       debug.log('[WebSocket] Already connected or connecting, skipping')
       return
     }
+
+    // Only clear the intentional-close flag after passing the guard so that a
+    // cleanup-triggered close (which sets intentionalCloseRef = true) is still
+    // visible to the stale onclose handler even if connectWebSocket is called
+    // synchronously right after cleanup (React Strict Mode double-invocation).
+    intentionalCloseRef.current = false
 
     // Clear any pending reconnect timeout
     if (reconnectTimeoutRef.current) {
@@ -245,6 +248,8 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
     // Cleanup on unmount
     return () => {
       intentionalCloseRef.current = true
+      // Reset so the next connectWebSocket call (e.g. Strict Mode remount) passes the guard.
+      connectionStateRef.current = ConnectionState.DISCONNECTED
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }
@@ -252,7 +257,12 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
         clearTimeout(connectTimeoutRef.current)
       }
       if (wsRef.current) {
+        // Null out handlers before closing so the stale onclose doesn't schedule
+        // a reconnect that races with the next connect attempt.
+        wsRef.current.onclose = null
+        wsRef.current.onerror = null
         wsRef.current.close()
+        wsRef.current = null
       }
     }
   }, [connectWebSocket])

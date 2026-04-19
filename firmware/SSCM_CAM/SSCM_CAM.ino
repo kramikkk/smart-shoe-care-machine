@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.7"
+#define FIRMWARE_VERSION "1.0.8"
 #define BOARD_NAME "SSCM-CAM"
 
 /*

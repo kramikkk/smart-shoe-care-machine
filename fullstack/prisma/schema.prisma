@@ -80,6 +80,7 @@ model Transaction {
   shoeType          String
   careType          String
   amount            Float
+  amountPaid        Float?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
   deviceId          String?

@@ -144,10 +144,14 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int l
 
     String ssid = String(pb.ssid);
     String pass = String(pb.password);
-    if (ssid.length() > 0) {
+    // Only call WiFi.begin() when not already connected — re-provision broadcasts
+    // from MAIN (sent on every WS connect) update NVS config without disrupting WiFi.
+    if (ssid.length() > 0 && !wifiConnected) {
       LOG("[CAM:PAIR] Connecting to WiFi SSID: " + ssid);
       WiFi.begin(ssid.c_str(), pass.c_str());
       wifiConnectStartMs = millis();
+    } else if (wifiConnected) {
+      LOG("[CAM:PAIR] Already connected, skipping WiFi.begin");
     }
 
     // Defer the PairingAck to loop() — we need an IP first.

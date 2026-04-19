@@ -9,6 +9,7 @@ const TransactionSchema = z.object({
   shoeType: z.enum(['Canvas', 'Rubber', 'Mesh']),
   careType: z.enum(['Gentle', 'Normal', 'Strong', 'Auto']),
   deviceId: z.string().regex(/^SSCM-[A-F0-9]{6}$/, 'Device ID must be in format SSCM-XXXXXX'),
+  amountPaid: z.number().positive().optional(),
 })
 
 /**
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const { paymentMethod, serviceType, shoeType, careType, deviceId } = validation.data
+    const { paymentMethod, serviceType, shoeType, careType, deviceId, amountPaid } = validation.data
 
     // Verify device exists, is paired, and group token matches
     const device = await prisma.device.findUnique({
@@ -80,6 +81,7 @@ export async function POST(req: NextRequest) {
         shoeType,
         careType,
         amount,
+        amountPaid: amountPaid ?? null,
         deviceId,
       },
     })

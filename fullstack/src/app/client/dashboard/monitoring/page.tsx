@@ -30,7 +30,7 @@ export default function SystemPage() {
       initial="hidden"
       animate="visible"
       variants={containerVariants}
-      className="flex flex-col space-y-6 h-full pb-8"
+      className="flex flex-col space-y-6 pb-8"
     >
       <motion.div variants={itemVariants}>
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">System <span className="text-primary">Monitoring</span></h1>
