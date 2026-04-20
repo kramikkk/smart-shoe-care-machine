@@ -85,24 +85,44 @@ export async function GET(req: NextRequest) {
       deviceWhere.deviceId = { in: userDeviceIds }
     }
 
+    const phpFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'PHP' })
+
+    if (timeRange === 'all') {
+      const allTxs = await prisma.transaction.findMany({
+        where: deviceWhere,
+        select: { amount: true },
+      })
+      const totalRevenue = allTxs.reduce((sum, tx) => sum + tx.amount, 0)
+      const totalCount = allTxs.length
+
+      return NextResponse.json({
+        success: true,
+        stats: {
+          totalRevenue: {
+            value: totalRevenue,
+            formatted: phpFormat.format(totalRevenue),
+            trend: null,
+            isPositive: null,
+            previousValue: null,
+            previousFormatted: null,
+          },
+          totalTransactions: {
+            value: totalCount,
+            trend: null,
+            isPositive: null,
+            previousValue: null,
+          },
+        },
+      })
+    }
+
     const { currentStart, previousStart, previousEnd, now } = getPHTBoundaries(timeRange)
 
-    // All-time aggregate — two DB queries, no full table scan into memory
-    const [allTimeAgg, periodTxs] = await Promise.all([
-      prisma.transaction.aggregate({
-        where: deviceWhere,
-        _sum: { amount: true },
-        _count: { id: true },
-      }),
-      // Bounded query: only fetch rows in the relevant two periods
-      prisma.transaction.findMany({
-        where: { ...deviceWhere, dateTime: { gte: previousStart, lte: now } },
-        select: { dateTime: true, amount: true },
-      }),
-    ])
-
-    const totalRevenue = allTimeAgg._sum.amount ?? 0
-    const totalTransactions = allTimeAgg._count.id
+    // Fetch only the two comparison periods — no all-time scan needed
+    const periodTxs = await prisma.transaction.findMany({
+      where: { ...deviceWhere, dateTime: { gte: previousStart, lte: now } },
+      select: { dateTime: true, amount: true },
+    })
 
     const currentTxs = periodTxs.filter(
       (tx) => new Date(tx.dateTime) >= currentStart && new Date(tx.dateTime) <= now
@@ -111,12 +131,14 @@ export async function GET(req: NextRequest) {
       (tx) => new Date(tx.dateTime) >= previousStart && new Date(tx.dateTime) < previousEnd
     )
 
-
     const currentRevenue = currentTxs.reduce((sum, tx) => sum + tx.amount, 0)
     const currentCount = currentTxs.length
     const previousRevenue = previousTxs.reduce((sum, tx) => sum + tx.amount, 0)
     const previousCount = previousTxs.length
 
+    // Trend: current period vs previous period.
+    // If previous had data but current is 0 → -100% (accurate, footer shows the comparison).
+    // If previous was also 0 → 0% (no baseline to compare against).
     const revenueTrend = previousRevenue > 0
       ? (((currentRevenue - previousRevenue) / previousRevenue) * 100).toFixed(1)
       : currentRevenue > 0 ? '100' : '0'
@@ -124,24 +146,22 @@ export async function GET(req: NextRequest) {
       ? (((currentCount - previousCount) / previousCount) * 100).toFixed(1)
       : currentCount > 0 ? '100' : '0'
 
-    const phpFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'PHP' })
-
     return NextResponse.json({
       success: true,
       stats: {
         totalRevenue: {
-          value: totalRevenue,
-          formatted: phpFormat.format(totalRevenue),
+          value: currentRevenue,
+          formatted: phpFormat.format(currentRevenue),
           trend: parseFloat(revenueTrend),
-          isPositive: currentRevenue > previousRevenue,
-          diff: currentRevenue,
-          diffFormatted: phpFormat.format(currentRevenue),
+          isPositive: currentRevenue > 0 && currentRevenue >= previousRevenue,
+          previousValue: previousRevenue,
+          previousFormatted: phpFormat.format(previousRevenue),
         },
         totalTransactions: {
-          value: totalTransactions,
+          value: currentCount,
           trend: parseFloat(transactionTrend),
-          isPositive: currentCount > previousCount,
-          diff: currentCount,
+          isPositive: currentCount > 0 && currentCount >= previousCount,
+          previousValue: previousCount,
         },
       },
     })

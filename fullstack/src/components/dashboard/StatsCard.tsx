@@ -19,24 +19,32 @@ interface Stats {
   totalRevenue: {
     value: number
     formatted: string
-    trend: number
-    isPositive: boolean
-    diff: number
-    diffFormatted: string
+    trend: number | null
+    isPositive: boolean | null
+    previousValue: number | null
+    previousFormatted: string | null
   }
   totalTransactions: {
     value: number
-    trend: number
-    isPositive: boolean
-    diff: number
+    trend: number | null
+    isPositive: boolean | null
+    previousValue: number | null
   }
 }
 
 const PERIOD_LABEL: Record<string, string> = {
-  today: 'today',
-  week: 'this week',
-  month: 'this month',
-  year: 'this year',
+  today: 'Today',
+  week: 'This Week',
+  month: 'This Month',
+  year: 'This Year',
+  all: 'All Time',
+}
+
+const PREVIOUS_LABEL: Record<string, string> = {
+  today: 'Yesterday',
+  week: 'Last Week',
+  month: 'Last Month',
+  year: 'Last Year',
 }
 
 const StatsCard = ({ id }: { id: StatsType }) => {
@@ -54,19 +62,13 @@ const StatsCard = ({ id }: { id: StatsType }) => {
         )
         if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`)
         const data = await response.json()
-
-        if (data.success) {
-          setStats(data.stats)
-        } else {
-          console.error('Failed to fetch stats:', data.error)
-        }
+        if (data.success) setStats(data.stats)
       } catch (error) {
         console.error('Error fetching stats:', error)
       } finally {
         setIsLoading(false)
       }
     }
-
     fetchStats()
   }, [selectedDevice, timeRange])
 
@@ -81,10 +83,14 @@ const StatsCard = ({ id }: { id: StatsType }) => {
   }
 
   const stat = stats[id]
+  const isAllTime = timeRange === 'all'
   const isPositive = stat.isPositive
-  const isNeutral = stat.trend === 0
+  const isNeutral = stat.trend === 0 || stat.trend === null
   const TrendIcon = isNeutral ? Minus : isPositive ? TrendingUp : TrendingDown
-  const periodLabel = PERIOD_LABEL[timeRange] ?? 'today'
+  const periodLabel = PERIOD_LABEL[timeRange] ?? 'Today'
+  const previousLabel = PREVIOUS_LABEL[timeRange] ?? 'Yesterday'
+
+  const phpFormat = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'PHP' })
 
   const config = {
     totalRevenue: {
@@ -92,14 +98,20 @@ const StatsCard = ({ id }: { id: StatsType }) => {
       icon: Coins,
       iconColor: 'text-yellow-500',
       value: stats.totalRevenue.formatted,
-      footerDescription: `+${stats.totalRevenue.diffFormatted} added ${periodLabel}`,
+      currentLabel: periodLabel,
+      footer: isAllTime
+        ? 'All time cumulative revenue'
+        : `vs ${previousLabel}: ${stats.totalRevenue.previousFormatted}`,
     },
     totalTransactions: {
       title: 'Total Transactions',
       icon: ShoppingCart,
       iconColor: 'text-blue-500',
       value: stats.totalTransactions.value.toString(),
-      footerDescription: `+${stats.totalTransactions.diff} added ${periodLabel}`,
+      currentLabel: periodLabel,
+      footer: isAllTime
+        ? 'All time cumulative transactions'
+        : `vs ${previousLabel}: ${stats.totalTransactions.previousValue} txn`,
     },
   }
 
@@ -113,29 +125,28 @@ const StatsCard = ({ id }: { id: StatsType }) => {
           <Icon className={`size-5 ${currentConfig.iconColor}`} />
           <CardTitle className="text-md">{currentConfig.title}</CardTitle>
         </div>
-        <CardAction>
-          <Badge
-            variant="outline"
-            className={`flex items-center gap-1 ${
-              isNeutral ? "text-muted-foreground" : isPositive ? "text-green-400" : "text-red-400"
-            }`}
-          >
-            <TrendIcon className="size-4" />
-            {isPositive && !isNeutral ? "+" : ""}
-            {stat.trend}%
-          </Badge>
-        </CardAction>
+        {!isAllTime && (
+          <CardAction>
+            <Badge
+              variant="outline"
+              className={`flex items-center gap-1 ${
+                isNeutral ? "text-muted-foreground" : isPositive ? "text-green-400" : "text-red-400"
+              }`}
+            >
+              <TrendIcon className="size-4" />
+              {!isNeutral && isPositive ? "+" : ""}
+              {stat.trend}%
+            </Badge>
+          </CardAction>
+        )}
       </CardHeader>
       <CardContent>
+        <div className="text-xs text-muted-foreground mb-0.5">{currentConfig.currentLabel}</div>
         <CardTitle className="text-2xl font-bold tabular-nums @[250px]/card:text-3xl pb-1">
           {currentConfig.value}
         </CardTitle>
-        <div
-          className={`text-sm font-medium ${
-            stat.diff === 0 ? "text-muted-foreground" : isPositive ? "text-green-400" : "text-red-400"
-          }`}
-        >
-          {currentConfig.footerDescription}
+        <div className="text-sm text-muted-foreground">
+          {currentConfig.footer}
         </div>
       </CardContent>
     </Card>

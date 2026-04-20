@@ -3,7 +3,7 @@
 import { createContext, useContext, useState } from 'react'
 import React from 'react'
 
-export type TimeRange = 'today' | 'week' | 'month' | 'year'
+export type TimeRange = 'today' | 'week' | 'month' | 'year' | 'all'
 
 interface TimeRangeContextType {
   timeRange: TimeRange

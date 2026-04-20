@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { Label, Pie, PieChart, Sector } from "recharts"
-import { Loader2 } from "lucide-react"
+import { Loader2, PieChart as PieChartIcon } from "lucide-react"
 import { PieSectorDataItem } from "recharts/types/polar/Pie"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
 import { useTimeRange } from "@/contexts/TimeRangeContext"
@@ -176,22 +176,29 @@ export function PieChartCard() {
     }
   }
 
+  const headerContent = (
+    <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
+      <div className="flex items-center gap-2">
+        <PieChartIcon className="size-5 text-orange-500 shrink-0" />
+        <CardTitle className="text-sm sm:text-base lg:text-lg">{getTitle()}</CardTitle>
+      </div>
+      <Select value={distributionType} onValueChange={(value) => setDistributionType(value as DistributionType)}>
+        <SelectTrigger className="h-7 w-fit rounded-lg">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="service">Service</SelectItem>
+          <SelectItem value="shoe">Shoe</SelectItem>
+          <SelectItem value="care">Care</SelectItem>
+        </SelectContent>
+      </Select>
+    </CardHeader>
+  )
+
   if (isLoading) {
     return (
-      <Card className="flex flex-col h-full glass-card border-none">
-        <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm sm:text-base lg:text-lg">{getTitle()}</CardTitle>
-          <Select value={distributionType} onValueChange={(value) => setDistributionType(value as DistributionType)}>
-            <SelectTrigger className="h-7 w-fit rounded-lg">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="service">Service</SelectItem>
-              <SelectItem value="shoe">Shoe</SelectItem>
-              <SelectItem value="care">Care</SelectItem>
-            </SelectContent>
-          </Select>
-        </CardHeader>
+      <Card className="flex flex-col h-full min-h-[280px] sm:min-h-[400px] glass-card border-none">
+        {headerContent}
         <CardContent className="flex flex-1 justify-center items-center">
           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
         </CardContent>
@@ -201,20 +208,8 @@ export function PieChartCard() {
 
   if (serviceData.length === 0) {
     return (
-      <Card className="flex flex-col h-full glass-card border-none">
-        <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm sm:text-base lg:text-lg">{getTitle()}</CardTitle>
-          <Select value={distributionType} onValueChange={(value) => setDistributionType(value as DistributionType)}>
-            <SelectTrigger className="h-7 w-fit rounded-lg">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="service">Service</SelectItem>
-              <SelectItem value="shoe">Shoe</SelectItem>
-              <SelectItem value="care">Care</SelectItem>
-            </SelectContent>
-          </Select>
-        </CardHeader>
+      <Card className="flex flex-col h-full min-h-[280px] sm:min-h-[400px] glass-card border-none">
+        {headerContent}
         <CardContent className="flex flex-1 justify-center items-center">
           <div className="text-muted-foreground">No data available</div>
         </CardContent>
@@ -223,10 +218,13 @@ export function PieChartCard() {
   }
 
   return (
-    <Card data-chart={id} className="flex flex-col h-full min-h-[400px] glass-card border-none">
+    <Card data-chart={id} className="flex flex-col h-full min-h-[280px] sm:min-h-[400px] glass-card border-none">
       <ChartStyle id={id} config={chartConfig} />
       <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-0">
-        <CardTitle className="text-sm sm:text-base lg:text-lg">{getTitle()}</CardTitle>
+        <div className="flex items-center gap-2">
+          <PieChartIcon className="size-5 text-muted-foreground shrink-0" />
+          <CardTitle className="text-sm sm:text-base lg:text-lg">{getTitle()}</CardTitle>
+        </div>
         <div className="flex flex-row gap-2">
           <Select value={distributionType} onValueChange={(value) => setDistributionType(value as DistributionType)}>
             <SelectTrigger className="h-7 w-fit rounded-lg">

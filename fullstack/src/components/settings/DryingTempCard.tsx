@@ -1,6 +1,6 @@
 'use client'
 
-import { Save, Loader2, Ruler } from 'lucide-react'
+import { Save, Loader2, Thermometer } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -8,51 +8,57 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 
 const CARE_TYPES = ['gentle', 'normal', 'strong'] as const
-const COLOR = 'var(--chart-1)'
+const COLOR = 'oklch(0.627 0.194 149.214)'
 
 const FIRMWARE_DEFAULTS: Record<string, number> = {
-  gentle: 90,
-  normal: 95,
-  strong: 100,
+  gentle: 35,
+  normal: 40,
+  strong: 45,
 }
 
 const CARE_LABELS = { gentle: 'Gentle', normal: 'Normal', strong: 'Strong' }
 
-type CleaningDistanceCardProps = {
-  distances: Record<string, number>
-  editedDistances: Record<string, number>
+const MIN_TEMP = 30
+const MAX_TEMP = 50
+
+type DryingTempCardProps = {
+  temps: Record<string, number>
+  editedTemps: Record<string, number>
   isSaving: boolean
   selectedDevice: string | null
-  onDistanceChange: (careType: string, value: string) => void
-  hasDistanceChanges: (careType: string) => boolean
-  onSaveDistance: (careType: string) => void
+  onTempChange: (careType: string, value: string) => void
+  hasTempChanges: (careType: string) => boolean
+  onSaveTemp: (careType: string) => void
 }
 
-export function CleaningDistanceCard({
-  distances,
-  editedDistances,
+export function DryingTempCard({
+  temps,
+  editedTemps,
   isSaving,
   selectedDevice,
-  onDistanceChange,
-  hasDistanceChanges,
-  onSaveDistance,
-}: CleaningDistanceCardProps) {
+  onTempChange,
+  hasTempChanges,
+  onSaveTemp,
+}: DryingTempCardProps) {
+  // Local string state lets users type freely; parent state is only updated on blur
   const [inputValues, setInputValues] = useState<Record<string, string>>({})
 
   useEffect(() => {
     const next: Record<string, string> = {}
     CARE_TYPES.forEach(ct => {
-      next[ct] = String(editedDistances[ct] ?? FIRMWARE_DEFAULTS[ct])
+      next[ct] = String(editedTemps[ct] ?? FIRMWARE_DEFAULTS[ct])
     })
     setInputValues(next)
-  }, [editedDistances])
+  }, [editedTemps])
 
   const handleBlur = (careType: string) => {
-    const num = parseInt(inputValues[careType])
-    if (isNaN(num) || num < 1 || num > 100) {
-      setInputValues(prev => ({ ...prev, [careType]: String(editedDistances[careType] ?? FIRMWARE_DEFAULTS[careType]) }))
+    const raw = inputValues[careType]
+    const num = parseFloat(raw)
+    if (isNaN(num) || num < MIN_TEMP || num > MAX_TEMP) {
+      // Revert to the current committed value
+      setInputValues(prev => ({ ...prev, [careType]: String(editedTemps[careType] ?? FIRMWARE_DEFAULTS[careType]) }))
     } else {
-      onDistanceChange(careType, String(num))
+      onTempChange(careType, String(num))
     }
   }
 
@@ -60,19 +66,19 @@ export function CleaningDistanceCard({
     <Card className="glass-card border-none">
       <CardHeader>
         <div className="flex items-center gap-2">
-          <Ruler className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-lg">Cleaning Brush Distance</CardTitle>
+          <Thermometer className="h-5 w-5 text-muted-foreground" />
+          <CardTitle className="text-lg">Drying Temperature Setpoint</CardTitle>
         </div>
         <CardDescription>
-          Configure how far the side brush extends during cleaning for {selectedDevice}. Max 100mm.
+          Ideal drying temperature (°C) per care type for {selectedDevice}. The heater turns off above this value; exhaust activates to vent heat.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-3 gap-5">
           {CARE_TYPES.map((careType) => {
-            const edited = editedDistances[careType] ?? FIRMWARE_DEFAULTS[careType]
-            const changed = hasDistanceChanges(careType)
-            const pct = Math.min(100, Math.max(0, Math.round((edited / 100) * 100)))
+            const edited = editedTemps[careType] ?? FIRMWARE_DEFAULTS[careType]
+            const changed = hasTempChanges(careType)
+            const pct = Math.min(100, Math.max(0, Math.round(((edited - MIN_TEMP) / (MAX_TEMP - MIN_TEMP)) * 100)))
 
             return (
               <div key={careType} className="space-y-2.5">
@@ -85,7 +91,7 @@ export function CleaningDistanceCard({
                       color: COLOR,
                     }}
                   >
-                    {pct}%
+                    {edited}°C
                   </span>
                 </div>
 
@@ -100,30 +106,33 @@ export function CleaningDistanceCard({
                   <div className="relative flex-1">
                     <Input
                       type="number"
-                      min="1"
-                      max="100"
+                      min={MIN_TEMP}
+                      max={MAX_TEMP}
+                      step="0.5"
                       value={inputValues[careType] ?? ''}
                       onChange={(e) => setInputValues(prev => ({ ...prev, [careType]: e.target.value }))}
                       onBlur={() => handleBlur(careType)}
-                      className="pr-10 h-9"
+                      className="pr-7 h-9"
                       disabled={isSaving}
                     />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">mm</span>
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">°C</span>
                   </div>
                   <Button
                     size="icon"
                     className="shrink-0 h-9 w-9"
                     disabled={!changed || isSaving}
-                    onClick={() => onSaveDistance(careType)}
+                    onClick={() => onSaveTemp(careType)}
                   >
                     {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                   </Button>
                 </div>
 
                 <p className="text-xs text-muted-foreground">
-                  Default: {FIRMWARE_DEFAULTS[careType]}mm
+                  Default: {FIRMWARE_DEFAULTS[careType]}°C
                   {changed && (
-                    <span className="text-amber-600 dark:text-amber-400 ml-2 font-medium">→ {edited}mm</span>
+                    <span className="text-amber-600 dark:text-amber-400 ml-2 font-medium">
+                      → {edited}°C
+                    </span>
                   )}
                 </p>
               </div>

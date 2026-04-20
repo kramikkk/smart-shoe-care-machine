@@ -109,7 +109,14 @@ export async function POST(
 
   // Fire-and-forget alert email — never blocks the response
   sendAlertEmail({ userId: authResult.user.id, deviceId, title, description, severity }).catch(
-    (err) => console.error('[alerts] Email error:', err)
+    (err) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg === 'GMAIL_OAUTH_EXPIRED') {
+        console.warn('[alerts] Email skipped — Gmail refresh token expired or revoked. Re-authorize via Google Cloud Console.')
+      } else {
+        console.error('[alerts] Email error:', err)
+      }
+    }
   )
 
   return NextResponse.json(alert, { status: 201 })

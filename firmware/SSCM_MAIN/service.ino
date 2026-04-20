@@ -122,13 +122,18 @@ static void handoverEndPreviousService() {
 void startService(String shoeType, String service, String care,
                   unsigned long customDurationSeconds,
                   long customCleaningDistanceMm,
-                  int customMotorSpeedPwm) {
+                  int customMotorSpeedPwm,
+                  float customDryingTempSetpoint) {
   if (serviceActive)
     handoverEndPreviousService();
 
   // Apply dashboard motor speed override; -1 means leave at current value (default 255).
   if (customMotorSpeedPwm >= 0 && customMotorSpeedPwm <= 255)
     brushMotorSpeed = customMotorSpeedPwm;
+
+  // Apply dashboard drying temp setpoint; -1 means keep current value (default 40°C).
+  if (customDryingTempSetpoint >= 30.0 && customDryingTempSetpoint <= 50.0)
+    dryingTempSetpoint = customDryingTempSetpoint;
 
   serviceActive       = true;
   classificationLedOn = false; // LED strip is now owned by the service, not the classify preview
@@ -165,7 +170,7 @@ void startService(String shoeType, String service, String care,
   } else if (service == "drying") {
     // All drying actuators start together; handleDryingTemperature() will cycle the PTC
     // heaters and exhaust fan to maintain the 30–45°C target band.
-    LOG("[SERVICE] Drying — fan + PTC on; setpoint " + String(DRYING_TEMP_SETPOINT) + "C, cutoff " + String(DRYING_TEMP_CUTOFF) + "C");
+    LOG("[SERVICE] Drying — fan + PTC on; setpoint " + String(dryingTempSetpoint) + "C");
     setRelay(3, true); // Drying fan ON
     setRelay(4, true); // Left PTC heater ON  (may be cycled off by temperature loop)
     setRelay(6, true); // Right PTC heater ON (may be cycled off by temperature loop)
@@ -278,18 +283,12 @@ void handlePurge() {
 
 /**
  * Drying temperature control loop — called in loop() during drying service.
- * Dual-actuator drying temperature control — called every loop() during drying.
- * Targets DRYING_TEMP_SETPOINT (40°C) using two independent control elements:
  *
- * Heaters (coarse):
- *   < SETPOINT  → both PTC heaters ON   (chamber below target — heat up)
- *   > CUTOFF    → both PTC heaters OFF  (safety cutoff at 45°C)
- *   SETPOINT–CUTOFF → hold last state   (5°C dead-band prevents rapid cycling)
+ * Single threshold at dryingTempSetpoint (40°C):
+ *   ≤ 40°C → heaters ON,  exhaust OFF  (heating up to target)
+ *   > 40°C → heaters OFF, exhaust ON   (venting excess heat; blower stays on throughout)
  *
- * Exhaust (fine):
- *   > SETPOINT  → exhaust fan ON        (vent excess heat to hold near 40°C)
- *   < SETPOINT  → exhaust fan OFF       (retain heat while climbing to target)
- *
+ * Blower (relay 3) is started at service begin and runs continuously — not toggled here.
  * Returns early if no valid DHT11 reading is available (temperature ≤ 0.0°C).
  */
 void handleDryingTemperature() {
@@ -299,38 +298,27 @@ void handleDryingTemperature() {
   if (currentTemperature <= 0.0)
     return; // DHT11 not yet read or sensor error — skip until a valid reading arrives
 
-  // ── Heater control (coarse) ───────────────────────────────────────────────
-  if (currentTemperature < DRYING_TEMP_SETPOINT) {
+  if (currentTemperature <= dryingTempSetpoint) {
+    // Below or at target — heaters ON, exhaust OFF
     if (!dryingHeaterOn) {
-      LOG("[DRYING] Temp " + String(currentTemperature, 1) + "C < " +
-          String(DRYING_TEMP_SETPOINT) + "C -> HEAT ON");
-      setRelay(4, true); // Left PTC heater ON
-      setRelay(6, true); // Right PTC heater ON
-      dryingHeaterOn = true;
-    }
-  } else if (currentTemperature > DRYING_TEMP_CUTOFF) {
-    if (dryingHeaterOn) {
-      LOG("[DRYING] Temp " + String(currentTemperature, 1) + "C > " +
-          String(DRYING_TEMP_CUTOFF) + "C -> HEAT OFF (safety cutoff)");
-      setRelay(4, false); // Left PTC heater OFF
-      setRelay(6, false); // Right PTC heater OFF
-      dryingHeaterOn = false;
-    }
-  }
-  // Between SETPOINT and CUTOFF: heaters hold their last state (dead-band).
-
-  // ── Exhaust control (fine) ────────────────────────────────────────────────
-  if (currentTemperature > DRYING_TEMP_SETPOINT) {
-    if (!dryingExhaustOn) {
-      LOG("[DRYING] Exhaust ON (temp > " + String(DRYING_TEMP_SETPOINT) + "C)");
-      setRelay(2, true); // Bottom exhaust fan ON — vent heat to stabilise at ~40°C
-      dryingExhaustOn = true;
+      LOG("[DRYING] Temp " + String(currentTemperature, 1) + "C <= " +
+          String(dryingTempSetpoint) + "C -> HEAT ON, EXHAUST OFF");
+      setRelay(4, true);  // Left PTC heater ON
+      setRelay(6, true);  // Right PTC heater ON
+      setRelay(2, false); // Exhaust OFF
+      dryingHeaterOn  = true;
+      dryingExhaustOn = false;
     }
   } else {
-    if (dryingExhaustOn) {
-      LOG("[DRYING] Exhaust OFF (temp < " + String(DRYING_TEMP_SETPOINT) + "C)");
-      setRelay(2, false); // Bottom exhaust fan OFF — retain heat
-      dryingExhaustOn = false;
+    // Above target — heaters OFF, exhaust ON
+    if (dryingHeaterOn || !dryingExhaustOn) {
+      LOG("[DRYING] Temp " + String(currentTemperature, 1) + "C > " +
+          String(dryingTempSetpoint) + "C -> HEAT OFF, EXHAUST ON");
+      setRelay(4, false); // Left PTC heater OFF
+      setRelay(6, false); // Right PTC heater OFF
+      setRelay(2, true);  // Exhaust ON
+      dryingHeaterOn  = false;
+      dryingExhaustOn = true;
     }
   }
 }

@@ -275,14 +275,14 @@ export default function TransactionsPage() {
                   <div className="text-[9px] font-black uppercase tracking-[0.2em] text-muted-foreground/40 px-1 shrink-0">Filter by</div>
 
                   {[
-                    { label: "Payment", value: paymentFilter, setter: setPaymentFilter, options: ["Cash", "Online"], placeholder: "Any Payment" },
-                    { label: "Service", value: serviceFilter, setter: setServiceFilter, options: ["Cleaning", "Drying", "Sterilizing", "Package"], placeholder: "Any Service" },
-                    { label: "Status", value: statusFilter, setter: setStatusFilter, options: ["Success", "Pending", "Failed"], placeholder: "Any Status" },
-                    { label: "Shoe", value: shoeTypeFilter, setter: setShoeTypeFilter, options: ["Canvas", "Rubber", "Mesh"], placeholder: "Any Shoe" },
-                    { label: "Care", value: careTypeFilter, setter: setCareTypeFilter, options: ["Gentle", "Normal", "Strong", "Auto"], placeholder: "Any Care" }
+                    { label: "Payment", value: paymentFilter, setter: setPaymentFilter, options: ["Cash", "Online"], placeholder: "Payment" },
+                    { label: "Service", value: serviceFilter, setter: setServiceFilter, options: ["Cleaning", "Drying", "Sterilizing", "Package"], placeholder: "Service" },
+                    { label: "Status", value: statusFilter, setter: setStatusFilter, options: ["Success", "Pending", "Failed"], placeholder: "Status" },
+                    { label: "Shoe", value: shoeTypeFilter, setter: setShoeTypeFilter, options: ["Canvas", "Rubber", "Mesh"], placeholder: "Shoe" },
+                    { label: "Care", value: careTypeFilter, setter: setCareTypeFilter, options: ["Gentle", "Normal", "Strong", "Auto"], placeholder: "Care" }
                   ].map((filter) => (
                     <Select key={filter.label} value={filter.value} onValueChange={filter.setter}>
-                      <SelectTrigger className="h-8 w-[120px] sm:w-[130px] border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 text-[11px] font-medium rounded-lg transition-all">
+                      <SelectTrigger className="h-8 w-[90px] sm:w-[100px] border-white/10 bg-white/5 hover:bg-white/10 hover:border-white/20 text-[11px] font-medium rounded-lg transition-all">
                         <SelectValue placeholder={filter.label} />
                       </SelectTrigger>
                       <SelectContent className="bg-card/98 border-white/10 backdrop-blur-2xl">

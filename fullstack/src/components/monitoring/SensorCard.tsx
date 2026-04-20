@@ -11,21 +11,21 @@ const SensorData = {
     name: "Temperature",
     icon: Thermometer,
     color: "text-orange-600",
-    range: "30-45°C normal",
+    range: "30-50°C ideal",
     status: "Normal",
   },
   foamLevel: {
     name: "Foam Level",
     icon: Droplets,
     color: "text-blue-600",
-    range: "0-5.3L",
+    range: "0-5.0L",
     status: "Normal",
   },
   atomizerLevel: {
     name: "Atomizer Level",
     icon: Gauge,
     color: "text-cyan-600",
-    range: "0-5.3L",
+    range: "0-5.0L",
     status: "Normal",
   },
   humidity: {
@@ -64,43 +64,53 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
     displayValue = '···'
   }
 
-  if (id === 'temperature' && isConnected && sensorData.temperature > 0) {
-    displayValue = `${sensorData.temperature.toFixed(1)}°C`
-    // Calculate percentage (0-50°C range)
-    displayPercentage = Math.min(100, (sensorData.temperature / 50) * 100)
-    // Status: Low (<30°C), Normal (30-40°C), High (>40°C)
-    if (sensorData.temperature > 45) {
-      displayStatus = 'High'
-    } else if (sensorData.temperature >= 30) {
-      displayStatus = 'Normal'
-    } else {
-      displayStatus = 'Low'
+  if (id === 'temperature' && isConnected) {
+    if (sensorData.temperature === -1) {
+      displayValue = 'Invalid'
+      displayStatus = 'Invalid'
+      displayPercentage = 0
+    } else if (sensorData.temperature > 0) {
+      displayValue = `${sensorData.temperature.toFixed(1)}°C`
+      displayPercentage = Math.min(100, (sensorData.temperature / 50) * 100)
+      if (sensorData.temperature > 50) {
+        displayStatus = 'High'
+      } else if (sensorData.temperature >= 30) {
+        displayStatus = 'Normal'
+      } else {
+        displayStatus = 'Low'
+      }
     }
   }
 
-  if (id === 'humidity' && isConnected && sensorData.humidity > 0) {
-    displayValue = `${sensorData.humidity.toFixed(1)}%`
-    displayPercentage = Math.min(100, sensorData.humidity)
-    // Status: Normal (<50%), Warning (50-65%), High (>65%) — lower humidity = better drying
-    if (sensorData.humidity > 65) {
-      displayStatus = 'High'
-    } else if (sensorData.humidity > 50) {
-      displayStatus = 'Warning'
-    } else {
-      displayStatus = 'Normal'
+  if (id === 'humidity' && isConnected) {
+    if (sensorData.humidity === -1) {
+      displayValue = 'Invalid'
+      displayStatus = 'Invalid'
+      displayPercentage = 0
+    } else if (sensorData.humidity > 0) {
+      displayValue = `${sensorData.humidity.toFixed(1)}%`
+      displayPercentage = Math.min(100, sensorData.humidity)
+      if (sensorData.humidity > 65) {
+        displayStatus = 'High'
+      } else if (sensorData.humidity > 50) {
+        displayStatus = 'Warning'
+      } else {
+        displayStatus = 'Normal'
+      }
     }
   }
 
   if (id === 'atomizerLevel' && isConnected) {
-    if (sensorData.atomizerDistance === -1 || sensorData.atomizerDistance > 21) {
+    const d = sensorData.atomizerDistance
+    if (d === -1 || d < 7 || d > 21) {
       displayValue = 'Invalid'
       displayStatus = 'Invalid'
       displayPercentage = 0
     } else {
-      const MIN_DIST = 8   // cm — container full (5.0L)
-      const MAX_DIST = 21  // cm — container empty
+      const MIN_DIST = 7   // cm — container full (5.0L)
+      const MAX_DIST = 21  // cm — container empty (0.0L)
       const TANK_L = 5.0
-      const liters = Math.round(((MAX_DIST - Math.min(Math.max(sensorData.atomizerDistance, MIN_DIST), MAX_DIST)) / (MAX_DIST - MIN_DIST)) * TANK_L * 10) / 10
+      const liters = Math.round(((MAX_DIST - d) / (MAX_DIST - MIN_DIST)) * TANK_L * 10) / 10
       displayValue = `${liters.toFixed(1)}L`
       displayPercentage = (liters / TANK_L) * 100
       if (displayPercentage < 20) {
@@ -114,15 +124,16 @@ const SensorCard = ({ id }: { id: keyof typeof SensorData }) => {
   }
 
   if (id === 'foamLevel' && isConnected) {
-    if (sensorData.foamDistance === -1 || sensorData.foamDistance > 21) {
+    const d = sensorData.foamDistance
+    if (d === -1 || d < 7 || d > 21) {
       displayValue = 'Invalid'
       displayStatus = 'Invalid'
       displayPercentage = 0
     } else {
-      const MIN_DIST = 8   // cm — container full (5.0L)
-      const MAX_DIST = 21  // cm — container empty
+      const MIN_DIST = 7   // cm — container full (5.0L)
+      const MAX_DIST = 21  // cm — container empty (0.0L)
       const TANK_L = 5.0
-      const liters = Math.round(((MAX_DIST - Math.min(Math.max(sensorData.foamDistance, MIN_DIST), MAX_DIST)) / (MAX_DIST - MIN_DIST)) * TANK_L * 10) / 10
+      const liters = Math.round(((MAX_DIST - d) / (MAX_DIST - MIN_DIST)) * TANK_L * 10) / 10
       displayValue = `${liters.toFixed(1)}L`
       displayPercentage = (liters / TANK_L) * 100
       if (displayPercentage < 20) {

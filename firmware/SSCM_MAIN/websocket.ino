@@ -69,11 +69,21 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
   case WStype_DISCONNECTED:
     wsConnected = false;
-    LOG("[WS] DISCONNECTED");
+    wsConsecutiveDisconnects++;
+    LOG("[WS] DISCONNECTED (" + String(wsConsecutiveDisconnects) + ")");
+    if (wsConsecutiveDisconnects >= WS_RECONNECT_RESET_THRESHOLD) {
+      // TLS context is stuck — tear down fully so loop() re-issues beginSSL().
+      wsConsecutiveDisconnects = 0;
+      wsInitialized = false;
+      webSocket.disconnect();
+      LOG("[WS] Reconnect reset: re-initialising TLS after " +
+          String(WS_RECONNECT_RESET_THRESHOLD) + " consecutive failures");
+    }
     break;
 
   case WStype_CONNECTED: {
     wsConnected = true;
+    wsConsecutiveDisconnects = 0;
     LOG("[WS] CONNECTED");
     // Subscribe to device-specific messages on the backend pub/sub channel.
     String subMsg = "{\"type\":\"subscribe\",\"deviceId\":\"" + deviceId + "\"}";
@@ -109,12 +119,14 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         prefs.putBool("paired", true);
         LOG("[PAIRING] Device paired by backend");
       } else if (!dbPaired && isPaired) {
-        // DB says unpaired — clear local pairing state and re-register to get a fresh pairing code.
+        // DB says unpaired — clear local pairing state and defer re-registration to loop().
+        // sendDeviceRegistration() blocks for up to 20s (TLS + HTTP); calling it here would
+        // starve webSocket.loop() and cause the WS heartbeat to time out mid-registration.
         isPaired = false;
         prefs.putBool("paired", false);
         LOG("[PAIRING] Device unpaired by backend");
         pairingCode = generatePairingCode();
-        sendDeviceRegistration();
+        pendingDeviceRegistration = true;
       }
 
     } else if (message.indexOf("\"type\":\"device-update\"") != -1) {
@@ -222,8 +234,18 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         customMotorSpeedPwm = message.substring(start, end).toInt();
       }
 
+      // dryingTempSetpoint: optional ideal drying temperature in °C; -1 = keep current default
+      float customDryingTempSetpoint = -1.0;
+      int dryingTempIndex = message.indexOf("\"dryingTempSetpoint\":");
+      if (dryingTempIndex != -1) {
+        int start = dryingTempIndex + 21;
+        int end   = message.indexOf(",", start);
+        if (end == -1) end = message.indexOf("}", start);
+        customDryingTempSetpoint = message.substring(start, end).toFloat();
+      }
+
       if (serviceType == "cleaning" || serviceType == "drying" || serviceType == "sterilizing") {
-        startService(shoeType, serviceType, careType, customDuration, customCleaningDistanceMm, customMotorSpeedPwm);
+        startService(shoeType, serviceType, careType, customDuration, customCleaningDistanceMm, customMotorSpeedPwm, customDryingTempSetpoint);
         wsLog("info", "Service started: " + serviceType + " | shoe: " + shoeType);
       }
 
@@ -242,7 +264,10 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 
     } else if (message.indexOf("\"type\":\"start-classification\"") != -1) {
       if (camIsReady && camMacPaired) sendClassifyRequest();
-      else relayClassificationErrorToBackend("CAM_NOT_READY");
+      else {
+        LOG("[CAM->MAIN] Classification blocked: CAM_NOT_READY");
+        if (wsConnected) wsLog("warn", "Classification status: CAM_NOT_READY");
+      }
 
     } else if (message.indexOf("\"type\":\"enable-classification\"") != -1) {
       // Turn on white LEDs for shoe scan preview; CAM LED on for illumination.
@@ -312,7 +337,9 @@ void connectWebSocket() {
 #if USE_LOCAL_BACKEND
   webSocket.begin(BACKEND_HOST, BACKEND_PORT, wsPath);
 #else
-  webSocket.beginSSL(BACKEND_HOST, BACKEND_PORT, wsPath); // TLS required for production endpoint
+  // For this WebSocketsClient version, pass empty fingerprint/protocol to use
+  // the non-pinned TLS path (library handles insecure mode internally).
+  webSocket.beginSSL(BACKEND_HOST, BACKEND_PORT, wsPath, "", "");
 #endif
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(WS_RECONNECT_INTERVAL); // 5s between reconnect attempts

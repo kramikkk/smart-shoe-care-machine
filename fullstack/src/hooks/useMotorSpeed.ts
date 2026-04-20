@@ -33,10 +33,9 @@ export function useMotorSpeed(selectedDevice: string | null) {
 
   const handleSpeedChange = (careType: string, value: string) => {
     const num = parseInt(value)
-    setEditedSpeeds(prev => ({
-      ...prev,
-      [careType]: isNaN(num) || num < 0 ? 0 : Math.min(num, 255),
-    }))
+    if (!isNaN(num) && num >= 0 && num <= 255) {
+      setEditedSpeeds(prev => ({ ...prev, [careType]: num }))
+    }
   }
 
   const hasSpeedChanges = (careType: string) =>

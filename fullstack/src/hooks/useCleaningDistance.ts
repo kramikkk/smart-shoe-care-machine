@@ -33,10 +33,9 @@ export function useCleaningDistance(selectedDevice: string | null) {
 
   const handleDistanceChange = (careType: string, value: string) => {
     const num = parseInt(value)
-    setEditedDistances(prev => ({
-      ...prev,
-      [careType]: isNaN(num) || num < 0 ? 0 : Math.min(num, 100),
-    }))
+    if (!isNaN(num) && num >= 1 && num <= 100) {
+      setEditedDistances(prev => ({ ...prev, [careType]: num }))
+    }
   }
 
   const hasDistanceChanges = (careType: string) =>

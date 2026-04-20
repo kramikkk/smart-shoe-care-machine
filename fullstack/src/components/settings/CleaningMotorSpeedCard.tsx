@@ -1,6 +1,7 @@
 'use client'
 
 import { Save, Loader2, Gauge } from 'lucide-react'
+import { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -36,6 +37,26 @@ export function CleaningMotorSpeedCard({
   hasSpeedChanges,
   onSaveSpeed,
 }: CleaningMotorSpeedCardProps) {
+  const [inputValues, setInputValues] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    const next: Record<string, string> = {}
+    CARE_TYPES.forEach(ct => {
+      next[ct] = String(editedSpeeds[ct] ?? FIRMWARE_DEFAULTS[ct])
+    })
+    setInputValues(next)
+  }, [editedSpeeds])
+
+  const handleBlur = (careType: string) => {
+    const raw = inputValues[careType]
+    const num = parseInt(raw)
+    if (isNaN(num) || num < 0 || num > 255) {
+      setInputValues(prev => ({ ...prev, [careType]: String(editedSpeeds[careType] ?? FIRMWARE_DEFAULTS[careType]) }))
+    } else {
+      onSpeedChange(careType, String(num))
+    }
+  }
+
   return (
     <Card className="glass-card border-none">
       <CardHeader>
@@ -69,7 +90,6 @@ export function CleaningMotorSpeedCard({
                   </span>
                 </div>
 
-                {/* Progress bar */}
                 <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                   <div
                     className="h-full rounded-full transition-all duration-200"
@@ -83,8 +103,9 @@ export function CleaningMotorSpeedCard({
                       type="number"
                       min="0"
                       max="255"
-                      value={edited === undefined ? '' : edited}
-                      onChange={(e) => onSpeedChange(careType, e.target.value)}
+                      value={inputValues[careType] ?? ''}
+                      onChange={(e) => setInputValues(prev => ({ ...prev, [careType]: e.target.value }))}
+                      onBlur={() => handleBlur(careType)}
                       className="pr-12 h-9"
                       disabled={isSaving}
                     />

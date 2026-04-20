@@ -32,7 +32,7 @@ export default async function AdminLayout({
                         <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-primary/10 blur-[120px] rounded-full pointer-events-none z-0" />
                         
                         <main className="relative z-10 w-full flex flex-col flex-1 overflow-hidden">
-                            <NavBar/>
+                            <div className="sticky top-0 z-20 bg-transparent"><NavBar/></div>
                             <div className="px-4 sm:px-6 pb-4 flex-1 flex flex-col overflow-y-auto overflow-x-hidden">
                                 <ThemeProvider
                                     attribute="class"

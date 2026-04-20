@@ -1,18 +1,31 @@
-import { createServer } from 'http'
+import { createServer, type Server } from 'http'
+import os from 'os'
 import next from 'next'
 import { createWebSocketServer } from './src/lib/websocket'
+import prisma from './src/lib/prisma'
+import type { WebSocketServer } from 'ws'
+
+// Mutable refs so signal handlers registered early can reference server/wss
+// once they're created inside app.prepare().then(). Both start null so
+// an early SIGTERM (during cold-start) still exits cleanly.
+let serverRef: Server | null = null
+let wssRef: WebSocketServer | null = null
+let memInterval: NodeJS.Timeout | null = null
 
 process.on('uncaughtException', (err) => {
-  console.error('[Global] Uncaught Exception:', err);
-  // Log it but let the application crash if it needs to, 
-  // or gracefully shutdown. Exiting is safer for native crashes.
-  process.exit(1);
-});
+  console.error('[Global] Uncaught Exception — restarting')
+  console.error('[Global] Name:', err.name)
+  console.error('[Global] Message:', err.message)
+  console.error('[Global] Stack:', err.stack)
+  if ((err as NodeJS.ErrnoException).code) {
+    console.error('[Global] Code:', (err as NodeJS.ErrnoException).code)
+  }
+  process.exit(1)
+})
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[Global] Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
+  console.error('[Global] Unhandled Rejection at:', promise, 'reason:', reason)
+})
 
 // Validate required environment variables before starting
 const REQUIRED_ENV_VARS = [
@@ -35,9 +48,6 @@ if (missing.length > 0) {
   process.exit(1)
 }
 
-// TRUSTED_ORIGINS is optional but required in production for auth and WebSocket
-// to accept requests from the real host. Without it, Better Auth falls back to
-// localhost only, silently rejecting all non-localhost logins.
 if (!process.env.TRUSTED_ORIGINS) {
   console.warn('[Startup] TRUSTED_ORIGINS is not set — Better Auth will only trust http://localhost:3000. Set this to your production URL(s).')
 }
@@ -45,44 +55,110 @@ if (!process.env.TRUSTED_ORIGINS) {
 const dev = process.env.NODE_ENV !== 'production'
 const hostname = 'localhost'
 const listenHost = '0.0.0.0'
-const port = parseInt(process.env.PORT || '3000', 10)
+const rawPort = parseInt(process.env.PORT || '3000', 10)
+const port = Number.isFinite(rawPort) ? rawPort : 3000
+
+// Register signal handlers BEFORE app.prepare() so a SIGTERM during cold-start
+// (Next.js can take 10-30s to prepare) still triggers a clean shutdown instead
+// of an immediate unclean exit that leaves Prisma pool connections open on Neon.
+let isShuttingDown = false
+function shutdown(signal: string) {
+  if (isShuttingDown) return
+  isShuttingDown = true
+  console.log(`[Server] Received ${signal}, shutting down gracefully...`)
+
+  if (memInterval) clearInterval(memInterval)
+
+  // Terminate all WS connections then destroy all open HTTP connections
+  // so server.close() callback fires immediately instead of waiting.
+  wssRef?.clients.forEach(client => client.terminate())
+  wssRef?.close()
+  serverRef?.closeAllConnections()
+
+  // Force exit after 3s if server.close() never fires (stuck HMR socket etc.)
+  const forceExit = setTimeout(() => {
+    console.warn('[Server] Graceful shutdown timed out, forcing exit')
+    process.exit(0)
+  }, dev ? 500 : 3000)
+  forceExit.unref()
+
+  // Disconnect Prisma INSIDE server.close() so in-flight DB queries finish first.
+  if (serverRef) {
+    serverRef.close(async () => {
+      clearTimeout(forceExit)
+      await prisma.$disconnect().catch(() => {})
+      console.log('[Server] HTTP server closed')
+      process.exit(0)
+    })
+  } else {
+    // Server never started (SIGTERM during cold-start) — just exit cleanly.
+    prisma.$disconnect().catch(() => {}).finally(() => process.exit(0))
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
 
 const app = next({ dev, hostname, port })
 const handle = app.getRequestHandler()
 
 app.prepare()
   .then(() => {
-    const server = createServer(async (req, res) => {
+    const server = createServer((req, res) => {
       // /healthz — Render's health check probe. Must respond instantly before
       // Next.js processes anything, so it never times out during cold-start and
       // a DB hiccup never triggers an unnecessary container restart.
-      // Use /api/health for manual DB-inclusive status checks instead.
       if (req.url === '/healthz') {
         res.writeHead(200, { 'Content-Type': 'text/plain' })
         res.end('ok')
         return
       }
-      try {
-        await handle(req, res)
-      } catch (err) {
+
+      // Timeout hung requests so they don't hold Prisma pool connections indefinitely.
+      // Neon cold-starts can take 5-15s; 25s gives enough headroom without starving the pool.
+      res.setTimeout(25_000, () => {
+        if (!res.headersSent) {
+          res.writeHead(503, { 'Content-Type': 'text/plain', 'Connection': 'close' })
+          res.end('request timeout')
+        }
+        res.socket?.destroy()
+      })
+
+      handle(req, res).catch(err => {
         console.error('Error occurred handling', req.url, err)
-        res.statusCode = 500
-        res.end('internal server error')
-      }
+        if (!res.headersSent) {
+          res.statusCode = 500
+          res.end('internal server error')
+        }
+      })
     })
 
-    const wss = createWebSocketServer(server)
+    // Render's load balancer has a 75s idle connection timeout.
+    // Node.js default keepAliveTimeout is 5s — if Node closes first, the LB
+    // tries to reuse the dead connection and returns a 502 to the user.
+    // Setting both above 75s prevents this race condition.
+    server.keepAliveTimeout = 90_000
+    server.headersTimeout = 91_000
+
+    serverRef = server
+    wssRef = createWebSocketServer(server)
+
+    // Log RSS every 5 minutes — visible in Render logs so you can spot memory
+    // creep before the 512MB OOM hits.
+    memInterval = setInterval(() => {
+      const mb = (bytes: number) => Math.round(bytes / 1024 / 1024)
+      const { rss, heapUsed, heapTotal } = process.memoryUsage()
+      console.log(`[Memory] RSS=${mb(rss)}MB heap=${mb(heapUsed)}/${mb(heapTotal)}MB`)
+    }, 5 * 60 * 1000)
+    memInterval.unref()
 
     server.listen(port, listenHost, () => {
-      const os = require('os')
       const ifaces = os.networkInterfaces()
       const lanIps = Object.values(ifaces)
         .flat()
-        .filter((iface): iface is { family: string; internal: boolean; address: string } =>
+        .filter((iface): iface is os.NetworkInterfaceInfo =>
           typeof iface === 'object' && iface !== null &&
-          'family' in iface && iface.family === 'IPv4' &&
-          'internal' in iface && !iface.internal &&
-          'address' in iface && typeof iface.address === 'string'
+          iface.family === 'IPv4' && !iface.internal
         )
         .map((iface) => iface.address)
       console.log(`> Ready on:`)
@@ -92,40 +168,6 @@ app.prepare()
       console.log(`   ws://localhost:${port}/api/ws`)
       lanIps.forEach(ip => console.log(`   ws://${ip}:${port}/api/ws`))
     })
-
-    // Graceful shutdown handlers
-    let isShuttingDown = false
-    function shutdown(signal: string) {
-      if (isShuttingDown) return
-      isShuttingDown = true
-      console.log(`[Server] Received ${signal}, shutting down gracefully...`)
-
-      // Terminate all WS connections then destroy all open HTTP connections
-      // so server.close() callback fires immediately instead of waiting.
-      // wss.close() alone does not terminate existing clients — must call terminate()
-      // on each client explicitly since upgraded WS sockets are no longer tracked
-      // by the HTTP server and won't be reached by closeAllConnections().
-      wss.clients.forEach(client => client.terminate())
-      wss.close()
-      server.closeAllConnections()
-
-      // Force exit after 3s in case some connection (e.g. Next.js HMR) keeps the
-      // server open and server.close() callback never fires.
-      const forceExit = setTimeout(() => {
-        console.warn('[Server] Graceful shutdown timed out, forcing exit')
-        process.exit(0)
-      }, dev ? 500 : 3000)
-      forceExit.unref()
-
-      server.close(() => {
-        console.log('[Server] HTTP server closed')
-        clearTimeout(forceExit)
-        process.exit(0)
-      })
-    }
-
-    process.on('SIGTERM', () => shutdown('SIGTERM'))
-    process.on('SIGINT', () => shutdown('SIGINT'))
   })
   .catch((err) => {
     console.error('[Startup] Next.js failed to prepare:', err)

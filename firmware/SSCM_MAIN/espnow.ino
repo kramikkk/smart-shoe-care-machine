@@ -9,19 +9,15 @@
  * Uses a circular buffer protected by espNowMux; drops the entry when the queue is full
  * rather than blocking the radio callback.
  */
-static void espNowEnqueue(EspNowPending action, const char *shoeType = "",
-                          float confidence = 0.0f, const char *errorCode = "") {
+static void espNowEnqueue(EspNowPending action, const char *message = "") {
   bool dropped = false;
   portENTER_CRITICAL(&espNowMux);
   uint8_t next = (espNowQueueTail + 1) % ESPNOW_QUEUE_SIZE;
   if (next != espNowQueueHead) {
     // Write to tail slot and advance the tail pointer
     espNowQueue[espNowQueueTail].action = action;
-    strncpy(espNowQueue[espNowQueueTail].shoeType, shoeType, 31);
-    espNowQueue[espNowQueueTail].shoeType[31] = '\0';
-    espNowQueue[espNowQueueTail].confidence = confidence;
-    strncpy(espNowQueue[espNowQueueTail].errorCode, errorCode, 31);
-    espNowQueue[espNowQueueTail].errorCode[31] = '\0';
+    strncpy(espNowQueue[espNowQueueTail].message, message, 47);
+    espNowQueue[espNowQueueTail].message[47] = '\0';
     espNowQueueTail = next;
   } else {
     dropped = true; // Queue full — this action will be lost
@@ -93,34 +89,30 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int l
     lastCamHeartbeat = millis(); // Any CLASSIFY_RESULT counts as a liveness signal
     classificationPending = false; // Clear the timeout watchdog regardless of outcome
 
-    // Map each CAM status to a queue entry for loop() to relay to the backend.
+    // MAIN no longer relays classification payloads to backend.
+    // Keep status-only breadcrumbs for diagnostics.
     switch (msg.status) {
     case CAM_STATUS_OK:
-      // Valid result — shoeType and confidence (0.0–1.0) are populated.
-      espNowEnqueue(ESPNOW_CLASSIFY_OK, msg.shoeType, msg.confidence);
+      espNowEnqueue(ESPNOW_CLASSIFY_LOG, "CAM_STATUS_OK (result handled by backend)");
       break;
     case CAM_STATUS_LOW_CONFIDENCE:
-      espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "LOW_CONFIDENCE");
+      espNowEnqueue(ESPNOW_CLASSIFY_LOG, "LOW_CONFIDENCE");
       break;
     case CAM_STATUS_BUSY:
-      // CAM was already mid-classification when the request arrived.
-      espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "CAM_BUSY");
+      espNowEnqueue(ESPNOW_CLASSIFY_LOG, "CAM_BUSY");
       break;
     case CAM_STATUS_TIMEOUT:
-      espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "CLASSIFICATION_TIMEOUT");
+      espNowEnqueue(ESPNOW_CLASSIFY_LOG, "CLASSIFICATION_TIMEOUT");
       break;
     case CAM_STATUS_NOT_READY:
-      // Camera driver failed to initialise at boot.
-      espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "CAMERA_NOT_READY");
+      espNowEnqueue(ESPNOW_CLASSIFY_LOG, "CAMERA_NOT_READY");
       break;
     case CAM_STATUS_API_HANDLED:
-      // Gemini path: CAM posted the JPEG to the backend; result will arrive via WebSocket.
-      // classificationPending already cleared above; just log it in loop().
       espNowEnqueue(ESPNOW_API_HANDLED);
       break;
     case CAM_STATUS_ERROR:
     default:
-      espNowEnqueue(ESPNOW_CLASSIFY_ERROR, "", 0.0f, "CLASSIFICATION_ERROR");
+      espNowEnqueue(ESPNOW_CLASSIFY_LOG, "CLASSIFICATION_ERROR");
       break;
     }
     return;

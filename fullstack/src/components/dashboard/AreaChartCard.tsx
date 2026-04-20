@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
-import { Loader2 } from "lucide-react"
+import { Loader2, TrendingUp } from "lucide-react"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
 import { useTimeRange } from "@/contexts/TimeRangeContext"
 
@@ -146,7 +146,10 @@ export default function AreaChartCard() {
     <Card className="pt-0 h-full flex flex-col glass-card border-none overflow-hidden">
       <CardHeader className="flex flex-col gap-3 py-5 sm:flex-row sm:items-center sm:gap-2 sm:space-y-0 shrink-0">
         <div className="grid flex-1 gap-1">
-          <CardTitle>Transaction + Revenue Chart</CardTitle>
+          <div className="flex items-center gap-2">
+            <TrendingUp className="size-5 text-green-500" />
+            <CardTitle>Revenue & Transactions Trend</CardTitle>
+          </div>
           <CardDescription>{PERIOD_DESCRIPTION[timeRange] ?? 'Daily trends'}</CardDescription>
         </div>
         <Select value={dataView} onValueChange={setDataView}>

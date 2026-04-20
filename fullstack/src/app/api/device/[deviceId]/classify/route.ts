@@ -85,23 +85,26 @@ export async function POST(
   if (rateLimitResult) return rateLimitResult
 
   const { deviceId } = await params
-  console.log(`[Classify] POST received for ${deviceId}`)
+  const startedAt = Date.now()
+  console.log(`[Classify] [CAM->SVR] POST received for ${deviceId}`)
+
+  const fail = (message: string, status: number) => {
+    broadcastClassificationError(deviceId, message)
+    return NextResponse.json({ error: message }, { status })
+  }
 
   try {
     // Check image size before processing
     const contentLength = request.headers.get('content-length')
     if (contentLength && parseInt(contentLength) > MAX_IMAGE_SIZE) {
-      return NextResponse.json(
-        { error: 'Image too large. Maximum size is 10MB.' },
-        { status: 413 }
-      )
+      return fail('Image too large. Maximum size is 10MB.', 413)
     }
 
     // Validate X-Group-Token header
     const groupToken = request.headers.get('X-Group-Token')
     if (!groupToken) {
       console.warn(`[Classify] Missing X-Group-Token for ${deviceId}`)
-      return NextResponse.json({ error: 'Missing X-Group-Token' }, { status: 401 })
+      return fail('Missing X-Group-Token', 401)
     }
 
     // Look up device and verify token
@@ -112,32 +115,29 @@ export async function POST(
 
     if (!device) {
       console.warn(`[Classify] Device not found: ${deviceId}`)
-      return NextResponse.json({ error: 'Device not found' }, { status: 404 })
+      return fail('Device not found', 404)
     }
 
     if (!device.groupToken || device.groupToken !== groupToken) {
       console.warn(`[Classify] Invalid group token for ${deviceId} — got "${groupToken}", stored "${device.groupToken}"`)
-      return NextResponse.json({ error: 'Invalid group token' }, { status: 401 })
+      return fail('Invalid group token', 401)
     }
 
     // Read raw JPEG bytes from request body
     const imageBuffer = Buffer.from(await request.arrayBuffer())
     if (imageBuffer.length === 0) {
-      return NextResponse.json({ error: 'Empty image body' }, { status: 400 })
+      return fail('Empty image body', 400)
     }
 
     // Validate image size after reading
     if (imageBuffer.length > MAX_IMAGE_SIZE) {
-      return NextResponse.json(
-        { error: 'Image too large. Maximum size is 10MB.' },
-        { status: 413 }
-      )
+      return fail('Image too large. Maximum size is 10MB.', 413)
     }
 
     // Guard: reject if over free-tier RPM limit to prevent paid-tier spillover
     if (!acquireGeminiSlot()) {
       console.warn(`[Classify] Gemini RPM limit reached — rejecting request for ${deviceId}`)
-      return NextResponse.json({ error: 'Rate limit — retry shortly' }, { status: 429 })
+      return fail('Rate limit — retry shortly', 429)
     }
 
     // Encode once — reused for both Gemini and WebSocket broadcast
@@ -183,7 +183,7 @@ export async function POST(
     const subCategory = parsed.subCategory ?? ''
     const condition = (parsed.condition === 'too_dirty' ? 'too_dirty' : 'normal') as 'normal' | 'too_dirty'
 
-    console.log(`[Classify] Gemini raw response for ${deviceId}:`, JSON.stringify(parsed))
+    console.log(`[Classify] [SVR] Gemini raw response for ${deviceId}:`, JSON.stringify(parsed))
 
     // Validate against allowlist
     if (!SHOE_TYPES.includes(shoeType)) {
@@ -192,13 +192,15 @@ export async function POST(
       return NextResponse.json({ error: 'Unknown shoe type' }, { status: 422 })
     }
 
-    console.log(`[Classify] ${deviceId}: ${shoeType} — ${subCategory} (${(confidence * 100).toFixed(1)}%) — condition: ${condition}`)
+    console.log(`[Classify] [SVR->LIVE] ${deviceId}: ${shoeType} — ${subCategory} (${(confidence * 100).toFixed(1)}%) — condition: ${condition}`)
     broadcastClassificationResult(deviceId, shoeType, confidence, subCategory, condition, imageBase64)
 
+    console.log(`[Classify] [DONE] ${deviceId} completed in ${Date.now() - startedAt}ms`)
     return NextResponse.json({ ok: true, shoeType, confidence, subCategory, condition })
   } catch (error) {
     console.error('[Classify] Error:', error)
     broadcastClassificationError(deviceId, 'Classification failed — please try again')
+    console.error(`[Classify] [FAILED] ${deviceId} in ${Date.now() - startedAt}ms`)
     return NextResponse.json({ error: 'Classification failed' }, { status: 500 })
   }
 }

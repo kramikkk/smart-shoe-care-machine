@@ -8,11 +8,13 @@ import { ServicePricingCard } from "@/components/settings/ServicePricingCard"
 import { ServiceDurationCard } from "@/components/settings/ServiceDurationCard"
 import { CleaningDistanceCard } from "@/components/settings/CleaningDistanceCard"
 import { CleaningMotorSpeedCard } from "@/components/settings/CleaningMotorSpeedCard"
+import { DryingTempCard } from "@/components/settings/DryingTempCard"
 import { useDevicePairing } from "@/hooks/useDevicePairing"
 import { useServicePricing } from "@/hooks/useServicePricing"
 import { useServiceDuration } from "@/hooks/useServiceDuration"
 import { useCleaningDistance } from "@/hooks/useCleaningDistance"
 import { useMotorSpeed } from "@/hooks/useMotorSpeed"
+import { useDryingTemp } from "@/hooks/useDryingTemp"
 
 const containerVariants = {
   hidden: { opacity: 0, y: 20 },
@@ -38,8 +40,9 @@ export default function SettingsPage() {
   const duration = useServiceDuration(selectedDevice)
   const cleaningDist = useCleaningDistance(selectedDevice)
   const motorSpeed = useMotorSpeed(selectedDevice)
+  const dryingTemp = useDryingTemp(selectedDevice)
 
-  if (pricing.isLoading || duration.isLoading || cleaningDist.isLoading || motorSpeed.isLoading) {
+  if (pricing.isLoading || duration.isLoading || cleaningDist.isLoading || motorSpeed.isLoading || dryingTemp.isLoading) {
     return (
       <div className="flex flex-1 flex-col w-full">
         <PageLoader label="Loading settings" />
@@ -125,6 +128,18 @@ export default function SettingsPage() {
           onSpeedChange={motorSpeed.handleSpeedChange}
           hasSpeedChanges={motorSpeed.hasSpeedChanges}
           onSaveSpeed={motorSpeed.handleSaveSpeed}
+        />
+      </motion.div>
+
+      <motion.div variants={itemVariants}>
+        <DryingTempCard
+          temps={dryingTemp.temps}
+          editedTemps={dryingTemp.editedTemps}
+          isSaving={dryingTemp.isSaving}
+          selectedDevice={selectedDevice}
+          onTempChange={dryingTemp.handleTempChange}
+          hasTempChanges={dryingTemp.hasTempChanges}
+          onSaveTemp={dryingTemp.handleSaveTemp}
         />
       </motion.div>
     </motion.div>

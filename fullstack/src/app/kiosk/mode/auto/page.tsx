@@ -367,12 +367,7 @@ const Auto = () => {
         <p className="text-center text-gray-500 mt-2 text-base font-medium">{Math.round(progress)}% Complete</p>
       </div>
 
-      {/* Instruction Text */}
-      <p className="text-center text-gray-500 text-lg max-w-2xl leading-relaxed">
-        Please wait while we take care of your shoes. You will be automatically redirected when complete.
-      </p>
-
-      <div className="mt-8 flex w-full max-w-2xl justify-center">
+      <div className="mb-6 flex w-full max-w-2xl justify-center px-1">
         <KioskEmergencyStopButton
           deviceId={deviceId}
           sendMessage={sendMessage}
@@ -383,6 +378,11 @@ const Auto = () => {
           }}
         />
       </div>
+
+      {/* Instruction Text */}
+      <p className="text-center text-gray-500 text-lg max-w-2xl leading-relaxed">
+        Please wait while we take care of your shoes. You will be automatically redirected when complete.
+      </p>
     </div>
   )
 }

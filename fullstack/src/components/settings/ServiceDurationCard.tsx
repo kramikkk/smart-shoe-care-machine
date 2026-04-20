@@ -53,7 +53,7 @@ export function ServiceDurationCard({
       </CardHeader>
       <CardContent>
         {/* ── Mobile layout ── */}
-        <div className="space-y-3 md:hidden">
+        <div className="space-y-3 lg:hidden">
           {SERVICE_CONFIG.map(({ key, label, icon, color, careTypes }) => {
             const anyUnsaved = careTypes.some(ct => hasDurationChanges(key, ct))
             return (
@@ -128,7 +128,7 @@ export function ServiceDurationCard({
         </div>
 
         {/* ── Desktop layout (table-style grid) ── */}
-        <div className="hidden md:block">
+        <div className="hidden lg:block">
           <div className="grid grid-cols-[160px_1fr_1fr_1fr] gap-3 pb-2.5 mb-2 border-b border-border/50">
             <div />
             {(['gentle', 'normal', 'strong'] as const).map(ct => (

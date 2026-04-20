@@ -8,14 +8,25 @@ interface RateLimitStore {
 // Simple in-memory store for rate limiting
 // In production, use Redis for distributed rate limiting
 const rateLimitStore = new Map<string, RateLimitStore>()
+const RATE_LIMIT_MAX_KEYS = 50_000
 
-// Clean up expired entries every 10 minutes.
+// Clean up expired entries every 60s.
+// Also prunes oldest 25% when the Map exceeds RATE_LIMIT_MAX_KEYS to prevent
+// unbounded growth from many unique IPs on Render's 512MB free instance.
 // unref() so this timer doesn't prevent clean process exit.
 setInterval(() => {
   const now = Date.now()
   for (const [key, value] of rateLimitStore.entries()) {
     if (value.resetTime < now) {
       rateLimitStore.delete(key)
+    }
+  }
+  if (rateLimitStore.size > RATE_LIMIT_MAX_KEYS) {
+    const pruneCount = Math.floor(RATE_LIMIT_MAX_KEYS * 0.25)
+    let pruned = 0
+    for (const key of rateLimitStore.keys()) {
+      rateLimitStore.delete(key)
+      if (++pruned >= pruneCount) break
     }
   }
 }, 60 * 1000).unref()

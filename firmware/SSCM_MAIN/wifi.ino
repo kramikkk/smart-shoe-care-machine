@@ -23,10 +23,21 @@ const char *wifiStatusStr(wl_status_t s) {
  */
 String getWiFiListHTML() {
   String options = "";
+
+  // Abort any pending WiFi.begin() before scanning — the STA radio cannot scan
+  // while it is actively associating. disconnect(false) stops the attempt without
+  // turning off the radio so the SoftAP stays up.
+  WiFi.disconnect(false);
+  delay(100); // Let the radio settle before issuing a scan command
+
   int n = WiFi.scanNetworks();
 
-  if (n <= 0) {
-    options += "<option>No networks found</option>";
+  if (n == WIFI_SCAN_FAILED) {
+    // Radio was not ready — show a retry prompt rather than "no networks"
+    LOG("[WIFI] Scan failed (radio not ready) — user should rescan");
+    options += "<option value=''>Scan failed — tap Scan Again</option>";
+  } else if (n == 0) {
+    options += "<option value=''>No networks found</option>";
   } else {
     for (int i = 0; i < n; i++) {
       String ssid = WiFi.SSID(i);
@@ -40,6 +51,7 @@ String getWiFiListHTML() {
 
       options += "<option value='" + ssid + "'>" + ssid + " (" + rssi + " dBm)</option>";
     }
+    LOG("[WIFI] Scan found " + String(n) + " network(s)");
   }
 
   WiFi.scanDelete(); // Free scan results from heap

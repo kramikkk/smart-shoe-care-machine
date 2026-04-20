@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.8"
+#define FIRMWARE_VERSION "1.0.9"
 #define BOARD_NAME "SSCM-MAIN"
 
 /**
@@ -45,6 +45,15 @@ WebSocketsClient webSocket;
 bool wsConnected = false;
 bool wsInitialized = false;
 const unsigned long WS_RECONNECT_INTERVAL = 5000;
+// Deferred registration flag: set inside the WS event handler to avoid blocking
+// the WS loop with a full HTTP request (connect + TLS + POST can take up to 20s).
+bool pendingDeviceRegistration = false;
+// Reconnect watchdog: counts consecutive DISCONNECTED events without an intervening CONNECTED.
+// After WS_RECONNECT_RESET_THRESHOLD failures the SSL context is fully torn down and
+// beginSSL() is re-issued from loop(), because the WebSocketsClient library's internal
+// reconnect does not reset the TLS state and gets permanently stuck after a server-side timeout.
+uint8_t wsConsecutiveDisconnects = 0;
+static constexpr uint8_t WS_RECONNECT_RESET_THRESHOLD = 5;
 
 /* ===================== STATUS UPDATE ===================== */
 unsigned long lastStatusUpdate = 0;
@@ -107,19 +116,16 @@ unsigned long lastCamPing = 0;
 // Actions deferred from ESP-NOW callback to loop() to avoid heavy work in radio context.
 enum EspNowPending : uint8_t {
   ESPNOW_NONE           = 0, // Queue slot is empty
-  ESPNOW_CLASSIFY_OK    = 1, // CAM returned a valid shoe classification (shoeType + confidence)
-  ESPNOW_CLASSIFY_ERROR = 2, // CAM reported a capture or API failure (errorCode populated)
-  ESPNOW_CAM_PAIRED     = 3, // CAM completed the pairing handshake; notify backend
-  ESPNOW_API_HANDLED    = 4  // CAM sent CAM_STATUS_API_HANDLED (Gemini path); log only
+  ESPNOW_CAM_PAIRED     = 1, // CAM completed the pairing handshake; notify backend
+  ESPNOW_API_HANDLED    = 2, // CAM sent CAM_STATUS_API_HANDLED (Gemini path)
+  ESPNOW_CLASSIFY_LOG   = 3  // CAM classification-side status for observability only
 };
 #define ESPNOW_QUEUE_SIZE 4
 // Small lock-protected queue used to hand off ESP-NOW callback work to loop().
 // This avoids heavy operations inside radio callback context.
 struct EspNowEntry {
   EspNowPending action;
-  char shoeType[32];
-  float confidence;
-  char errorCode[32];
+  char message[48];
 };
 static EspNowEntry espNowQueue[ESPNOW_QUEUE_SIZE];
 static uint8_t espNowQueueHead = 0;
@@ -141,8 +147,6 @@ bool classificationPending = false;
 unsigned long classificationRequestTime = 0;
 const unsigned long CAM_CLASSIFY_TIMEOUT_MS = 20000;
 
-String lastClassificationResult = "";
-float lastClassificationConfidence = 0.0;
 bool classificationLedOn = false;
 
 /* ===================== COIN SLOT ===================== */
@@ -222,15 +226,13 @@ String purgeCareType = "";
 const unsigned long PURGE_DURATION_MS = 15000;
 
 /* ===================== DRYING TEMPERATURE CONTROL ===================== */
-// Dual-actuator drying control: exhaust fine-regulates around the 40°C setpoint;
-// heaters are the coarse element with a 45°C safety cutoff.
-//   < SETPOINT  → heaters ON,  exhaust OFF   (heat up toward target)
-//   > SETPOINT  → exhaust ON                 (vent to hold at ~40°C)
-//   > CUTOFF    → heaters OFF                (safety: too hot)
-const float DRYING_TEMP_SETPOINT = 40.0; // °C — target; exhaust turns ON/OFF at this threshold
-const float DRYING_TEMP_CUTOFF   = 45.0; // °C — safety cutoff; heaters OFF above this
-bool dryingHeaterOn  = false;        // True when relays 4 + 6 (PTC heaters) are active
-bool dryingExhaustOn = false;        // True when relay 2 (bottom exhaust) is active for cooling
+// Configurable drying setpoint (injected by backend from dashboard settings).
+// Default 40°C; updated per start-service command via dryingTempSetpoint field.
+//   <= setpoint → heaters ON, blower ON, exhaust OFF   (heat up toward target)
+//   >  setpoint → heaters OFF, blower ON, exhaust ON   (vent to cool down)
+float dryingTempSetpoint = 40.0; // °C — overridden by start-service payload each cycle
+bool dryingHeaterOn  = false;    // True when relays 4 + 6 (PTC heaters) are active
+bool dryingExhaustOn = false;    // True when relay 2 (bottom exhaust) is active for cooling
 
 /* ===================== CLEANING SERVICE STATE ===================== */
 // Cleaning uses a multi-phase state machine (cleaningPhase 1–6):
@@ -258,6 +260,7 @@ float currentTemperature = 0.0;
 float currentHumidity = 0.0;
 unsigned long lastDHTRead = 0;
 const unsigned long DHT_READ_INTERVAL = 5000;
+void sendDHTDataViaWebSocket(bool invalid = false);
 
 /* ===================== ULTRASONIC SENSORS ===================== */
 #define ATOMIZER_TRIG_PIN 10
@@ -549,6 +552,22 @@ void loop() {
   if (wifiConnected && wsInitialized)
     webSocket.loop();
 
+  // Watchdog fallback: if the reconnect watchdog cleared wsInitialized (after
+  // WS_RECONNECT_RESET_THRESHOLD consecutive disconnects), re-init the WS here rather
+  // than waiting for the next WiFi disconnect/reconnect cycle.
+  // beginSSL() blocks during the TLS handshake — only run when WiFi is stable and
+  // not in the middle of the initial post-connect stabilisation window.
+  if (wifiConnected && !wsInitialized && !wifiPostConnectPending) {
+    connectWebSocket();
+  }
+
+  // Drain deferred registration: sendDeviceRegistration() blocks for up to 20s (TLS + HTTP)
+  // so it must not run inside the WS event handler where it would starve webSocket.loop().
+  if (pendingDeviceRegistration && wifiConnected) {
+    pendingDeviceRegistration = false;
+    sendDeviceRegistration();
+  }
+
   // Consume deferred ESP-NOW actions produced by callbacks.
   // All backend/WebSocket side-effects are executed here in normal task context.
   {
@@ -563,18 +582,15 @@ void loop() {
 
     if (hasEntry) {
       switch (entry.action) {
-      case ESPNOW_CLASSIFY_OK:
-        handleClassificationResultFromCAM(String(entry.shoeType),
-                                          entry.confidence);
-        break;
-      case ESPNOW_CLASSIFY_ERROR:
-        relayClassificationErrorToBackend(String(entry.errorCode));
-        break;
       case ESPNOW_CAM_PAIRED:
         sendCamPairedToBackend();
         break;
       case ESPNOW_API_HANDLED:
         wsLog("info", "CAM: Gemini API handled classification result");
+        break;
+      case ESPNOW_CLASSIFY_LOG:
+        LOG("[CAM->MAIN] " + String(entry.message));
+        if (wsConnected) wsLog("warn", "Classification status: " + String(entry.message));
         break;
       default:
         break;
@@ -664,7 +680,8 @@ void loop() {
   if (classificationPending &&
       (millis() - classificationRequestTime >= CAM_CLASSIFY_TIMEOUT_MS)) {
     classificationPending = false;
-    relayClassificationErrorToBackend("CAM_RESPONSE_TIMEOUT");
+    LOG("[CAM->MAIN] Classification timeout waiting for CAM response");
+    if (wsConnected) wsLog("warn", "Classification status: CAM_RESPONSE_TIMEOUT");
   }
 
   if (Serial.available())
@@ -763,6 +780,8 @@ void loop() {
       lastDHTRead = millis();
       if (readDHT11())
         sendDHTDataViaWebSocket();
+      else
+        sendDHTDataViaWebSocket(true);
     }
     if (isPaired && millis() - lastUltrasonicRead >= ULTRASONIC_READ_INTERVAL) {
       lastUltrasonicRead = millis();

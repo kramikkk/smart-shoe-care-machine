@@ -90,7 +90,14 @@ export function deriveAlerts(sensorData: SensorData, isConnected: boolean): Deri
     }
   }
 
-  if (sensorData.temperature > 0) {
+  if (sensorData.temperature === -1) {
+    alerts.push({
+      id: 'temp-invalid',
+      severity: 'warning',
+      title: 'Temperature Sensor Invalid',
+      description: 'DHT11 returned an invalid temperature reading. Check sensor connection.',
+    })
+  } else if (sensorData.temperature > 0) {
     if (sensorData.temperature > 50) {
       alerts.push({
         id: 'temp-critical',
@@ -108,7 +115,14 @@ export function deriveAlerts(sensorData: SensorData, isConnected: boolean): Deri
     }
   }
 
-  if (sensorData.humidity > 0 && sensorData.humidity > 50) {
+  if (sensorData.humidity === -1) {
+    alerts.push({
+      id: 'humidity-invalid',
+      severity: 'warning',
+      title: 'Humidity Sensor Invalid',
+      description: 'DHT11 returned an invalid humidity reading. Check sensor connection.',
+    })
+  } else if (sensorData.humidity > 0 && sensorData.humidity > 50) {
     alerts.push({
       id: 'humidity-high',
       severity: 'warning',

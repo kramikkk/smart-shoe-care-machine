@@ -60,8 +60,9 @@ const devicePendingOfflineTimers: Map<string, NodeJS.Timeout> =
   global._devicePendingOfflineTimers ?? (global._devicePendingOfflineTimers = new Map())
 
 // Offline timeout for ungraceful disconnects (power cut/network loss).
-// ESP32 sends status every 5s; keep >2 beats to avoid jitter flapping.
-const DEVICE_STATUS_TIMEOUT_MS = 10_000
+// ESP32 sends status every 5s; 15s = 3 missed cycles, enough margin to avoid
+// false-offline flaps from brief stalls (OTA handle, DHT read, TLS re-handshake).
+const DEVICE_STATUS_TIMEOUT_MS = 15_000
 
 // Token validation — requires WS_AUTH_TOKEN (enforced at startup in server.ts)
 function validateWebSocketToken(token: string | null): boolean {
@@ -76,9 +77,10 @@ export function createWebSocketServer(server: Server) {
     path: '/api/ws'
   })
 
-  // Heartbeat: ping every 15s, terminate connections that don't pong back.
-  // This cleans up dead TCP connections (e.g. network drop without FIN) that
-  // would otherwise accumulate in deviceConnections with readyState === OPEN.
+  // Heartbeat: ping every 25s, terminate connections that don't pong back.
+  // Firmware self-disconnects at ~21s (enableHeartbeat(15s, 3s, 2)). Using 25s keeps the
+  // server as the later detector, providing a 4s buffer against Node.js event-loop jitter
+  // on constrained hosting (Render) where setInterval can drift 5–10s under load.
   const heartbeatInterval = setInterval(() => {
     wss.clients.forEach((ws: WebSocket & { _isAlive?: boolean }) => {
       if (ws._isAlive === false) {
@@ -88,7 +90,7 @@ export function createWebSocketServer(server: Server) {
       ws._isAlive = false
       ws.ping()
     })
-  }, 15_000)
+  }, 25_000)
   heartbeatInterval.unref()
   wss.on('close', () => clearInterval(heartbeatInterval))
 
@@ -103,12 +105,18 @@ export function createWebSocketServer(server: Server) {
         console.log(`[WebSocket] Device ${devId} timed out (no status-update in ${DEVICE_STATUS_TIMEOUT_MS}ms) — marking offline`)
         deviceLiveConnections.delete(devId)
         deviceLastStatusTime.delete(devId)
+        // Cancel any close-event debounce timer — we're broadcasting now, no need for a second one
+        const pendingTimer = devicePendingOfflineTimers.get(devId)
+        if (pendingTimer) {
+          clearTimeout(pendingTimer)
+          devicePendingOfflineTimers.delete(devId)
+        }
         broadcastToDevice(devId, { type: 'device-offline', deviceId: devId })
         // Write lastSeen at timeout so the dashboard shows the real offline time
         prisma.device.update({ where: { deviceId: devId }, data: { lastSeen: new Date() } }).catch(() => {})
       }
     })
-  }, 1_000)
+  }, 3_000)
   deviceTimeoutInterval.unref()
   wss.on('close', () => clearInterval(deviceTimeoutInterval))
 
@@ -188,7 +196,12 @@ export function createWebSocketServer(server: Server) {
     // include a 'source' param; ESP32 firmware does not — use that to label them.
     const connLabel = connSourceParam ?? (connDeviceId ? 'esp32' : 'unknown')
     const connSource = connDeviceId ? `${connLabel} for ${connDeviceId}` : `${connLabel} client`
-    wsVerbose(`[WebSocket] New connection from ${connSource}`)
+    // Always log kiosk/dashboard/ESP32 connections; suppress only truly unknown sources.
+    if (connSourceParam === 'kiosk' || connSourceParam === 'dashboard' || connLabel === 'esp32') {
+      console.log(`[WebSocket] New connection from ${connSource}`)
+    } else {
+      wsVerbose(`[WebSocket] New connection from ${connSource}`)
+    }
     // Set to true only when a status-update message is received.
     // Browser clients (kiosk, dashboard) also pass deviceId in the URL but never send
     // status-update, so they are NOT treated as device connections. Detecting client type
@@ -486,35 +499,42 @@ export function createWebSocketServer(server: Server) {
             `[WebSocket] Sensor data from ${sensorDeviceId}: Temp ${message.temperature}°C, Humidity ${message.humidity}%, CAM Synced: ${message.camSynced}, CAM ID: ${message.camDeviceId || 'NOT PROVIDED'}`
           )
 
-          // Update camSynced and camDeviceId in database only if they changed
+          // Update camSynced and camDeviceId in database only if they changed, throttled to once per 60s.
+          // sensor-data fires every 5s — unthrottled DB calls saturate the pool and leak memory.
           if (message.camSynced !== undefined || message.camDeviceId) {
-            try {
-              const existing = await prisma.device.findUnique({
-                where: { deviceId: sensorDeviceId },
-                select: { camDeviceId: true, camSynced: true }
-              })
+            const sensorNow = Date.now()
+            const lastSensorDb = deviceLastDbUpdateTime.get(sensorDeviceId) || 0
+            if (sensorNow - lastSensorDb > 60_000) {
+              ;(async () => {
+                try {
+                  const existing = await prisma.device.findUnique({
+                    where: { deviceId: sensorDeviceId },
+                    select: { camDeviceId: true, camSynced: true }
+                  })
 
-              const updateData: { camSynced?: boolean; camDeviceId?: string } = {}
-              
-              if (existing) {
-                if (message.camSynced !== undefined && existing.camSynced !== message.camSynced) {
-                  updateData.camSynced = message.camSynced
+                  const updateData: { camSynced?: boolean; camDeviceId?: string } = {}
+
+                  if (existing) {
+                    if (message.camSynced !== undefined && existing.camSynced !== message.camSynced) {
+                      updateData.camSynced = message.camSynced
+                    }
+                    if (message.camDeviceId && existing.camDeviceId !== message.camDeviceId) {
+                      updateData.camDeviceId = message.camDeviceId as string
+                      console.log(`[WebSocket] ✅ Saved CAM Device ID to database: ${message.camDeviceId}`)
+                    }
+                  }
+
+                  if (Object.keys(updateData).length > 0) {
+                    await prisma.device.update({
+                      where: { deviceId: sensorDeviceId },
+                      data: updateData
+                    })
+                  }
+                  deviceLastDbUpdateTime.set(sensorDeviceId, sensorNow)
+                } catch (error) {
+                  console.error(`[WebSocket] ❌ Failed to save to database:`, error)
                 }
-
-                if (message.camDeviceId && existing.camDeviceId !== message.camDeviceId) {
-                  updateData.camDeviceId = message.camDeviceId as string
-                  console.log(`[WebSocket] ✅ Saved CAM Device ID to database: ${message.camDeviceId}`)
-                }
-              }
-
-              if (Object.keys(updateData).length > 0) {
-                await prisma.device.update({
-                  where: { deviceId: sensorDeviceId },
-                  data: updateData
-                })
-              }
-            } catch (error) {
-              console.error(`[WebSocket] ❌ Failed to save to database:`, error)
+              })()
             }
           }
 
@@ -594,8 +614,23 @@ export function createWebSocketServer(server: Server) {
           const serviceDeviceId = message.deviceId as string
           console.log(`[WebSocket] Start service on ${serviceDeviceId}: ${message.serviceType} (${message.careType})`)
 
-          // Inject cleaning distance (mm) and motor speed (PWM) for cleaning service
+          // Inject service-specific settings from DB before forwarding to firmware
           let enrichedMessage = message
+
+          if (message.serviceType === 'drying' && message.careType) {
+            try {
+              const careType = message.careType as string
+              const tempEntry = await prisma.dryingTemp.findFirst({ where: { careType, deviceId: serviceDeviceId } })
+                .then(r => r ?? prisma.dryingTemp.findFirst({ where: { careType, deviceId: null } }))
+              if (tempEntry) {
+                enrichedMessage = { ...enrichedMessage, dryingTempSetpoint: tempEntry.tempC }
+                wsVerbose(`[WebSocket] Injecting dryingTempSetpoint=${tempEntry.tempC} for ${careType}`)
+              }
+            } catch (e) {
+              console.error('[WebSocket] Failed to fetch drying temp settings:', e)
+            }
+          }
+
           if (message.serviceType === 'cleaning' && message.careType) {
             try {
               const careType = message.careType as string
@@ -709,7 +744,7 @@ export function createWebSocketServer(server: Server) {
         // Handle classification error — now sent by main board on behalf of CAM
         else if (message.type === 'classification-error' && message.deviceId) {
           const sourceId = message.deviceId as string
-          console.log(`[WebSocket] Classification error from ${sourceId}: ${message.error}`)
+          console.warn(`[WebSocket] Classification error from ${sourceId}: ${message.error}`)
 
           const targetId = sourceId.startsWith('SSCM-CAM-')
             ? sourceId.replace('SSCM-CAM-', 'SSCM-')
@@ -791,11 +826,24 @@ export function createWebSocketServer(server: Server) {
           if (deviceLiveConnections.get(offlineDeviceId) === ws) {
             deviceLiveConnections.delete(offlineDeviceId)
             deviceLastStatusTime.delete(offlineDeviceId)
+            // Clear DB throttle clock so the first status-update after reconnect re-fetches
+            // camSynced/camDeviceId from DB instead of serving a potentially stale cached value.
+            deviceLastDbUpdateTime.delete(offlineDeviceId)
             console.log(`[WebSocket] ESP32 graceful offline: ${offlineDeviceId} — broadcasting offline status`)
             broadcastToDevice(offlineDeviceId, { type: 'device-offline', deviceId: offlineDeviceId })
             // Write lastSeen now so the dashboard shows the correct "last seen" time after disconnect
             prisma.device.update({ where: { deviceId: offlineDeviceId }, data: { lastSeen: new Date() } }).catch(() => {})
           }
+        }
+
+        // Handle relay state change from ESP32 — forward to dashboard subscribers
+        else if (message.type === 'relay-status' && message.deviceId) {
+          broadcastToDevice(message.deviceId as string, message)
+        }
+
+        // Handle all-relays-off from ESP32 — forward to dashboard subscribers
+        else if (message.type === 'all-relays-off' && message.deviceId) {
+          broadcastToDevice(message.deviceId as string, message)
         }
 
         // Forward firmware log messages to kiosk subscribers
@@ -830,7 +878,9 @@ export function createWebSocketServer(server: Server) {
             deviceLiveConnections.delete(closedDeviceId)
             const pending = setTimeout(() => {
               // Debounce close events to avoid offline/online flaps on quick reconnect.
-              // If a new status-update came in, this timer is canceled in the message handler.
+              // 15s window: ESP32 needs 5s reconnect delay + up to 10s for TLS handshake
+              // on production (Render). If a new status-update arrives, the timer is
+              // cancelled in the message handler — so healthy reconnects never fire this.
               const liveWs = deviceLiveConnections.get(closedDeviceId)
               if (!liveWs || liveWs.readyState !== WebSocket.OPEN) {
                 deviceLastStatusTime.delete(closedDeviceId)
@@ -840,7 +890,7 @@ export function createWebSocketServer(server: Server) {
                 prisma.device.update({ where: { deviceId: closedDeviceId }, data: { lastSeen: new Date() } }).catch(() => {})
               }
               devicePendingOfflineTimers.delete(closedDeviceId)
-            }, 7000)
+            }, 15_000)
             devicePendingOfflineTimers.set(closedDeviceId, pending)
           } else {
             console.log(`[WebSocket] Stale ESP32 connection closed: ${closedDeviceId} — ignoring since a newer connection exists`)
@@ -948,6 +998,9 @@ export function broadcastClassificationResult(
   condition: 'normal' | 'too_dirty' = 'normal',
   snapshotBase64?: string
 ) {
+  console.log(
+    `[Classify:Live] Emit classification-result -> ${deviceId}: ${result} (${(confidence * 100).toFixed(1)}%), subCategory="${subCategory}", condition=${condition}, snapshot=${snapshotBase64 ? 'yes' : 'no'}`
+  )
   broadcastToDevice(deviceId, {
     type: 'classification-result',
     deviceId,
@@ -975,6 +1028,7 @@ export function broadcastClassificationError(deviceId: string, error: string) {
   const sanitizedError = typeof error === 'string' && error.length < 200
     ? error
     : 'Classification failed'
+  console.warn(`[Classify:Live] Emit classification-error -> ${deviceId}: ${sanitizedError}`)
   broadcastToDevice(deviceId, {
     type: 'classification-error',
     deviceId,

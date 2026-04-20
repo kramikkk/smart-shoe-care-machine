@@ -20,14 +20,19 @@ bool readDHT11() {
   return true;
 }
 
-void sendDHTDataViaWebSocket() {
+void sendDHTDataViaWebSocket(bool invalid) {
   if (!wsConnected || !isPaired) return;
 
   String payload = "{";
   payload += "\"type\":\"sensor-data\",";
   payload += "\"deviceId\":\"" + deviceId + "\",";
-  payload += "\"temperature\":" + String(currentTemperature, 1) + ",";
-  payload += "\"humidity\":" + String(currentHumidity, 1);
+  if (invalid) {
+    payload += "\"temperature\":-1,";
+    payload += "\"humidity\":-1";
+  } else {
+    payload += "\"temperature\":" + String(currentTemperature, 1) + ",";
+    payload += "\"humidity\":" + String(currentHumidity, 1);
+  }
   payload += "}";
 
   webSocket.sendTXT(payload);

@@ -14,9 +14,15 @@ async function getAccessToken(): Promise<string> {
       refresh_token: process.env.GMAIL_REFRESH_TOKEN!,
       grant_type:    'refresh_token',
     }),
+    signal: AbortSignal.timeout(8_000),
   })
   if (!res.ok) {
     const err = await res.text()
+    let parsed: { error?: string } = {}
+    try { parsed = JSON.parse(err) } catch { /* non-JSON error body */ }
+    if (parsed.error === 'invalid_grant') {
+      throw new Error('GMAIL_OAUTH_EXPIRED')
+    }
     throw new Error(`Failed to get access token: ${err}`)
   }
   const data = await res.json() as { access_token?: string }
@@ -61,6 +67,7 @@ export async function sendMail(options: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ raw }),
+    signal: AbortSignal.timeout(10_000),
   })
 
   if (!res.ok) {

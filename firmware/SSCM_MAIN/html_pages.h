@@ -16,29 +16,24 @@ const char WIFI_HTML[] PROGMEM = R"rawliteral(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Shoe Care - WiFi Setup</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
   <style>
     :root {
       --primary: #0d9488;
-      --primary-light: #14b8a6;
-      --accent: #06b6d4;
       --bg-gradient: linear-gradient(135deg, #0d9488 0%, #06b6d4 50%, #3b82f6 100%);
       --glass: rgba(255, 255, 255, 0.12);
       --glass-border: rgba(255, 255, 255, 0.2);
     }
     * { box-sizing: border-box; }
     body, html {
-      height: 100%;
+      min-height: 100%;
       margin: 0;
-      font-family: 'Outfit', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg-gradient);
+      background-attachment: fixed;
       color: #fff;
-      overflow: hidden;
     }
     .container {
-      height: 100%;
+      min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -59,79 +54,76 @@ const char WIFI_HTML[] PROGMEM = R"rawliteral(
     }
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
+      to   { opacity: 1; transform: translateY(0); }
     }
     .logo {
-      width: 64px;
-      height: 64px;
+      width: 64px; height: 64px;
       background: rgba(255, 255, 255, 0.2);
       border-radius: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: flex; align-items: center; justify-content: center;
       margin: 0 auto 24px;
     }
-    h1 {
-      font-size: 28px;
-      font-weight: 600;
-      margin: 0 0 8px 0;
-      letter-spacing: -0.5px;
-    }
-    p.subtitle {
-      font-size: 15px;
-      color: rgba(255, 255, 255, 0.7);
-      margin-bottom: 32px;
-    }
-    .input-group {
+    h1 { font-size: 28px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.5px; }
+    p.subtitle { font-size: 15px; color: rgba(255,255,255,0.7); margin-bottom: 32px; }
+    .alert {
+      display: none;
       margin-bottom: 20px;
-      text-align: left;
+      padding: 14px 16px;
+      background: rgba(239,68,68,0.15);
+      border: 1px solid rgba(239,68,68,0.3);
+      border-radius: 16px;
+      font-size: 14px;
+      color: rgba(255,255,255,0.9);
+      line-height: 1.5;
     }
+    .input-group { margin-bottom: 20px; text-align: left; }
     label {
-      display: block;
-      font-size: 13px;
-      font-weight: 400;
-      margin-bottom: 8px;
-      color: rgba(255, 255, 255, 0.8);
-      margin-left: 4px;
+      display: block; font-size: 13px; font-weight: 400;
+      margin-bottom: 8px; margin-left: 4px;
+      color: rgba(255,255,255,0.8);
     }
     select, input {
-      width: 100%;
-      padding: 16px;
-      background: rgba(255, 255, 255, 0.1);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 16px;
-      color: #fff;
-      font-size: 16px;
-      font-family: inherit;
-      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      width: 100%; padding: 16px;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px; color: #fff;
+      font-size: 16px; font-family: inherit;
+      transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
       outline: none;
     }
     select:focus, input:focus {
-      background: rgba(255, 255, 255, 0.15);
-      border-color: rgba(255, 255, 255, 0.4);
-      box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.05);
+      background: rgba(255,255,255,0.15);
+      border-color: rgba(255,255,255,0.4);
+      box-shadow: 0 0 0 4px rgba(255,255,255,0.05);
     }
-    select option { background: #134e4a; color: white; }
-    button {
-      width: 100%;
-      padding: 16px;
-      background: #fff;
-      color: #0d9488;
-      border: none;
-      border-radius: 16px;
-      font-size: 16px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.3s ease;
-      box-shadow: 0 10px 20px -5px rgba(0, 0, 0, 0.2);
-      margin-top: 12px;
+    select option { background: #134e4a; color: #fff; }
+    .btn {
+      width: 100%; padding: 16px;
+      border-radius: 16px; font-size: 16px; font-weight: 600;
+      cursor: pointer; transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+      margin-top: 12px; border: none;
     }
-    button:hover {
+    .btn-primary {
+      background: #fff; color: #0d9488;
+      box-shadow: 0 10px 20px -5px rgba(0,0,0,0.2);
+    }
+    .btn-primary:hover {
       transform: translateY(-2px);
-      box-shadow: 0 15px 25px -5px rgba(0, 0, 0, 0.25);
+      box-shadow: 0 15px 25px -5px rgba(0,0,0,0.25);
       background: #f8fafc;
     }
-    button:active { transform: translateY(0); }
+    .btn-primary:active { transform: translateY(0); }
+    .btn-ghost {
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.3);
+    }
+    .btn-ghost:hover {
+      background: rgba(255,255,255,0.22);
+      transform: translateY(-2px);
+    }
+    .btn-ghost:active { transform: translateY(0); }
+    .btn-ghost:disabled { opacity: 0.6; cursor: default; transform: none; }
   </style>
 </head>
 <body>
@@ -147,21 +139,53 @@ const char WIFI_HTML[] PROGMEM = R"rawliteral(
       </div>
       <h1>WiFi Setup</h1>
       <p class="subtitle">Connect your Machine to the internet</p>
-      <form method="POST">
-        <div class="input-group">
-          <label>Network Name</label>
-          <select name="ssid" required>
+      <div id="no-network" class="alert" id="alert-msg">
+        No networks found nearby.<br>Move closer to your router, then tap Scan Again.
+      </div>
+      <form method="POST" id="wifi-form">
+        <div class="input-group" id="ssid-group">
+          <label for="ssid-select">Network Name</label>
+          <select name="ssid" id="ssid-select" required>
             {{WIFI_LIST}}
           </select>
         </div>
-        <div class="input-group">
-          <label>Password</label>
-          <input name="pass" type="password" placeholder="••••••••" autocomplete="off">
+        <div class="input-group" id="pass-group">
+          <label for="pass-input">Password</label>
+          <input name="pass" id="pass-input" type="password" placeholder="&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;&#x2022;" autocomplete="off">
         </div>
-        <button type="submit">Save & Connect</button>
+        <button type="submit" id="submit-btn" class="btn btn-primary">Save &amp; Connect</button>
       </form>
+      <button type="button" id="rescan-btn" class="btn btn-ghost" style="display:none" onclick="rescan()">
+        Scan Again
+      </button>
     </div>
   </div>
+  <script>
+    var sel = document.getElementById('ssid-select');
+    var noNet = document.getElementById('no-network');
+    var submitBtn = document.getElementById('submit-btn');
+    var rescanBtn = document.getElementById('rescan-btn');
+    var ssidGroup = document.getElementById('ssid-group');
+    var passGroup = document.getElementById('pass-group');
+
+    if (sel.options.length === 1 && sel.options[0].value === '') {
+      var txt = sel.options[0].text;
+      noNet.textContent = txt.indexOf('failed') !== -1
+        ? 'Radio was busy — tap Scan Again to retry.'
+        : 'No networks found nearby. Move closer to your router, then tap Scan Again.';
+      noNet.style.display = 'block';
+      ssidGroup.style.display = 'none';
+      passGroup.style.display = 'none';
+      submitBtn.style.display = 'none';
+      rescanBtn.style.display = 'block';
+    }
+
+    function rescan() {
+      rescanBtn.disabled = true;
+      rescanBtn.textContent = 'Scanning\u2026';
+      location.reload();
+    }
+  </script>
 </body>
 </html>
 )rawliteral";
@@ -174,57 +198,65 @@ const char CONFIRM_HTML[] PROGMEM = R"rawliteral(
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WiFi Saved - Smart Shoe Care</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --primary: #10b981;
       --bg-gradient: linear-gradient(135deg, #0d9488 0%, #06b6d4 50%, #3b82f6 100%);
       --glass: rgba(255, 255, 255, 0.12);
       --glass-border: rgba(255, 255, 255, 0.2);
     }
+    * { box-sizing: border-box; }
     body, html {
-      height: 100%; margin: 0;
-      font-family: 'Outfit', sans-serif;
+      min-height: 100%; margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg-gradient);
+      background-attachment: fixed;
       color: #fff;
-      overflow: hidden;
     }
     .container {
-      height: 100%; display: flex; align-items: center; justify-content: center; padding: 20px;
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center; padding: 20px;
     }
     .card {
       width: 100%; max-width: 400px; padding: 48px 40px;
       background: var(--glass);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
+      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
       border: 1px solid var(--glass-border);
-      border-radius: 32px;
-      text-align: center;
+      border-radius: 32px; text-align: center;
       animation: fadeIn 0.8s ease-out;
     }
     @keyframes fadeIn {
       from { opacity: 0; transform: scale(0.95); }
-      to { opacity: 1; transform: scale(1); }
+      to   { opacity: 1; transform: scale(1); }
     }
     .success-icon {
-      width: 80px; height: 80px; background: rgba(16, 185, 129, 0.2);
-      border-radius: 50%; display: flex; align-items: center; justify-content: center;
-      margin: 0 auto 24px; border: 2px solid rgba(16, 185, 129, 0.3);
+      width: 80px; height: 80px;
+      background: rgba(16,185,129,0.2);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 24px;
+      border: 2px solid rgba(16,185,129,0.3);
     }
-    h1 { font-size: 28px; font-weight: 600; margin: 0 0 12px 0; }
-    p { color: rgba(255, 255, 255, 0.8); margin: 0; line-height: 1.6; }
+    h1 { font-size: 28px; font-weight: 600; margin: 0 0 12px; }
+    p  { color: rgba(255,255,255,0.8); margin: 0; line-height: 1.6; }
     .ssid-badge {
-      display: inline-block; padding: 6px 16px; background: rgba(255, 255, 255, 0.1);
-      border-radius: 20px; font-weight: 600; margin-top: 8px; font-size: 14px;
+      display: inline-block; padding: 6px 16px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 20px; font-weight: 600;
+      margin-top: 8px; font-size: 14px;
+      word-break: break-all;
     }
-    .countdown-container { margin-top: 40px; }
-    .count {
-      font-size: 64px; font-weight: 600; color: #fff; margin: 10px 0;
-      text-shadow: 0 0 20px rgba(255, 255, 255, 0.3);
+    .progress-wrap {
+      margin-top: 36px;
+      background: rgba(255,255,255,0.15);
+      border-radius: 99px; height: 6px; overflow: hidden;
     }
-    .hint { font-size: 13px; color: rgba(255, 255, 255, 0.5); margin-top: 24px; }
+    .progress-bar {
+      height: 100%; width: 0%;
+      background: #fff;
+      border-radius: 99px;
+      transition: width 0.1s linear;
+    }
+    .status { font-size: 13px; color: rgba(255,255,255,0.6); margin-top: 16px; }
   </style>
 </head>
 <body>
@@ -238,30 +270,28 @@ const char CONFIRM_HTML[] PROGMEM = R"rawliteral(
       <h1>Configuration Saved</h1>
       <p>Your machine is connecting to:</p>
       <div class="ssid-badge">{{SSID}}</div>
-      <div class="countdown-container">
-        <p>Rebooting in</p>
-        <div class="count" id="count">15</div>
-        <p>seconds</p>
+      <div class="progress-wrap">
+        <div class="progress-bar" id="bar"></div>
       </div>
-      <p class="hint" id="hint">You can close this window manually</p>
+      <p class="status" id="status">Rebooting&hellip;</p>
     </div>
   </div>
   <script>
-    let seconds = 15;
-    const countEl = document.getElementById("count");
-    const hintEl = document.getElementById("hint");
-    const timer = setInterval(() => {
-      seconds--;
-      countEl.textContent = seconds;
-      if (seconds <= 0) {
-        clearInterval(timer);
-        hintEl.innerHTML = "Taking you back...";
-        setTimeout(() => {
-          window.open('about:blank', '_self');
-          window.close();
-        }, 500);
+    var REBOOT_MS = 1500;
+    var start = Date.now();
+    var bar = document.getElementById('bar');
+    var status = document.getElementById('status');
+    var raf;
+    function tick() {
+      var pct = Math.min((Date.now() - start) / REBOOT_MS * 100, 100);
+      bar.style.width = pct + '%';
+      if (pct < 100) {
+        raf = requestAnimationFrame(tick);
+      } else {
+        status.textContent = 'Done. You can close this page.';
       }
-    }, 1000);
+    }
+    raf = requestAnimationFrame(tick);
   </script>
 </body>
 </html>

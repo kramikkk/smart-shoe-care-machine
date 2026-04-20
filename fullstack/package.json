@@ -1,6 +1,6 @@
 {
   "name": "smart-shoe-care-system",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "private": true,
   "engines": {
     "node": ">=20"
@@ -9,7 +9,7 @@
     "dev": "tsx --env-file=.env server.ts",
     "build:server": "node_modules/.bin/esbuild server.ts --bundle --packages=external --platform=node --target=node20 --tsconfig=tsconfig.json --outfile=dist/server.js",
     "build": "prisma generate && NEXT_TELEMETRY_DISABLED=1 next build && npm run build:server",
-    "start": "NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--max-old-space-size=460 node dist/server.js"
+    "start": "NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--max-old-space-size=380 node dist/server.js"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",

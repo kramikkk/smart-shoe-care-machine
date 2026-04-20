@@ -146,8 +146,8 @@ export default function CommandsPage() {
   const [motorDir, setMotorDir] = useState<Record<MotorId, 'fwd' | 'rev'>>({ left: 'fwd', right: 'fwd', both: 'fwd' })
 
   // RGB
-  const [rgbR, setRgbR] = useState(255)
-  const [rgbG, setRgbG] = useState(128)
+  const [rgbR, setRgbR] = useState(0)
+  const [rgbG, setRgbG] = useState(0)
   const [rgbB, setRgbB] = useState(0)
   const [activeColorCmd, setActiveColorCmd] = useState<string | null>(null)
 
@@ -228,6 +228,18 @@ export default function CommandsPage() {
       sendMessage({ type: 'disable-classification', deviceId: id })
     }
   }, [selectedDevice, sendMessage])
+
+  // Auto-poll stepper positions while the steppers tab is active.
+  useEffect(() => {
+    if (commandsTab !== 'steppers' || !isConnected || !isDeviceReady) return
+    send('STEPPER1_INFO')
+    send('STEPPER2_INFO')
+    const id = setInterval(() => {
+      send('STEPPER1_INFO')
+      send('STEPPER2_INFO')
+    }, 2000)
+    return () => clearInterval(id)
+  }, [commandsTab, isConnected, isDeviceReady])
 
   // Log connection events and sync isDeviceReady with isConnected.
   // isDeviceReady must be set true here (not just from incoming messages) so
@@ -1003,7 +1015,6 @@ export default function CommandsPage() {
                 jog: [-50, -10, 10, 50] as number[], step: 1,
                 color: 'violet' as const,
                 returnMm: 480,
-                onRefresh: () => send('STEPPER1_INFO'),
                 onReturn:  () => { send('STEPPER1_RETURN'); setS1Pos(4800); setS1TargetMm(480) },
                 onZero:    () => { send('STEPPER1_HOME'); setS1Pos(0); setS1TargetMm(0) },
                 onStop:    () => send('STEPPER1_STOP'),
@@ -1016,7 +1027,6 @@ export default function CommandsPage() {
                 jog: [-20, -5, 5, 20] as number[], step: 0.5,
                 color: 'teal' as const,
                 returnMm: 0,
-                onRefresh: () => send('STEPPER2_INFO'),
                 onReturn:  () => { send('STEPPER2_RETURN'); setS2Pos(0); setS2TargetMm(0) },
                 onZero:    () => { send('STEPPER2_HOME'); setS2Pos(0); setS2TargetMm(0) },
                 onStop:    () => send('STEPPER2_STOP'),
@@ -1024,7 +1034,7 @@ export default function CommandsPage() {
               },
             ]).map(({ n, label, sub, maxMm, stepsPerMm, precision, pos, targetMm, setTargetMm,
                       jog, step, color, returnMm,
-                      onRefresh, onReturn, onZero, onStop, onMove }) => {
+                      onReturn, onZero, onStop, onMove }) => {
               const posMm  = pos !== null ? pos / stepsPerMm : null
 
               const c = color === 'violet' ? {
@@ -1074,10 +1084,6 @@ export default function CommandsPage() {
                         }`}>
                           {posMm !== null ? `${posMm.toFixed(precision)} mm` : '— mm'}
                         </div>
-                        <button type="button" disabled={disabled} onClick={onRefresh}
-                          className="p-2 rounded-xl border border-white/10 bg-white/[0.02] text-muted-foreground/50 hover:text-foreground hover:bg-white/5 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-                          <RefreshCw className="w-4 h-4" />
-                        </button>
                       </div>
                     </div>
 
@@ -1176,137 +1182,179 @@ export default function CommandsPage() {
               { label: 'White',  cmd: 'RGB_WHITE',  color: '#f8fafc', r: 255, g: 255, b: 255 },
               { label: 'Blue',   cmd: 'RGB_BLUE',   color: '#3b82f6', r: 59,  g: 130, b: 246 },
               { label: 'Green',  cmd: 'RGB_GREEN',  color: '#22c55e', r: 34,  g: 197, b: 94  },
-              { label: 'Violet', cmd: 'RGB_VIOLET', color: '#9600FF', r: 150, g: 0, b: 255 },
+              { label: 'Violet', cmd: 'RGB_VIOLET', color: '#9600FF', r: 150, g: 0,   b: 255 },
               { label: 'Off',    cmd: 'RGB_OFF',    color: '#1e293b', r: 0,   g: 0,   b: 0   },
             ]
+
+            const SLIDERS = [
+              { label: 'R', val: rgbR, set: setRgbR, accent: '#ef4444', zero: `rgb(0,${rgbG},${rgbB})`,    pure: `rgb(255,${rgbG},${rgbB})` },
+              { label: 'G', val: rgbG, set: setRgbG, accent: '#22c55e', zero: `rgb(${rgbR},0,${rgbB})`,    pure: `rgb(${rgbR},255,${rgbB})` },
+              { label: 'B', val: rgbB, set: setRgbB, accent: '#3b82f6', zero: `rgb(${rgbR},${rgbG},0)`,    pure: `rgb(${rgbR},${rgbG},255)` },
+            ] as { label: string; val: number; set: (v: number) => void; accent: string; zero: string; pure: string }[]
 
             return (
               <Card className="glass-card border-none overflow-hidden">
                 <CardContent className="p-0">
-                  <div className="flex flex-col lg:flex-row">
+                  <div className="flex flex-col lg:flex-row min-h-[420px]">
 
-                    {/* ── Left: Preview ── */}
+                    {/* ── Left: Preview panel ── */}
                     <div
-                      className="relative flex flex-col items-center justify-between gap-6 p-6 lg:p-8 lg:w-[42%] border-b lg:border-b-0 lg:border-r border-white/5 min-h-[300px] transition-all duration-700"
-                      style={{ background: isOff ? undefined : `radial-gradient(ellipse at 50% 30%, ${previewColor}18 0%, transparent 65%)` }}
+                      className="relative flex flex-col items-center justify-center gap-5 p-6 lg:p-10 lg:w-[40%] border-b lg:border-b-0 lg:border-r border-white/5 transition-all duration-700 overflow-hidden"
+                      style={{ background: isOff ? undefined : `radial-gradient(ellipse at 50% 40%, ${previewColor}14 0%, transparent 70%)` }}
                     >
+                      {/* Ambient bloom */}
+                      {!isOff && (
+                        <div className="absolute inset-0 pointer-events-none transition-all duration-700"
+                          style={{ background: `radial-gradient(ellipse at 50% 50%, ${previewColor}0a 0%, transparent 60%)` }} />
+                      )}
+
                       {/* Orb */}
-                      <div className="flex-1 flex items-center justify-center w-full">
-                        <div className="relative flex items-center justify-center">
-                          <div className="absolute rounded-full transition-all duration-700 pointer-events-none"
-                            style={{ width: 200, height: 200, backgroundColor: previewColor, opacity: isOff ? 0 : 0.07, filter: 'blur(40px)' }} />
-                          <div className="absolute rounded-full transition-all duration-500 pointer-events-none"
-                            style={{ width: 160, height: 160, backgroundColor: previewColor, opacity: isOff ? 0 : 0.12, filter: 'blur(20px)' }} />
-                          <div
-                            className="relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-500"
-                            style={{
-                              backgroundColor: previewColor,
-                              boxShadow: isOff
-                                ? 'inset 0 1px 0 rgba(255,255,255,0.05)'
-                                : `0 0 50px 8px ${previewColor}50, 0 0 20px 4px ${previewColor}30, inset 0 1px 0 rgba(255,255,255,0.25)`,
-                            }}
-                          >
-                            {isOff && <Power className="w-7 h-7 text-white/10" />}
-                          </div>
+                      <div className="relative flex items-center justify-center">
+                        <div className="absolute rounded-full transition-all duration-700 pointer-events-none"
+                          style={{ width: 220, height: 220, backgroundColor: previewColor, opacity: isOff ? 0 : 0.08, filter: 'blur(50px)' }} />
+                        <div className="absolute rounded-full transition-all duration-500 pointer-events-none"
+                          style={{ width: 170, height: 170, backgroundColor: previewColor, opacity: isOff ? 0 : 0.13, filter: 'blur(24px)' }} />
+                        <div
+                          className="relative w-36 h-36 rounded-full flex items-center justify-center transition-all duration-500"
+                          style={{
+                            backgroundColor: previewColor,
+                            boxShadow: isOff
+                              ? 'inset 0 2px 0 rgba(255,255,255,0.04), 0 0 0 1px rgba(255,255,255,0.06)'
+                              : `0 0 60px 10px ${previewColor}45, 0 0 24px 4px ${previewColor}30, inset 0 2px 0 rgba(255,255,255,0.2)`,
+                          }}
+                        >
+                          {isOff && <Power className="w-8 h-8 text-white/10" />}
                         </div>
                       </div>
 
-                      {/* Color info */}
-                      <div className="text-center space-y-1">
+                      {/* Hex + RGB display */}
+                      <div className="text-center space-y-1.5 z-10">
                         <p
-                          className="font-mono text-2xl font-bold tracking-widest transition-all duration-300"
+                          className="font-mono text-3xl font-black tracking-widest transition-all duration-300 tabular-nums"
                           style={{
-                            color: isOff ? 'rgba(255,255,255,0.15)' : previewColor,
-                            textShadow: isOff ? 'none' : `0 0 20px ${previewColor}80`,
+                            color: isOff ? 'rgba(255,255,255,0.12)' : previewColor,
+                            textShadow: isOff ? 'none' : `0 0 28px ${previewColor}70`,
                           }}
                         >
                           {hexColor}
                         </p>
-                        <p className="text-[11px] text-muted-foreground/40 font-mono">rgb({rgbR}, {rgbG}, {rgbB})</p>
+                        <p className="text-[11px] text-muted-foreground/35 font-mono tracking-wider">
+                          rgb({rgbR}, {rgbG}, {rgbB})
+                        </p>
                       </div>
 
-                      {/* Preset swatches */}
-                      <div className="w-full grid grid-cols-5 gap-1.5">
-                        {PRESETS.map(({ label, cmd, color, r, g, b }) => (
-                          <button
-                            type="button"
-                            key={cmd}
+                      {/* Native color picker */}
+                      <div className="z-10 flex items-center gap-3 w-full px-2">
+                        <label className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/40 shrink-0">Pick</label>
+                        <div className="relative flex-1 h-9 rounded-xl overflow-hidden border border-white/10 bg-white/5 cursor-pointer hover:border-white/20 transition-colors">
+                          <input
+                            type="color"
+                            value={hexColor}
                             disabled={disabled}
-                            onClick={() => { send(cmd); setRgbR(r); setRgbG(g); setRgbB(b); setActiveColorCmd(cmd) }}
-                            className={`flex flex-col items-center gap-1.5 py-2.5 rounded-xl border transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed ${
-                              activeColorCmd === cmd
-                                ? 'border-white/15 bg-white/10 scale-[1.05]'
-                                : 'border-transparent hover:border-white/10 hover:bg-white/[0.04]'
-                            }`}
-                          >
-                            <div
-                              className="w-8 h-8 rounded-full border border-white/10 transition-all duration-300"
-                              style={{
-                                backgroundColor: color,
-                                boxShadow: activeColorCmd === cmd ? `0 0 14px 4px ${color}80` : 'none',
-                              }}
-                            />
-                            <span className="text-[9px] font-bold text-muted-foreground/50 uppercase tracking-wide leading-none">{label}</span>
-                          </button>
-                        ))}
+                            onChange={e => {
+                              const hex = e.target.value
+                              const r = parseInt(hex.slice(1,3), 16)
+                              const g = parseInt(hex.slice(3,5), 16)
+                              const b = parseInt(hex.slice(5,7), 16)
+                              setRgbR(r); setRgbG(g); setRgbB(b); setActiveColorCmd('custom')
+                            }}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                          />
+                          <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
+                            <span className="text-[11px] font-semibold text-muted-foreground/60">Color picker</span>
+                            <div className="w-6 h-6 rounded-lg border border-white/15 transition-all duration-300"
+                              style={{ backgroundColor: hexColor }} />
+                          </div>
+                        </div>
                       </div>
                     </div>
 
                     {/* ── Right: Controls ── */}
                     <div className="flex flex-col gap-6 p-6 lg:p-8 flex-1">
-                      <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/40">Custom Color</p>
 
-                      <div className="space-y-5">
-                        {([
-                          {
-                            label: 'Red',   val: rgbR, set: setRgbR, accent: '#ef4444',
-                            zero: `rgb(0,${rgbG},${rgbB})`,       pure: `rgb(255,${rgbG},${rgbB})`,
-                          },
-                          {
-                            label: 'Green', val: rgbG, set: setRgbG, accent: '#22c55e',
-                            zero: `rgb(${rgbR},0,${rgbB})`,       pure: `rgb(${rgbR},255,${rgbB})`,
-                          },
-                          {
-                            label: 'Blue',  val: rgbB, set: setRgbB, accent: '#3b82f6',
-                            zero: `rgb(${rgbR},${rgbG},0)`,       pure: `rgb(${rgbR},${rgbG},255)`,
-                          },
-                        ] as { label: string; val: number; set: (v: number) => void; accent: string; zero: string; pure: string }[]).map(({ label, val, set, accent, zero, pure }) => (
-                          <div key={label} className="space-y-2">
-                            <div className="flex justify-between items-center">
-                              <span className="text-xs font-bold" style={{ color: accent }}>{label}</span>
-                              <span className="text-sm font-mono font-bold tabular-nums" style={{ color: accent }}>{val}</span>
-                            </div>
-                            {/* Custom gradient track */}
-                            <div className="relative h-8">
-                              <div
-                                className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-3 rounded-full overflow-hidden pointer-events-none"
-                                style={{ background: `linear-gradient(to right, ${zero}, ${pure})` }}
+                      {/* Presets */}
+                      <div className="space-y-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/40">Presets</p>
+                        <div className="flex flex-wrap gap-2">
+                          {PRESETS.map(({ label, cmd, color, r, g, b }) => {
+                            const isActive = activeColorCmd === cmd
+                            return (
+                              <button
+                                type="button"
+                                key={cmd}
+                                disabled={disabled}
+                                onClick={() => { send(cmd); setRgbR(r); setRgbG(g); setRgbB(b); setActiveColorCmd(cmd) }}
+                                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed ${
+                                  isActive
+                                    ? 'border-white/20 bg-white/10 scale-[1.03]'
+                                    : 'border-white/8 bg-white/[0.03] hover:border-white/15 hover:bg-white/[0.07]'
+                                }`}
                               >
                                 <div
-                                  className="absolute inset-y-0 right-0 bg-black/60"
-                                  style={{ width: `${(1 - val / 255) * 100}%` }}
+                                  className="w-4 h-4 rounded-full border border-white/15 shrink-0 transition-all duration-300"
+                                  style={{
+                                    backgroundColor: color,
+                                    boxShadow: isActive ? `0 0 10px 3px ${color}70` : 'none',
+                                  }}
+                                />
+                                <span className={`transition-colors duration-200 ${isActive ? 'text-foreground' : 'text-muted-foreground/60'}`}>
+                                  {label}
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Divider */}
+                      <div className="h-px bg-white/5" />
+
+                      {/* RGB Sliders */}
+                      <div className="space-y-3">
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground/40">Custom Mix</p>
+                        <div className="space-y-4">
+                          {SLIDERS.map(({ label, val, set, accent, zero, pure }) => (
+                            <div key={label} className="flex items-center gap-3">
+                              {/* Channel label + value */}
+                              <div className="flex flex-col items-center w-8 shrink-0">
+                                <span className="text-[11px] font-black tabular-nums" style={{ color: accent }}>{label}</span>
+                                <span className="text-[10px] font-mono text-muted-foreground/40 tabular-nums leading-none">{val}</span>
+                              </div>
+                              {/* Gradient track + invisible range */}
+                              <div className="relative flex-1 h-10 flex items-center">
+                                <div
+                                  className="absolute inset-x-0 h-2.5 rounded-full pointer-events-none"
+                                  style={{ background: `linear-gradient(to right, ${zero}, ${pure})` }}
+                                >
+                                  <div
+                                    className="absolute inset-y-0 right-0 rounded-r-full bg-black/55"
+                                    style={{ width: `${(1 - val / 255) * 100}%` }}
+                                  />
+                                </div>
+                                <input
+                                  type="range"
+                                  min={0} max={255} step={1} value={val}
+                                  disabled={disabled}
+                                  onChange={e => { set(Number(e.target.value)); setActiveColorCmd('custom') }}
+                                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+                                />
+                                {/* Thumb */}
+                                <div
+                                  className="absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full border-2 border-background pointer-events-none shadow-md transition-all duration-75"
+                                  style={{
+                                    left: `clamp(0px, calc(${(val / 255) * 100}% - 8px), calc(100% - 16px))`,
+                                    backgroundColor: accent,
+                                    boxShadow: `0 0 8px 2px ${accent}55`,
+                                  }}
                                 />
                               </div>
-                              {/* Native input (invisible, handles interaction) */}
-                              <input
-                                type="range"
-                                min={0} max={255} step={1} value={val}
-                                disabled={disabled}
-                                onChange={e => { set(Number(e.target.value)); setActiveColorCmd('custom') }}
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed disabled:opacity-0"
-                              />
-                              {/* Custom thumb */}
-                              <div
-                                className="absolute top-1/2 -translate-y-1/2 w-5 h-5 rounded-full border-2 border-background pointer-events-none shadow-lg"
-                                style={{
-                                  left: `clamp(0px, calc(${(val / 255) * 100}% - 10px), calc(100% - 20px))`,
-                                  backgroundColor: accent,
-                                  boxShadow: `0 0 10px 3px ${accent}60`,
-                                }}
-                              />
+                              {/* Percentage */}
+                              <span className="text-[10px] font-mono text-muted-foreground/30 tabular-nums w-8 text-right shrink-0">
+                                {Math.round((val / 255) * 100)}%
+                              </span>
                             </div>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
 
                       {/* Apply button */}
@@ -1314,15 +1362,15 @@ export default function CommandsPage() {
                         type="button"
                         disabled={disabled}
                         onClick={() => { send(`RGB_CUSTOM_${rgbR}_${rgbG}_${rgbB}`); setActiveColorCmd('custom') }}
-                        className="mt-auto w-full py-3.5 rounded-xl text-sm font-bold border transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                        className="mt-auto w-full py-3 rounded-xl text-sm font-bold border transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
                         style={{
-                          backgroundColor: isOff ? 'rgba(255,255,255,0.03)' : previewColor,
-                          color: isOff ? 'rgba(255,255,255,0.25)' : brightness > 140 ? '#000' : '#fff',
-                          boxShadow: isOff ? 'none' : `0 0 24px 4px ${previewColor}45`,
-                          borderColor: isOff ? 'rgba(255,255,255,0.08)' : `${previewColor}40`,
+                          backgroundColor: isOff ? 'rgba(255,255,255,0.03)' : `${previewColor}`,
+                          color: isOff ? 'rgba(255,255,255,0.2)' : brightness > 145 ? '#000' : '#fff',
+                          boxShadow: isOff ? 'none' : `0 0 20px 3px ${previewColor}35`,
+                          borderColor: isOff ? 'rgba(255,255,255,0.07)' : `${previewColor}35`,
                         }}
                       >
-                        {isOff ? 'Turn Off' : `Apply ${hexColor}`}
+                        {isOff ? 'LED is Off' : `Apply ${hexColor}`}
                       </button>
                     </div>
 
@@ -1591,90 +1639,84 @@ export default function CommandsPage() {
         <TabsContent value="system" className="space-y-6">
 
           {/* Safe Operations */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {/* Device Status */}
-            <Card className="glass-card border-none">
-              <CardContent className="p-5 flex items-start gap-4">
-                <div className="p-3 rounded-xl bg-primary/10 shrink-0">
-                  <Activity className="w-5 h-5 text-primary" />
+            <div className="rounded-xl bg-background/40 border border-white/8 p-4 flex flex-col gap-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="p-2 rounded-lg bg-primary/10 shrink-0">
+                  <Activity className="w-4 h-4 text-primary" />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <p className="font-semibold text-sm">Device Status</p>
-                    <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-primary/10 text-primary">Safe</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mb-3">Queries device state — response appears in the log below.</p>
-                  <Button size="sm" disabled={disabled} onClick={() => send('STATUS')}>Query Status</Button>
-                </div>
-              </CardContent>
-            </Card>
+                <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-primary/10 text-primary">Safe</span>
+              </div>
+              <div>
+                <p className="font-semibold text-sm mb-1">Device Status</p>
+                <p className="text-xs text-muted-foreground">Queries device state — response appears in the log below.</p>
+              </div>
+              <Button size="sm" disabled={disabled} onClick={() => send('STATUS')} className="w-full mt-auto">Query Status</Button>
+            </div>
 
             {/* Restart Device */}
-            <Card className="glass-card border-none ring-1 ring-amber-500/20">
-              <CardContent className="p-5 flex items-start gap-4">
-                <div className="p-3 rounded-xl bg-amber-500/10 shrink-0">
-                  <RotateCcw className="w-5 h-5 text-amber-500" />
+            <div className="rounded-xl bg-background/40 border border-amber-500/15 p-4 flex flex-col gap-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="p-2 rounded-lg bg-amber-500/10 shrink-0">
+                  <RotateCcw className="w-4 h-4 text-amber-500" />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <p className="font-semibold text-sm">Restart Device</p>
-                    <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500">Caution</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mb-3">Restarts the ESP32. Device offline for 10–30 seconds. Current service will be interrupted.</p>
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button size="sm" variant="outline" className="border-amber-500/40 text-amber-500 hover:bg-amber-500/10 hover:text-amber-400" disabled={disabled}>Restart</Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Restart Device?</AlertDialogTitle>
-                        <AlertDialogDescription>The device will restart and be offline for 10–30 seconds. Any running service will be interrupted.</AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => { sendMessage({ type: 'restart-device', deviceId: selectedDevice! }); toast.info('Restart command sent — device will be back in 10–30 seconds.') }}>
-                          Restart
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
-                </div>
-              </CardContent>
-            </Card>
+                <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500">Caution</span>
+              </div>
+              <div>
+                <p className="font-semibold text-sm mb-1">Restart Device</p>
+                <p className="text-xs text-muted-foreground">Restarts the ESP32. Device offline for 10–30 seconds. Current service will be interrupted.</p>
+              </div>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button size="sm" variant="outline" className="w-full mt-auto border-amber-500/40 text-amber-500 hover:bg-amber-500/10 hover:text-amber-400" disabled={disabled}>Restart</Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Restart Device?</AlertDialogTitle>
+                    <AlertDialogDescription>The device will restart and be offline for 10–30 seconds. Any running service will be interrupted.</AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => { sendMessage({ type: 'restart-device', deviceId: selectedDevice! }); toast.info('Restart command sent — device will be back in 10–30 seconds.') }}>
+                      Restart
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
 
             {/* Money Counters */}
-            <Card className="glass-card border-none ring-1 ring-yellow-500/20">
-              <CardContent className="p-5 flex items-start gap-4">
-                <div className="p-3 rounded-xl bg-yellow-500/10 shrink-0">
-                  <DollarSign className="w-5 h-5 text-yellow-500" />
+            <div className="rounded-xl bg-background/40 border border-yellow-500/15 p-4 flex flex-col gap-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="p-2 rounded-lg bg-yellow-500/10 shrink-0">
+                  <DollarSign className="w-4 h-4 text-yellow-500" />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <p className="font-semibold text-sm">Money Counters</p>
-                    <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-500">Caution</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground mb-3">Query current coin/bill totals inside the device — response appears in the log below.</p>
-                  <div className="flex gap-2 flex-wrap">
-                    <Button size="sm" disabled={disabled} onClick={() => send('QUERY_MONEY')}>Query Money</Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button size="sm" variant="outline" className="border-yellow-500/40 text-yellow-500 hover:bg-yellow-500/10 hover:text-yellow-400" disabled={disabled}>Reset to ₱0</Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Reset Money Counters?</AlertDialogTitle>
-                          <AlertDialogDescription>All coin and bill totals will be reset to ₱0. This cannot be undone.</AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => send('RESET_MONEY')}>Reset</AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+                <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-500">Caution</span>
+              </div>
+              <div>
+                <p className="font-semibold text-sm mb-1">Money Counters</p>
+                <p className="text-xs text-muted-foreground">Query current coin/bill totals inside the device — response appears in the log below.</p>
+              </div>
+              <div className="flex flex-col gap-2 mt-auto">
+                <Button size="sm" disabled={disabled} onClick={() => send('QUERY_MONEY')} className="w-full">Query Money</Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button size="sm" variant="outline" className="w-full border-yellow-500/40 text-yellow-500 hover:bg-yellow-500/10 hover:text-yellow-400" disabled={disabled}>Reset to ₱0</Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Reset Money Counters?</AlertDialogTitle>
+                      <AlertDialogDescription>All coin and bill totals will be reset to ₱0. This cannot be undone.</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => send('RESET_MONEY')}>Reset</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            </div>
           </div>
 
           {/* Danger Zone */}

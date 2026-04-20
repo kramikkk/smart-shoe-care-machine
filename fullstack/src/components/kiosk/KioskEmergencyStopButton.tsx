@@ -49,13 +49,13 @@ export function KioskEmergencyStopButton({
       <AlertDialogTrigger asChild>
         <Button
           type="button"
-          variant="destructive"
+          variant="default"
           size="lg"
-          className="w-auto shrink-0 gap-2 px-8 font-semibold shadow-md"
+          className="h-12 min-h-12 w-auto shrink-0 gap-2.5 rounded-lg border-0 bg-red-600 px-8 text-lg font-semibold text-white shadow-md hover:bg-red-700 focus-visible:ring-red-500/40 active:bg-red-800 disabled:bg-red-400/90 dark:bg-red-600 dark:hover:bg-red-700"
           disabled={!deviceId}
           aria-label="Emergency stop"
         >
-          <OctagonAlert className="size-5 shrink-0" />
+          <OctagonAlert className="size-6 shrink-0" aria-hidden />
           Emergency stop
         </Button>
       </AlertDialogTrigger>
@@ -76,8 +76,8 @@ export function KioskEmergencyStopButton({
             Cancel
           </AlertDialogCancel>
           <AlertDialogAction
-            variant="destructive"
-            className="flex-1 font-semibold"
+            variant="default"
+            className="flex-1 border-0 bg-red-600 font-semibold text-white shadow-sm hover:bg-red-700 focus-visible:ring-red-500/40 active:bg-red-800 dark:bg-red-600 dark:hover:bg-red-700"
             onClick={handleConfirm}
           >
             Stop
