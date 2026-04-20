@@ -47,8 +47,13 @@ export async function POST(request: NextRequest) {
       }
 
       const metadataSafe = metadata ?? {}
-      const { shoeType, careType, serviceType, amount, paymentMethod } = metadataSafe
-      const parsedAmount = parseFloat(amount || '0')
+      const { shoeType, careType, serviceType, amount, baseAmount, paymentFee, totalAmount, paymentMethod } = metadataSafe
+      const parsedBaseAmount = parseFloat(baseAmount || amount || '0')
+      const parsedPaymentFee = parseFloat(paymentFee || '0')
+      const parsedTotalAmount = parseFloat(totalAmount || amount || '0')
+      const normalizedTotalAmount = Number.isFinite(parsedTotalAmount)
+        ? parsedTotalAmount
+        : parsedBaseAmount + (Number.isFinite(parsedPaymentFee) ? parsedPaymentFee : 0)
 
       let transaction
       try {
@@ -59,7 +64,8 @@ export async function POST(request: NextRequest) {
             serviceType: serviceType || 'Package',
             shoeType,
             careType,
-            amount: parsedAmount,
+            amount: parsedBaseAmount,
+            amountPaid: normalizedTotalAmount,
             deviceId: resolvedDeviceId,
             paymongoPaymentId: paymentId,
           },
@@ -89,8 +95,9 @@ export async function POST(request: NextRequest) {
         })
       }
 
-      broadcastPaymentSuccess(resolvedDeviceId, transaction.id, transaction.amount)
-      console.log(`[Webhook] payment.paid processed — tx: ${transaction.id}, device: ${resolvedDeviceId}, amount: ₱${transaction.amount}`)
+      const paidAmount = transaction.amountPaid ?? transaction.amount
+      broadcastPaymentSuccess(resolvedDeviceId, transaction.id, paidAmount)
+      console.log(`[Webhook] payment.paid processed — tx: ${transaction.id}, device: ${resolvedDeviceId}, amount: ₱${paidAmount}`)
     }
 
     return NextResponse.json({ received: true })

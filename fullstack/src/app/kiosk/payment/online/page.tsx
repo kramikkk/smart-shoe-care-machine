@@ -10,6 +10,12 @@ import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 import { debug, isDebug } from '@/lib/debug'
 
 type ServiceType = 'cleaning' | 'drying' | 'sterilizing' | 'package'
+type PaymentBreakdown = { baseAmount: number; paymentFee: number; totalAmount: number; feeRatePercent: number }
+
+const safeNumber = (value: unknown, fallback: number) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
 
 const OnlinePayment = () => {
   const searchParams = useSearchParams()
@@ -43,6 +49,12 @@ const OnlinePayment = () => {
   const [paymentIntentId, setPaymentIntentId] = useState<string | null>(null)
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [paymentBreakdown, setPaymentBreakdown] = useState<PaymentBreakdown>({
+    baseAmount: selectedPrice,
+    paymentFee: 0,
+    totalAmount: selectedPrice,
+    feeRatePercent: 1.34,
+  })
 
   const redirectToSuccess = useCallback(() => {
     if (hasRedirectedRef.current) return
@@ -160,6 +172,17 @@ const OnlinePayment = () => {
       debug.log(`[Payment] QR created — intentId: ${data.paymentIntentId}`)
       setPaymentIntentId(data.paymentIntentId)
       setQrImageUrl(data.qrImageUrl)
+      const fallbackTotal = selectedPrice
+      const baseAmount = safeNumber(data.baseAmount, selectedPrice)
+      const paymentFee = safeNumber(data.paymentFee, 0)
+      const totalAmount = safeNumber(data.totalAmount, baseAmount + paymentFee || fallbackTotal)
+      const feeRatePercent = safeNumber(data.feeRatePercent, 1.34)
+      setPaymentBreakdown({
+        baseAmount,
+        paymentFee,
+        totalAmount,
+        feeRatePercent,
+      })
       setPaymentState('awaiting_payment')
 
       startPolling(data.paymentIntentId)
@@ -229,7 +252,7 @@ const OnlinePayment = () => {
             </div>
             <div className="bg-gradient-to-r from-blue-50 to-cyan-50 px-6 py-3 rounded-full border border-blue-200">
               <p className="text-base font-semibold text-blue-800">
-                {selectedServiceName} - ₱{selectedPrice}
+                {selectedServiceName} - ₱{paymentBreakdown.totalAmount.toFixed(2)}
               </p>
             </div>
           </div>
@@ -267,8 +290,20 @@ const OnlinePayment = () => {
                       <p className="text-md text-gray-600">{serviceDescriptions[selectedService] ?? ''}</p>
                     </div>
                     <div className="pt-2 border-t border-gray-200">
-                      <p className="text-4xl font-bold text-blue-600">₱{selectedPrice}</p>
-                      <p className="text-md text-gray-600 mt-1">Total Amount</p>
+                      <div className="space-y-1 text-md text-gray-700">
+                        <div className="flex items-center justify-between">
+                          <span>Service Price</span>
+                          <span>₱{paymentBreakdown.baseAmount.toFixed(2)}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span>Processing Fee ({paymentBreakdown.feeRatePercent.toFixed(2)}%)</span>
+                          <span>₱{paymentBreakdown.paymentFee.toFixed(2)}</span>
+                        </div>
+                      </div>
+                      <div className="pt-2 mt-2 border-t border-gray-200">
+                        <p className="text-4xl font-bold text-blue-600">₱{paymentBreakdown.totalAmount.toFixed(2)}</p>
+                        <p className="text-md text-gray-600 mt-1">Total Amount</p>
+                      </div>
                     </div>
                   </div>
                 </div>

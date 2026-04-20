@@ -6,6 +6,17 @@ import { resolvePaymentContextByDevice } from '@/lib/payments/provider-resolver'
 import { z } from 'zod'
 import { rateLimit } from '@/lib/rate-limit'
 
+const DEFAULT_QRPH_FEE_RATE = 0.0134 // 1.34%
+
+const getQrphFeeRate = () => {
+  const raw = process.env.PAYMENT_QRPH_FEE_RATE
+  const parsed = Number(raw)
+  if (!raw || Number.isNaN(parsed) || parsed < 0 || parsed > 1) return DEFAULT_QRPH_FEE_RATE
+  return parsed
+}
+
+const roundCurrency = (value: number) => Math.round(value * 100) / 100
+
 const PaymentCreateSchema = z.object({
   amount: z.number().min(1).max(50000),
   description: z.string().min(1),
@@ -50,11 +61,27 @@ export async function POST(request: NextRequest) {
       token: resolvedContext.paymongo.token,
     })
 
+    const baseAmount = roundCurrency(amount)
+    const feeRate = getQrphFeeRate()
+    const paymentFee = roundCurrency(baseAmount * feeRate)
+    const totalAmount = roundCurrency(baseAmount + paymentFee)
+
     // Pass all service metadata so webhook can create Transaction on success
     const paymentIntentResponse = await client.createPaymentIntent(
-      amount,
+      totalAmount,
       description,
-      { deviceId, shoeType, careType, serviceType, amount: String(amount), paymentMethod: 'Online' }
+      {
+        deviceId,
+        shoeType,
+        careType,
+        serviceType,
+        amount: String(baseAmount),
+        baseAmount: String(baseAmount),
+        paymentFee: String(paymentFee),
+        totalAmount: String(totalAmount),
+        feeRatePercent: String(roundCurrency(feeRate * 100)),
+        paymentMethod: 'Online',
+      }
     )
     const paymentIntentId = paymentIntentResponse.data.id
     const paymentIntentStatus = paymentIntentResponse.data.attributes?.status ?? 'awaiting_payment_method'
@@ -90,6 +117,10 @@ export async function POST(request: NextRequest) {
       paymentIntentId,
       qrImageUrl,
       status: attachResponse.data.attributes.status,
+      baseAmount,
+      paymentFee,
+      totalAmount,
+      feeRatePercent: roundCurrency(feeRate * 100),
     })
   } catch (error) {
     console.error('Payment creation failed:', error)

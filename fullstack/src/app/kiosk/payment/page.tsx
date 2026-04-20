@@ -16,14 +16,22 @@ const paymentMethods = [
     src: '/Cash3D.webp',
     alt: 'Cash Payment',
     title: 'Cash Payment',
-    descriptions: ['Insert coins or bills into the machine', 'Accepts: ₱1, ₱5, ₱10, ₱20, ₱50, ₱100'],
+    descriptions: [
+      'Insert coins or bills into the machine',
+      'Accepts: ₱1, ₱5, ₱10, ₱20, ₱50, ₱100',
+    ],
+    feeNote: 'No service fee.',
   },
   {
     id: 'online',
     src: '/QR3D.webp',
     alt: 'Online Payment',
     title: 'Online Payment',
-    descriptions: ['Scan QR code with your mobile device', 'Supports GCash, PayMaya, and GrabPay'],
+    descriptions: [
+      'Scan QR code with your mobile device',
+      'Supports GCash, PayMaya, and GrabPay',
+    ],
+    feeNote: 'Includes service fee.',
   },
 ]
 
@@ -160,6 +168,7 @@ const Payment = () => {
                   {method.descriptions.map((desc, idx) => (
                     <p key={idx} className="text-base text-gray-600">{desc}</p>
                   ))}
+                  <p className="text-base text-gray-600 italic">{method.feeNote}</p>
                 </div>
                 {isOnline && isCheckingOnlinePayment && (
                   <p className="text-sm text-gray-500 mt-2">Checking online payment setup...</p>
