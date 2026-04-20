@@ -88,13 +88,25 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
     wsRef.current = ws
 
     // Some browsers/networks can leave WS in CONNECTING too long.
-    // Force-close stale attempts so onclose reconnect logic kicks in.
+    // 20s: Render free tier cold-starts take 15-30s (TLS + server wake-up).
+    // A 6s timeout caused premature close → "WebSocket is closed before the
+    // connection is established" error on every cold-start visit.
     connectTimeoutRef.current = setTimeout(() => {
       if (ws.readyState === WebSocket.CONNECTING) {
         debug.warn('[WebSocket] Connect timeout, retrying...')
+        ws.onclose = null  // prevent onclose from scheduling a second reconnect
+        ws.onerror = null
         ws.close()
+        wsRef.current = null
+        connectionStateRef.current = ConnectionState.DISCONNECTED
+        reconnectAttemptsRef.current++
+        const delay = Math.min(
+          RECONNECT_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current - 1),
+          MAX_RECONNECT_DELAY_MS
+        )
+        reconnectTimeoutRef.current = setTimeout(() => connectWebSocket(devId), delay)
       }
-    }, 6000)
+    }, 20000)
 
     ws.onopen = () => {
       if (connectTimeoutRef.current) {
@@ -163,10 +175,22 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
 
     ws.onerror = () => {
       console.error('[WebSocket] Connection error')
+      if (connectTimeoutRef.current) { clearTimeout(connectTimeoutRef.current); connectTimeoutRef.current = null }
       connectionStateRef.current = ConnectionState.DISCONNECTED
       setIsConnected(false)
-      // Ensure stalled sockets transition to onclose quickly.
+      wsRef.current = null
+      // Null onclose before closing so it doesn't schedule a duplicate reconnect —
+      // we schedule exactly one reconnect here instead.
+      ws.onclose = null
       try { ws.close() } catch {}
+      if (!intentionalCloseRef.current) {
+        reconnectAttemptsRef.current++
+        const delay = Math.min(
+          RECONNECT_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current - 1),
+          MAX_RECONNECT_DELAY_MS
+        )
+        reconnectTimeoutRef.current = setTimeout(() => connectWebSocket(devId), delay)
+      }
     }
 
     ws.onclose = (event) => {

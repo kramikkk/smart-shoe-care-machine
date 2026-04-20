@@ -244,6 +244,11 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
     [selectedDevice]
   )
 
+  // Keep ref current so the WS effect can call syncAlertsToDb without it being
+  // in the effect's dependency array — prevents WS teardown/reconnect on re-render.
+  const syncAlertsToDbRef = useRef(syncAlertsToDb)
+  useEffect(() => { syncAlertsToDbRef.current = syncAlertsToDb }, [syncAlertsToDb])
+
   useEffect(() => {
     if (!selectedDevice) return
 
@@ -267,12 +272,21 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
       wsRef.current = ws
 
       // Avoid hanging forever in CONNECTING on flaky networks.
+      // 20s: Render free tier cold-starts take 15-30s (TLS + server wake-up).
+      // A 6s timeout was causing premature close → "WebSocket is closed before
+      // the connection is established" browser error on every cold-start visit.
       if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current)
       connectTimeoutRef.current = setTimeout(() => {
         if (ws.readyState === WebSocket.CONNECTING) {
+          ws.onclose = null  // prevent the close from scheduling a second reconnect
+          ws.onerror = null  // (reconnect is handled below after the close)
           try { ws.close() } catch {}
+          wsRef.current = null
+          reconnectAttemptsRef.current++
+          const delay = Math.min(3000 * Math.pow(2, reconnectAttemptsRef.current - 1), 30000)
+          reconnectTimeoutRef.current = setTimeout(() => connect(), delay)
         }
-      }, 6000)
+      }, 20000)
 
       ws.onopen = () => {
         if (connectTimeoutRef.current) { clearTimeout(connectTimeoutRef.current); connectTimeoutRef.current = null }
@@ -306,7 +320,7 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
                 lastUpdate: new Date(),
               }
               sensorDataRef.current = next
-              syncAlertsToDb(next, true)
+              syncAlertsToDbRef.current(next, true)
               return next
             })
           }
@@ -317,7 +331,7 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
             setSensorData(prev => {
               const next = { ...prev, camSynced: message.camSynced, lastUpdate: new Date() }
               sensorDataRef.current = next
-              syncAlertsToDb(next, true)
+              syncAlertsToDbRef.current(next, true)
               return next
             })
           }
@@ -333,7 +347,7 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
                 lastUpdate: new Date(),
               }
               sensorDataRef.current = next
-              syncAlertsToDb(next, true)
+              syncAlertsToDbRef.current(next, true)
               return next
             })
           }
@@ -396,14 +410,17 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
 
       ws.onerror = () => {
         if (connectTimeoutRef.current) { clearTimeout(connectTimeoutRef.current); connectTimeoutRef.current = null }
-        // Don't wipe sensor data on transient errors — the ESP32's data is still
-        // valid. Only clear on authoritative device-offline from the server.
         setIsConnected(false)
         setIsLoadingData(false)
         if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
         wsRef.current = null
-        // Push to onclose path promptly so reconnect timer starts.
+        // Null onclose before closing so the close event doesn't schedule a
+        // duplicate reconnect — onclose will still fire but do nothing.
+        ws.onclose = null
         try { ws.close() } catch {}
+        reconnectAttemptsRef.current++
+        const delay = Math.min(3000 * Math.pow(2, reconnectAttemptsRef.current - 1), 30000)
+        reconnectTimeoutRef.current = setTimeout(() => connect(), delay)
       }
 
       ws.onclose = () => {
@@ -440,7 +457,7 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
         ws.close()
       }
     }
-  }, [selectedDevice, syncAlertsToDb])
+  }, [selectedDevice])
 
   const sendMessage = useCallback((msg: Record<string, unknown>): boolean => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false
