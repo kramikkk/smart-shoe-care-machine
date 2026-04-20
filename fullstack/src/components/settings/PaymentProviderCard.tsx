@@ -11,10 +11,10 @@ import { useClientPaymentConfig } from '@/hooks/useClientPaymentConfig'
 
 export function PaymentProviderCard() {
   const { config, isSaving, isToggling, isResetting, error, saveManual, setEnabled, resetCredentials } = useClientPaymentConfig()
-  const [mode, setMode] = useState<'test' | 'live'>('live')
   const [secretKey, setSecretKey] = useState('')
   const [webhookSecret, setWebhookSecret] = useState('')
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [isCopyingWebhookUrl, setIsCopyingWebhookUrl] = useState(false)
 
   const statusText = useMemo(() => {
     if (!config) return 'Not connected'
@@ -33,7 +33,6 @@ export function PaymentProviderCard() {
     }
 
     const result = await saveManual({
-      mode,
       secretKey,
       webhookSecret,
     })
@@ -68,6 +67,15 @@ export function PaymentProviderCard() {
     setWebhookSecret('')
   }
 
+  const handleCopyWebhookPath = async () => {
+    setIsCopyingWebhookUrl(true)
+    try {
+      await navigator.clipboard.writeText('smart-shoe-care-machine.onrender.com/api/payment/webhook')
+    } finally {
+      setTimeout(() => setIsCopyingWebhookUrl(false), 1000)
+    }
+  }
+
   return (
     <Card className="glass-card border-none">
       <CardHeader>
@@ -97,40 +105,13 @@ export function PaymentProviderCard() {
         <div className="grid gap-6 md:grid-cols-2">
           {/* Main Form Area */}
           <div className="space-y-5">
-            <div className="space-y-3">
-              <Label>Environment Mode</Label>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant={mode === 'live' ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setMode('live')}
-                  className="w-24"
-                >
-                  Live
-                </Button>
-                <Button
-                  type="button"
-                  variant={mode === 'test' ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setMode('test')}
-                  className="w-24"
-                >
-                  Test
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Select the correct mode for the API keys you are providing.
-              </p>
-            </div>
-
             <div className="space-y-4 rounded-lg border border-border/60 p-4">
               <div className="space-y-2">
                 <Label htmlFor="paymongo-secret-key">Secret Key</Label>
                 <Input
                   id="paymongo-secret-key"
                   type="password"
-                  placeholder={mode === 'live' ? 'sk_live_...' : 'sk_test_...'}
+                  placeholder="sk_live_..."
                   value={secretKey}
                   onChange={(e) => setSecretKey(e.target.value)}
                   autoComplete="off"
@@ -199,39 +180,46 @@ export function PaymentProviderCard() {
 
           {/* Instructions Sidebar */}
           <div className="rounded-xl border border-border/50 bg-card p-5 shadow-sm text-sm self-start h-full">
-            <h4 className="mb-4 font-semibold text-foreground">Detailed setup flow</h4>
+            <h4 className="mb-4 font-semibold text-foreground">Quick setup guide</h4>
             <div className="space-y-4 text-muted-foreground">
               <div className="space-y-1">
-                <strong className="text-foreground">1. Choose mode first</strong>
-                <p>Select <em>Live</em> or <em>Test</em> on the left. The keys you copy must match this mode.</p>
+                <strong className="text-foreground">1. Copy your Live Secret Key</strong>
+                <p>In PayMongo, go to <em>Developers &gt; API Keys</em>, copy <code>sk_live_...</code>, then paste it into the <em>Secret Key</em> field.</p>
               </div>
               <div className="space-y-1">
-                <strong className="text-foreground">2. Copy Secret Key</strong>
-                <p>In PayMongo, go to <em>Developers &gt; API Keys</em> and copy the correct Secret Key (<code>sk_test_...</code> or <code>sk_live_...</code>).</p>
-              </div>
-              <div className="space-y-1">
-                <strong className="text-foreground">3. Create webhook endpoint</strong>
-                <p>In <em>Developers &gt; Webhooks</em>, add:</p>
-                <div className="mt-1.5 rounded-md border border-border/50 bg-muted/40 px-3 py-2 font-mono text-[11px] text-foreground break-all select-all">
-                  https://smart-shoe-care-machine.onrender.com/api/payment/webhook
+                <strong className="text-foreground">2. Create a webhook</strong>
+                <p>In <em>Developers &gt; Webhooks</em>, add this endpoint:</p>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <div className="flex-1 rounded-md border border-border/50 bg-muted/40 px-3 py-2 font-mono text-[11px] text-foreground break-all select-all">
+                    smart-shoe-care-machine.onrender.com/api/payment/webhook
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 px-3 text-xs"
+                    onClick={() => void handleCopyWebhookPath()}
+                  >
+                    {isCopyingWebhookUrl ? 'Copied' : 'Copy'}
+                  </Button>
                 </div>
               </div>
               <div className="space-y-1">
-                <strong className="text-foreground">4. Select events</strong>
-                <p>Enable at least <code>payment.paid</code>. Recommended: also add <code>payment.failed</code>.</p>
+                <strong className="text-foreground">3. Select webhook events</strong>
+                <p>Enable <code>payment.paid</code>. You can also enable <code>payment.failed</code>.</p>
               </div>
               <div className="space-y-1">
-                <strong className="text-foreground">5. Copy Webhook Secret</strong>
-                <p>Open webhook details and copy the signing secret (<code>whsec_...</code>), then paste it on the left.</p>
+                <strong className="text-foreground">4. Copy your Webhook Secret</strong>
+                <p>Open webhook details, copy <code>whsec_...</code>, then paste it into Webhook Secret.</p>
               </div>
               <div className="space-y-1">
-                <strong className="text-foreground">6. Save and verify</strong>
-                <p>Click <em>Save Credentials</em>, then run one test payment to confirm kiosk detects success.</p>
+                <strong className="text-foreground">5. Save and enable</strong>
+                <p>Click <em>Save Credentials</em>, then turn on <em>Enable Online Payment</em>.</p>
               </div>
             </div>
             
             <div className="mt-6 rounded-md border border-primary/20 bg-primary/10 p-3 text-xs text-primary">
-              <strong>Tip:</strong> Ensure you are using <code>sk_test_...</code> keys for Test mode and <code>sk_live_...</code> keys for Live mode.
+              <strong>Tip:</strong> For client deployment, always paste <code>sk_live_...</code> (not <code>sk_test_...</code>).
             </div>
           </div>
         </div>

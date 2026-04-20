@@ -107,6 +107,7 @@ String urlDecode(String input) {
 void handleWiFiPortal() {
   WiFiClient client = wifiServer.available();
   if (!client) return;
+  String portalDeviceId = deviceId.length() > 0 ? deviceId : "SSCM-UNKNOWN";
 
   unsigned long timeout = millis() + 100; // 100ms max wait for client to send request headers
   while (!client.available() && millis() < timeout) {
@@ -142,6 +143,7 @@ void handleWiFiPortal() {
 
     String confirmPage = FPSTR(CONFIRM_HTML);
     confirmPage.replace("{{SSID}}", ssid);
+    confirmPage.replace("{{DEVICE_ID}}", portalDeviceId);
 
     client.println("HTTP/1.1 200 OK");
     client.println("Content-Type: text/html; charset=UTF-8");
@@ -161,6 +163,7 @@ void handleWiFiPortal() {
     client.println();
     String page = WIFI_HTML;
     page.replace("{{WIFI_LIST}}", getWiFiListHTML());
+    page.replace("{{DEVICE_ID}}", portalDeviceId);
     client.print(page);
   }
 

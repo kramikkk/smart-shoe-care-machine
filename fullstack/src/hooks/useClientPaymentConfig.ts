@@ -44,7 +44,6 @@ export function useClientPaymentConfig() {
   }, [loadConfig])
 
   const saveManual = useCallback(async (payload: {
-    mode: 'test' | 'live'
     secretKey: string
     webhookSecret: string
   }) => {

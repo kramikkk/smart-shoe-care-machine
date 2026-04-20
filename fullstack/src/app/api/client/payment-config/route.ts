@@ -6,7 +6,6 @@ import prisma from '@/lib/prisma'
 import { z } from 'zod'
 
 const ManualConfigSchema = z.object({
-  mode: z.enum(['test', 'live']).default('live'),
   secretKey: z.string().min(1, 'Secret key is required'),
   webhookSecret: z.string().min(1, 'Webhook secret is required'),
   providerAccountId: z.string().optional(),
@@ -82,7 +81,7 @@ export async function PUT(request: NextRequest) {
       )
     }
 
-    const { mode, secretKey, webhookSecret, providerAccountId } = parsed.data
+    const { secretKey, webhookSecret, providerAccountId } = parsed.data
 
     const config = await prisma.clientPaymentConfig.upsert({
       where: {
@@ -96,7 +95,7 @@ export async function PUT(request: NextRequest) {
         provider: PaymentProvider.paymongo,
         onboardingType: PaymentOnboardingType.manual,
         status: PaymentConnectionStatus.connected,
-        mode: mode === 'test' ? PaymentMode.test : PaymentMode.live,
+        mode: PaymentMode.live,
         providerAccountId,
         manualSecretKeyEnc: encryptPaymentCredential(secretKey),
         manualWebhookSecretEnc: encryptPaymentCredential(webhookSecret),
@@ -105,7 +104,7 @@ export async function PUT(request: NextRequest) {
       update: {
         onboardingType: PaymentOnboardingType.manual,
         status: PaymentConnectionStatus.connected,
-        mode: mode === 'test' ? PaymentMode.test : PaymentMode.live,
+        mode: PaymentMode.live,
         providerAccountId,
         manualSecretKeyEnc: encryptPaymentCredential(secretKey),
         manualWebhookSecretEnc: encryptPaymentCredential(webhookSecret),
