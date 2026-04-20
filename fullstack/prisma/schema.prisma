@@ -21,6 +21,8 @@ model User {
   role          UserRole?
   accounts      Account[]
   sessions      Session[]
+  paymentConfigs ClientPaymentConfig[]
+  paymentIntents PaymentIntentMap[]
 
   @@map("user")
 }
@@ -145,8 +147,54 @@ model Device {
   cleaningDistances CleaningDistance[]
   motorSpeeds       MotorSpeed[]
   dryingTemps       DryingTemp[]
+  paymentIntents    PaymentIntentMap[]
 
   @@map("device")
+}
+
+model ClientPaymentConfig {
+  id                      String                 @id @default(cuid())
+  clientId                String
+  provider                PaymentProvider
+  mode                    PaymentMode            @default(test)
+  onboardingType          PaymentOnboardingType
+  status                  PaymentConnectionStatus @default(pending)
+  providerAccountId       String?
+  oauthAccessTokenEnc     String?
+  oauthRefreshTokenEnc    String?
+  oauthTokenExpiresAt     DateTime?
+  manualSecretKeyEnc      String?
+  manualWebhookSecretEnc  String?
+  lastValidatedAt         DateTime?
+  lastWebhookAt           DateTime?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+  client                  User                   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  paymentIntents          PaymentIntentMap[]
+
+  @@unique([clientId, provider])
+  @@index([clientId, status])
+  @@map("client_payment_config")
+}
+
+model PaymentIntentMap {
+  id                    String          @id @default(cuid())
+  paymentIntentId       String          @unique
+  providerPaymentId     String?         @unique
+  provider              PaymentProvider
+  status                String
+  deviceId              String
+  clientId              String
+  clientPaymentConfigId String?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  device                Device          @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
+  client                User            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  clientPaymentConfig   ClientPaymentConfig? @relation(fields: [clientPaymentConfigId], references: [id], onDelete: SetNull)
+
+  @@index([clientId, provider])
+  @@index([deviceId, createdAt])
+  @@map("payment_intent_map")
 }
 
 model CleaningDistance {
@@ -213,4 +261,32 @@ enum UserRole {
   client
 
   @@map("user_role")
+}
+
+enum PaymentProvider {
+  paymongo
+
+  @@map("payment_provider")
+}
+
+enum PaymentMode {
+  test
+  live
+
+  @@map("payment_mode")
+}
+
+enum PaymentOnboardingType {
+  oauth
+  manual
+
+  @@map("payment_onboarding_type")
+}
+
+enum PaymentConnectionStatus {
+  pending
+  connected
+  disabled
+
+  @@map("payment_connection_status")
 }

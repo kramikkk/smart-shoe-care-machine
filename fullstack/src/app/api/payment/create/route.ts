@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { PaymentProvider } from '@/generated/prisma'
 import { PayMongoClient } from '@/lib/paymongo/client'
 import prisma from '@/lib/prisma'
+import { resolvePaymentContextByDevice } from '@/lib/payments/provider-resolver'
 import { z } from 'zod'
 import { rateLimit } from '@/lib/rate-limit'
 
@@ -36,13 +38,17 @@ export async function POST(request: NextRequest) {
 
     const device = await prisma.device.findUnique({
       where: { deviceId },
-      select: { groupToken: true },
+      select: { groupToken: true, pairedBy: true },
     })
-    if (!device || device.groupToken !== groupToken) {
+    if (!device || device.groupToken !== groupToken || !device.pairedBy) {
       return NextResponse.json({ success: false, error: 'Invalid group token' }, { status: 403 })
     }
 
-    const client = new PayMongoClient()
+    const resolvedContext = await resolvePaymentContextByDevice(deviceId)
+    const client = new PayMongoClient({
+      authType: resolvedContext.paymongo.authType,
+      token: resolvedContext.paymongo.token,
+    })
 
     // Pass all service metadata so webhook can create Transaction on success
     const paymentIntentResponse = await client.createPaymentIntent(
@@ -51,6 +57,7 @@ export async function POST(request: NextRequest) {
       { deviceId, shoeType, careType, serviceType, amount: String(amount), paymentMethod: 'Online' }
     )
     const paymentIntentId = paymentIntentResponse.data.id
+    const paymentIntentStatus = paymentIntentResponse.data.attributes?.status ?? 'awaiting_payment_method'
 
     const paymentMethodResponse = await client.createPaymentMethod()
     const paymentMethodId = paymentMethodResponse.data.id
@@ -61,6 +68,22 @@ export async function POST(request: NextRequest) {
     if (!qrImageUrl) {
       throw new Error('No QR code image received from PayMongo')
     }
+
+    await prisma.paymentIntentMap.upsert({
+      where: { paymentIntentId },
+      create: {
+        paymentIntentId,
+        provider: PaymentProvider.paymongo,
+        status: paymentIntentStatus,
+        deviceId,
+        clientId: resolvedContext.clientId,
+        clientPaymentConfigId: resolvedContext.paymongo.configId,
+      },
+      update: {
+        status: attachResponse.data.attributes.status,
+        clientPaymentConfigId: resolvedContext.paymongo.configId,
+      },
+    })
 
     return NextResponse.json({
       success: true,

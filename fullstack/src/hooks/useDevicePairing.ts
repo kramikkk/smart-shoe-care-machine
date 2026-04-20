@@ -78,7 +78,7 @@ export function useDevicePairing() {
       if (data.success) {
         toast.success('Device paired successfully!')
         setPairingDialogOpen(false); setPairingDeviceId(''); setPairingCode('')
-        router.replace('/client/dashboard/settings')
+        router.replace('/client/dashboard/pairing')
         await refreshDevices()
       } else { toast.error(data.error || 'Failed to pair device') }
     } catch (error) { console.error('[DevicePairing] Pair failed:', error); toast.error('Failed to pair device') }

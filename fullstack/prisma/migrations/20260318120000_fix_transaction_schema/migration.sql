@@ -10,7 +10,13 @@ DROP INDEX IF EXISTS "transaction_status_idx";
 -- Add FK constraints for ServicePricing and ServiceDuration (were missing from DB)
 DO $$
 BEGIN
-  IF NOT EXISTS (
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'service_pricing'
+      AND column_name = 'deviceId'
+  ) AND NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'service_pricing_deviceId_fkey'
   ) THEN
     ALTER TABLE "service_pricing"
@@ -22,7 +28,13 @@ END $$;
 
 DO $$
 BEGIN
-  IF NOT EXISTS (
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'service_duration'
+      AND column_name = 'deviceId'
+  ) AND NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'service_duration_deviceId_fkey'
   ) THEN
     ALTER TABLE "service_duration"

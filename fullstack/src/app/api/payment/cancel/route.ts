@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { PayMongoClient } from '@/lib/paymongo/client'
 import prisma from '@/lib/prisma'
+import { resolvePaymentContextByDevice } from '@/lib/payments/provider-resolver'
 import { z } from 'zod'
 import { rateLimit } from '@/lib/rate-limit'
 
@@ -32,14 +33,23 @@ export async function POST(request: NextRequest) {
 
     const device = await prisma.device.findUnique({
       where: { deviceId },
-      select: { groupToken: true },
+      select: { groupToken: true, pairedBy: true },
     })
-    if (!device || device.groupToken !== groupToken) {
+    if (!device || device.groupToken !== groupToken || !device.pairedBy) {
       return NextResponse.json({ success: false, error: 'Invalid group token' }, { status: 403 })
     }
 
-    const client = new PayMongoClient()
+    const resolvedContext = await resolvePaymentContextByDevice(deviceId)
+    const client = new PayMongoClient({
+      authType: resolvedContext.paymongo.authType,
+      token: resolvedContext.paymongo.token,
+    })
     const result = await client.cancelPaymentIntent(paymentIntentId)
+
+    await prisma.paymentIntentMap.updateMany({
+      where: { paymentIntentId, clientId: resolvedContext.clientId },
+      data: { status: result.data.attributes.status },
+    })
 
     return NextResponse.json({
       success: true,

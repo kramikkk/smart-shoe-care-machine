@@ -1,68 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server'
-import crypto from 'crypto'
 import prisma from '@/lib/prisma'
 import { Prisma } from '@/generated/prisma'
+import { resolveWebhookSecretForPaymentIntent } from '@/lib/payments/provider-resolver'
+import { verifyPaymongoWebhookSignature } from '@/lib/payments/webhook-signature'
 import { broadcastPaymentSuccess } from '@/lib/websocket'
-
-/**
- * Verifies the Paymongo-Signature header.
- *
- * Header format: t=<timestamp>,te=<test_sig>,li=<live_sig>
- * Signed payload: "<timestamp>.<rawBody>"
- * HMAC key: PAYMONGO_WEBHOOK_SECRET
- *
- * Use `li` for live mode, `te` for test mode.
- */
-function verifyWebhookSignature(rawBody: string, signatureHeader: string): boolean {
-  const webhookSecret = process.env.PAYMONGO_WEBHOOK_SECRET
-  if (!webhookSecret) return false
-
-  const parts: Record<string, string> = {}
-  for (const part of signatureHeader.split(',')) {
-    const idx = part.indexOf('=')
-    if (idx !== -1) parts[part.slice(0, idx)] = part.slice(idx + 1)
-  }
-
-  const timestamp = parts['t']
-  const receivedSig = parts['li'] || parts['te']
-
-  if (!timestamp || !receivedSig) return false
-
-  const signedPayload = `${timestamp}.${rawBody}`
-  const expectedSig = crypto
-    .createHmac('sha256', webhookSecret)
-    .update(signedPayload, 'utf8')
-    .digest('hex')
-
-  try {
-    return crypto.timingSafeEqual(
-      Buffer.from(receivedSig, 'hex'),
-      Buffer.from(expectedSig, 'hex')
-    )
-  } catch {
-    return false
-  }
-}
 
 export async function POST(request: NextRequest) {
   try {
     const rawBody = await request.text()
     const body = JSON.parse(rawBody)
+    const paymentResource = body?.data?.attributes?.data
+    const paymentData = paymentResource?.attributes ?? {}
+    const paymentId: string | undefined = paymentResource?.id
+    const paymentIntentId: string | undefined = paymentData?.payment_intent_id
 
     const signatureHeader = request.headers.get('paymongo-signature')
-    if (!signatureHeader || !verifyWebhookSignature(rawBody, signatureHeader)) {
+    const webhookSecret = paymentIntentId
+      ? await resolveWebhookSecretForPaymentIntent(paymentIntentId)
+      : null
+    if (!signatureHeader || !webhookSecret || !verifyPaymongoWebhookSignature(rawBody, signatureHeader, webhookSecret)) {
       console.error('[Webhook] Invalid signature')
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
     }
 
     const eventType = body.data.attributes.type
-    const paymentData = body.data.attributes.data.attributes
-    const paymentId: string | undefined = body.data.attributes.data.id
 
     if (eventType === 'payment.paid') {
       const metadata = paymentData.metadata as Record<string, string> | undefined
 
-      if (!metadata?.deviceId) {
+      const mappedIntent = paymentIntentId
+        ? await prisma.paymentIntentMap.findUnique({
+            where: { paymentIntentId },
+            select: { deviceId: true, clientId: true },
+          })
+        : null
+
+      const resolvedDeviceId = metadata?.deviceId ?? mappedIntent?.deviceId
+      if (!resolvedDeviceId) {
         console.error('[Webhook] payment.paid missing deviceId in metadata')
         return NextResponse.json({ received: true })
       }
@@ -72,7 +46,8 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ received: true })
       }
 
-      const { deviceId, shoeType, careType, serviceType, amount, paymentMethod } = metadata
+      const metadataSafe = metadata ?? {}
+      const { shoeType, careType, serviceType, amount, paymentMethod } = metadataSafe
       const parsedAmount = parseFloat(amount || '0')
 
       let transaction
@@ -85,7 +60,7 @@ export async function POST(request: NextRequest) {
             shoeType,
             careType,
             amount: parsedAmount,
-            deviceId,
+            deviceId: resolvedDeviceId,
             paymongoPaymentId: paymentId,
           },
         })
@@ -97,8 +72,25 @@ export async function POST(request: NextRequest) {
         throw error
       }
 
-      broadcastPaymentSuccess(deviceId, transaction.id, transaction.amount)
-      console.log(`[Webhook] payment.paid processed — tx: ${transaction.id}, device: ${deviceId}, amount: ₱${transaction.amount}`)
+      if (paymentIntentId) {
+        await prisma.paymentIntentMap.updateMany({
+          where: { paymentIntentId },
+          data: {
+            providerPaymentId: paymentId,
+            status: paymentData.status ?? 'paid',
+          },
+        })
+      }
+
+      if (mappedIntent?.clientId) {
+        await prisma.clientPaymentConfig.updateMany({
+          where: { clientId: mappedIntent.clientId },
+          data: { lastWebhookAt: new Date() },
+        })
+      }
+
+      broadcastPaymentSuccess(resolvedDeviceId, transaction.id, transaction.amount)
+      console.log(`[Webhook] payment.paid processed — tx: ${transaction.id}, device: ${resolvedDeviceId}, amount: ₱${transaction.amount}`)
     }
 
     return NextResponse.json({ received: true })

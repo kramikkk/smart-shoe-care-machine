@@ -3,13 +3,11 @@
 import { motion } from "motion/react"
 import PageLoader from "@/components/ui/PageLoader"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
-import { DevicePairingCard } from "@/components/settings/DevicePairingCard"
 import { ServicePricingCard } from "@/components/settings/ServicePricingCard"
 import { ServiceDurationCard } from "@/components/settings/ServiceDurationCard"
 import { CleaningDistanceCard } from "@/components/settings/CleaningDistanceCard"
 import { CleaningMotorSpeedCard } from "@/components/settings/CleaningMotorSpeedCard"
 import { DryingTempCard } from "@/components/settings/DryingTempCard"
-import { useDevicePairing } from "@/hooks/useDevicePairing"
 import { useServicePricing } from "@/hooks/useServicePricing"
 import { useServiceDuration } from "@/hooks/useServiceDuration"
 import { useCleaningDistance } from "@/hooks/useCleaningDistance"
@@ -35,7 +33,6 @@ const itemVariants = {
 
 export default function SettingsPage() {
   const { selectedDevice } = useDeviceFilter()
-  const pairing = useDevicePairing()
   const pricing = useServicePricing(selectedDevice)
   const duration = useServiceDuration(selectedDevice)
   const cleaningDist = useCleaningDistance(selectedDevice)
@@ -61,26 +58,7 @@ export default function SettingsPage() {
         <div className="flex items-center gap-2">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Client <span className="text-primary">Settings</span></h1>
         </div>
-        <p className="text-muted-foreground">Manage your devices, pricing, and service durations.</p>
-      </motion.div>
-
-      <motion.div variants={itemVariants}>
-        <DevicePairingCard
-          devices={pairing.devices}
-          isPairing={pairing.isPairing}
-          pairingDialogOpen={pairing.pairingDialogOpen}
-          pairingDeviceId={pairing.pairingDeviceId}
-          pairingCode={pairing.pairingCode}
-          editingDeviceId={pairing.editingDeviceId}
-          editingDeviceName={pairing.editingDeviceName}
-          onPairingDialogOpenChange={pairing.setPairingDialogOpen}
-          onPairingDeviceIdChange={pairing.setPairingDeviceId}
-          onPairingCodeChange={pairing.setPairingCode}
-          onPairDevice={pairing.handlePairDevice}
-          onEditingDeviceIdChange={pairing.setEditingDeviceId}
-          onEditingDeviceNameChange={pairing.setEditingDeviceName}
-          onSaveDeviceName={pairing.handleSaveDeviceName}
-        />
+        <p className="text-muted-foreground">Configure pricing and machine service parameters.</p>
       </motion.div>
 
       <motion.div variants={itemVariants}>

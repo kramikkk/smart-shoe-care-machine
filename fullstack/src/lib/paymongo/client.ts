@@ -1,14 +1,30 @@
-const PAYMONGO_SECRET_KEY = process.env.PAYMONGO_SECRET_KEY!
 const PAYMONGO_API_URL = 'https://api.paymongo.com/v1'
 
-if (!PAYMONGO_SECRET_KEY) {
-  throw new Error('PAYMONGO_SECRET_KEY is not defined in environment variables')
+type PayMongoAuthConfig = {
+  authType: 'basic' | 'bearer'
+  token: string
 }
 
-// Base64 encode the secret key for Basic Auth
-const authToken = Buffer.from(PAYMONGO_SECRET_KEY).toString('base64')
-
 export class PayMongoClient {
+  private readonly authHeader: string
+
+  constructor(private readonly auth: PayMongoAuthConfig) {
+    if (!auth.token) {
+      throw new Error('PayMongo auth token is required')
+    }
+
+    this.authHeader = auth.authType === 'basic'
+      ? `Basic ${Buffer.from(auth.token).toString('base64')}`
+      : `Bearer ${auth.token}`
+  }
+
+  private withAuthHeaders() {
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': this.authHeader,
+    }
+  }
+
   /**
    * Step 1: Create Payment Intent with QRPH enabled
    */
@@ -30,10 +46,7 @@ export class PayMongoClient {
 
     const response = await fetch(`${PAYMONGO_API_URL}/payment_intents`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${authToken}`,
-      },
+      headers: this.withAuthHeaders(),
       body: JSON.stringify({
         data: {
           attributes
@@ -64,10 +77,7 @@ export class PayMongoClient {
 
     const response = await fetch(`${PAYMONGO_API_URL}/payment_methods`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${authToken}`,
-      },
+      headers: this.withAuthHeaders(),
       body: JSON.stringify({
         data: {
           attributes: {
@@ -99,10 +109,7 @@ export class PayMongoClient {
       `${PAYMONGO_API_URL}/payment_intents/${paymentIntentId}/attach`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Basic ${authToken}`,
-        },
+        headers: this.withAuthHeaders(),
         body: JSON.stringify({
           data: {
             attributes: {
@@ -141,10 +148,7 @@ export class PayMongoClient {
       `${PAYMONGO_API_URL}/payment_intents/${paymentIntentId}`,
       {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Basic ${authToken}`,
-        },
+        headers: this.withAuthHeaders(),
       }
     )
 
@@ -167,10 +171,7 @@ export class PayMongoClient {
       `${PAYMONGO_API_URL}/payment_intents/${paymentIntentId}/cancel`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Basic ${authToken}`,
-        },
+        headers: this.withAuthHeaders(),
       }
     )
 

@@ -1,13 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { Item, ItemContent, ItemHeader } from '@/components/ui/item'
+import { Item, ItemContent } from '@/components/ui/item'
 import Image from 'next/image'
 import { BackButton } from '@/components/kiosk/BackButton'
 import { StepIndicator } from '@/components/kiosk/StepIndicator'
-import { CUSTOM_STEPS, AUTO_STEPS, ServiceType } from '@/lib/kiosk-constants'
+import { CUSTOM_STEPS, AUTO_STEPS } from '@/lib/kiosk-constants'
 import { usePricing } from '@/hooks/usePricing'
 
 const paymentMethods = [
@@ -35,6 +35,9 @@ const Payment = () => {
   const care = searchParams.get('care')
 
   const [selected, setSelected] = useState<string | null>(null)
+  const [onlinePaymentEnabled, setOnlinePaymentEnabled] = useState<boolean>(false)
+  const [isCheckingOnlinePayment, setIsCheckingOnlinePayment] = useState<boolean>(true)
+  const [onlinePaymentNotice, setOnlinePaymentNotice] = useState<string | null>(null)
   const { getPrice } = usePricing()
 
   const effectiveCare = care || 'normal'
@@ -60,6 +63,49 @@ const Payment = () => {
   const handleProceed = () => {
     if (selected) router.push(`/kiosk/payment/${selected}${buildQueryString()}`)
   }
+
+  useEffect(() => {
+    const checkOnlinePaymentAvailability = async () => {
+      setIsCheckingOnlinePayment(true)
+      try {
+        const deviceId = localStorage.getItem('kiosk_device_id') || ''
+        const groupToken = localStorage.getItem('kiosk_group_token') || ''
+
+        if (!deviceId || !groupToken) {
+          setOnlinePaymentEnabled(false)
+          setOnlinePaymentNotice('Pair this machine first to enable online payment.')
+          return
+        }
+
+        const response = await fetch(`/api/payment/availability?deviceId=${encodeURIComponent(deviceId)}`, {
+          headers: { 'X-Group-Token': groupToken },
+        })
+        const data = await response.json()
+
+        if (!response.ok || !data.success) {
+          setOnlinePaymentEnabled(false)
+          setOnlinePaymentNotice('Unable to verify online payment setup.')
+          return
+        }
+
+        setOnlinePaymentEnabled(Boolean(data.onlinePaymentEnabled))
+        setOnlinePaymentNotice(data.reason ?? null)
+      } catch {
+        setOnlinePaymentEnabled(false)
+        setOnlinePaymentNotice('Unable to verify online payment setup.')
+      } finally {
+        setIsCheckingOnlinePayment(false)
+      }
+    }
+
+    void checkOnlinePaymentAvailability()
+  }, [])
+
+  useEffect(() => {
+    if (selected === 'online' && (!onlinePaymentEnabled || isCheckingOnlinePayment)) {
+      setSelected(null)
+    }
+  }, [selected, onlinePaymentEnabled, isCheckingOnlinePayment])
 
   const isAutoMode = service === 'package' && !care
 
@@ -92,33 +138,47 @@ const Payment = () => {
 
       {/* Payment Method Cards */}
       <div className="grid grid-cols-2 gap-6 max-w-3xl mx-auto mb-12 w-full">
-        {paymentMethods.map((method) => (
-          <Item
-            key={method.id}
-            onClick={() => setSelected(method.id)}
-            className={`text-center p-6 rounded-2xl shadow-lg flex flex-col items-center justify-center cursor-pointer transition-all duration-200 select-none
+        {paymentMethods.map((method) => {
+          const isOnline = method.id === 'online'
+          const isDisabled = isOnline && (!onlinePaymentEnabled || isCheckingOnlinePayment)
+
+          return (
+            <Item
+              key={method.id}
+              onClick={() => !isDisabled && setSelected(method.id)}
+              className={`text-center p-6 rounded-2xl shadow-lg flex flex-col items-center justify-center cursor-pointer transition-all duration-200 select-none
+              ${isDisabled ? 'opacity-60 cursor-not-allowed bg-white/50' : ''}
               ${selected === method.id
                 ? 'bg-white/90 ring-4 ring-blue-500 shadow-2xl scale-[1.03]'
-                : 'bg-white/50 hover:bg-white/70 hover:shadow-xl'
+                : !isDisabled ? 'bg-white/50 hover:bg-white/70 hover:shadow-xl' : ''
               }`}
-          >
-            <Image src={method.src} alt={method.alt} width={72} height={72} className="w-18 h-18 mb-3" />
-            <ItemContent className="flex flex-col items-center space-y-1">
-              <h2 className="text-xl font-bold">{method.title}</h2>
-              <div className="space-y-1">
-                {method.descriptions.map((desc, idx) => (
-                  <p key={idx} className="text-base text-gray-600">{desc}</p>
-                ))}
-              </div>
-            </ItemContent>
-          </Item>
-        ))}
+            >
+              <Image src={method.src} alt={method.alt} width={72} height={72} className="w-18 h-18 mb-3" />
+              <ItemContent className="flex flex-col items-center space-y-1">
+                <h2 className="text-xl font-bold">{method.title}</h2>
+                <div className="space-y-1">
+                  {method.descriptions.map((desc, idx) => (
+                    <p key={idx} className="text-base text-gray-600">{desc}</p>
+                  ))}
+                </div>
+                {isOnline && isCheckingOnlinePayment && (
+                  <p className="text-sm text-gray-500 mt-2">Checking online payment setup...</p>
+                )}
+                {isOnline && !isCheckingOnlinePayment && !onlinePaymentEnabled && (
+                  <p className="text-sm text-amber-700 mt-2">
+                  {onlinePaymentNotice ?? 'Online payment is not configured yet.'}
+                  </p>
+                )}
+              </ItemContent>
+            </Item>
+          )
+        })}
       </div>
 
       <div className="flex justify-center">
         <Button
           onClick={handleProceed}
-          disabled={!selected}
+          disabled={!selected || (selected === 'online' && !onlinePaymentEnabled)}
           className="px-12 py-6 text-xl font-bold bg-gradient-to-r from-blue-600 via-cyan-600 to-green-600 hover:from-blue-700 hover:via-cyan-700 hover:to-green-700 text-white rounded-full shadow-lg transition-all duration-200 transform hover:scale-105 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none"
         >
           Proceed
