@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!--
+      WebView uses this for https:// and for wss:// (WebSockets). Use wss:// from an HTTPS page;
+      plain ws:// is blocked as mixed content when the document is HTTPS.
+    -->
+    <!-- Default: TLS only, system CAs (same stack used for https:// and wss:// in WebView). -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">onrender.com</domain>
         <trust-anchors>

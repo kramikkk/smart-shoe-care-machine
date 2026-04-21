@@ -5,18 +5,25 @@ import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
+import android.content.Context.CONNECTIVITY_SERVICE
+import android.content.Context.DEVICE_POLICY_SERVICE
+import android.content.Context.MODE_PRIVATE
+import android.content.Context.POWER_SERVICE
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Process
+import android.os.SystemClock
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
-import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -29,6 +36,8 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.view.GravityCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.drawerlayout.widget.DrawerLayout
 
@@ -41,10 +50,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var connectivityManager: ConnectivityManager
     private lateinit var adminComponent: ComponentName
     private lateinit var backCallback: OnBackPressedCallback
-    private var wakeLock: PowerManager.WakeLock? = null
+    private lateinit var pinPrefs: SharedPreferences
     private var networkWasLost = false
+    private var lastScreenOnReloadElapsed: Long = 0L
 
-    private val prefs by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences(KioskPrefs.FILE_NAME, MODE_PRIVATE) }
     private var isKioskModeActive = true
 
     // Handles power connect/disconnect and screen-on events
@@ -53,17 +63,19 @@ class MainActivity : AppCompatActivity() {
             when (intent.action) {
                 Intent.ACTION_POWER_CONNECTED -> onPowerConnected()
                 Intent.ACTION_POWER_DISCONNECTED -> onPowerDisconnected()
-                Intent.ACTION_SCREEN_ON -> kioskWebView.loadKioskUrl(KIOSK_URL)
+                Intent.ACTION_SCREEN_ON -> onScreenOnForWebView()
             }
         }
     }
 
-    // Reloads only when network comes back after being lost — avoids interrupting active sessions
+    // After a real disconnect: reload only if the main frame failed; else dispatch `online` for JS/WebSocket.
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             if (networkWasLost) {
                 networkWasLost = false
-                runOnUiThread { kioskWebView.loadKioskUrl(KIOSK_URL) }
+                runOnUiThread {
+                    if (::kioskWebView.isInitialized) kioskWebView.onDefaultNetworkRestored()
+                }
             }
         }
         override fun onLost(network: Network) {
@@ -82,28 +94,68 @@ class MainActivity : AppCompatActivity() {
         drawerLayout = findViewById(R.id.drawerLayout)
         kioskWebView.loadKioskUrl(KIOSK_URL)
 
-        powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        devicePolicyManager = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        devicePolicyManager = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         adminComponent = ComponentName(this, KioskDeviceAdminReceiver::class.java)
+
+        try {
+            pinPrefs = PinPreferences.pinPrefs(this)
+        } catch (e: Exception) {
+            showPinStorageFatalDialog(e)
+            return
+        }
 
         setupDrawerMenu()
         setupBackCallback()
         registerSystemReceiver()
         registerNetworkCallback()
         applyInitialPowerState()
-        requestDeviceAdminIfNeeded()
 
+        if (!pinPrefs.contains(PinPreferences.PREF_PIN_KEY)) {
+            showFirstRunPinSetupDialog()
+        } else {
+            finishKioskStartup()
+        }
+    }
+
+    /** Runs after an admin PIN exists (normal start) or after first-run PIN setup. */
+    private fun finishKioskStartup() {
         kioskWebView.onAdminGestureDetected = { if (isKioskModeActive) showPinDialog() }
 
-        isKioskModeActive = prefs.getBoolean(PREF_KIOSK_ACTIVE, true)
+        isKioskModeActive = prefs.getBoolean(KioskPrefs.KEY_KIOSK_ACTIVE, true)
         if (isKioskModeActive) enableKioskMode() else disableKioskMode()
+        requestDeviceAdminIfNeeded()
+    }
+
+    private fun showPinStorageFatalDialog(error: Throwable) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pin_storage_error_title)
+            .setMessage(getString(R.string.pin_storage_error_message, error.message ?: error.javaClass.simpleName))
+            .setCancelable(false)
+            .setPositiveButton(R.string.ok) { _, _ -> finish() }
+            .show()
     }
 
     override fun onResume() {
         super.onResume()
+        if (::kioskWebView.isInitialized) kioskWebView.onResume()
         applyImmersiveMode()
         if (isKioskModeActive) checkAndPromptPermissions()
+    }
+
+    override fun onPause() {
+        if (::kioskWebView.isInitialized) kioskWebView.onPause()
+        super.onPause()
+    }
+
+    /** Throttled full reload so every wake does not reset WebSockets unnecessarily. */
+    private fun onScreenOnForWebView() {
+        if (!::kioskWebView.isInitialized) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastScreenOnReloadElapsed < SCREEN_ON_RELOAD_MIN_INTERVAL_MS) return
+        lastScreenOnReloadElapsed = now
+        kioskWebView.loadKioskUrl(KIOSK_URL)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -113,26 +165,36 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        releaseWakeLock()
-        kioskWebView.stopRetry()
-        unregisterReceiver(systemReceiver)
-        connectivityManager.unregisterNetworkCallback(networkCallback)
+        if (::kioskWebView.isInitialized) kioskWebView.stopRetry()
+        try {
+            unregisterReceiver(systemReceiver)
+        } catch (_: IllegalArgumentException) {
+            // Not registered if onCreate failed partway.
+        }
+        if (::connectivityManager.isInitialized) {
+            try {
+                connectivityManager.unregisterNetworkCallback(networkCallback)
+            } catch (_: IllegalArgumentException) {
+                // Not registered if onCreate failed partway.
+            }
+        }
     }
 
     // region Drawer
 
     private fun setupDrawerMenu() {
-        val version = packageManager.getPackageInfo(packageName, 0).versionName
-        findViewById<TextView>(R.id.tvDrawerVersion).text = "Version $version"
+        val version = readAppVersionName()
+        findViewById<TextView>(R.id.tvDrawerVersion).text =
+            getString(R.string.drawer_version_format, version)
 
         findViewById<LinearLayout>(R.id.menuGotoUrl).setOnClickListener {
             kioskWebView.loadKioskUrl(KIOSK_URL)
-            drawerLayout.closeDrawer(Gravity.START)
+            drawerLayout.closeDrawer(GravityCompat.START)
         }
-        
+
         // Update the initial text based on the current mode status
         updateKioskModeStatusText()
-        
+
         findViewById<LinearLayout>(R.id.menuToggleKiosk).setOnClickListener {
             showKioskModeDialog()
         }
@@ -143,50 +205,69 @@ class MainActivity : AppCompatActivity() {
             kioskWebView.clearCache(true)
             WebStorage.getInstance().deleteAllData()
             kioskWebView.loadKioskUrl(KIOSK_URL)
-            drawerLayout.closeDrawer(Gravity.START)
-            Toast.makeText(this, "Cache cleared", Toast.LENGTH_SHORT).show()
+            drawerLayout.closeDrawer(GravityCompat.START)
+            Toast.makeText(this, R.string.cache_cleared, Toast.LENGTH_SHORT).show()
         }
         findViewById<LinearLayout>(R.id.menuExit).setOnClickListener {
-            drawerLayout.closeDrawer(Gravity.START)
+            drawerLayout.closeDrawer(GravityCompat.START)
             showExitAppDialog()
         }
     }
 
+    private fun readAppVersionName(): String {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                packageManager.getPackageInfo(
+                    packageName,
+                    PackageManager.PackageInfoFlags.of(0)
+                ).versionName
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0).versionName
+            }
+        } catch (_: PackageManager.NameNotFoundException) {
+            null
+        } ?: ""
+    }
+
     private fun updateKioskModeStatusText() {
         val statusText = findViewById<TextView>(R.id.tvKioskModeStatus)
-        statusText?.text = if (isKioskModeActive) "Status: ON (Screen Locked)" else "Status: OFF (Normal Usage)"
+        statusText?.text = if (isKioskModeActive) {
+            getString(R.string.kiosk_status_on)
+        } else {
+            getString(R.string.kiosk_status_off)
+        }
     }
 
     private fun showKioskModeDialog() {
-        val view = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(60, 40, 60, 20)
-
-            val details = android.widget.TextView(this@MainActivity).apply {
-                text = "Kiosk Mode locks the app to screen.\n\nTo disable kiosk, use the admin 5-tap gesture and enter the PIN."
-                textSize = 14f
-                // Keep details readable in the app's dark drawer theme.
-                setTextColor(android.graphics.Color.WHITE)
-                setPadding(0, 0, 0, 12)
-            }
-            addView(details)
-        }
-
         val builder = AlertDialog.Builder(this)
-            .setTitle("Kiosk Mode")
-            .setView(view)
-            .setNegativeButton("Cancel", null)
+            .setTitle(R.string.kiosk_mode_dialog_title)
+            .setNegativeButton(R.string.cancel, null)
 
         if (isKioskModeActive) {
             builder
-                .setPositiveButton("OK", null)
-                .setMessage("Kiosk Mode is already ON.")
+                .setMessage(R.string.kiosk_mode_already_on_message)
+                .setPositiveButton(R.string.ok, null)
         } else {
-            builder.setPositiveButton("Turn On") { _, _ ->
-                enableKioskMode()
-                updateKioskModeStatusText()
-                drawerLayout.closeDrawer(Gravity.START)
+            val view = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(60, 40, 60, 20)
+
+                val details = TextView(this@MainActivity).apply {
+                    text = getString(R.string.kiosk_mode_dialog_details)
+                    textSize = 14f
+                    setTextColor(android.graphics.Color.WHITE)
+                    setPadding(0, 0, 0, 12)
+                }
+                addView(details)
             }
+            builder
+                .setView(view)
+                .setPositiveButton(R.string.kiosk_mode_turn_on) { _, _ ->
+                    enableKioskMode()
+                    updateKioskModeStatusText()
+                    drawerLayout.closeDrawer(GravityCompat.START)
+                }
         }
 
         builder.show()
@@ -198,11 +279,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun enableKioskMode() {
         isKioskModeActive = true
-        prefs.edit().putBoolean(PREF_KIOSK_ACTIVE, true).apply()
+        prefs.edit {
+            putBoolean(KioskPrefs.KEY_KIOSK_ACTIVE, true)
+            putBoolean(KioskPrefs.KEY_LAUNCH_ON_BOOT, true)
+        }
         updateKioskModeStatusText()
         applyImmersiveMode()
         backCallback.isEnabled = true
-        drawerLayout.closeDrawer(Gravity.START)
+        drawerLayout.closeDrawer(GravityCompat.START)
         drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED)
         checkAndPromptPermissions()
     }
@@ -218,27 +302,31 @@ class MainActivity : AppCompatActivity() {
 
     private fun isDefaultHomeApp(): Boolean {
         val intent = Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_HOME) }
-        val info = packageManager.resolveActivity(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.resolveActivity(
+                intent,
+                PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_DEFAULT_ONLY.toLong())
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)
+        }
         return info?.activityInfo?.packageName == packageName
     }
 
     private fun showSetAsHomePrompt() {
         AlertDialog.Builder(this)
-            .setTitle("Set as Home App")
-            .setMessage(
-                "To block the Home button, set \"${getString(R.string.app_name)}\" as " +
-                    "your default Home app on the next screen.\n\n" +
-                    "Select \"${getString(R.string.app_name)}\" and tap \"Always\"."
-            )
-            .setPositiveButton("Open Settings") { _, _ ->
+            .setTitle(R.string.set_as_home_app_title)
+            .setMessage(getString(R.string.set_as_home_app_message, getString(R.string.app_name)))
+            .setPositiveButton(R.string.open_settings) { _, _ ->
                 startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
             }
-            .setNegativeButton("Later", null)
+            .setNegativeButton(R.string.later, null)
             .show()
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
-        val serviceId = "$packageName/${KioskAccessibilityService::class.java.canonicalName}"
+        val serviceId = "$packageName/${KioskAccessibilityService::class.java.name}"
         val enabled = Settings.Secure.getString(
             contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
@@ -247,56 +335,111 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAccessibilityPrompt() {
+        val app = getString(R.string.app_name)
         AlertDialog.Builder(this)
-            .setTitle("Enable Accessibility Service")
-            .setMessage(
-                "To fully lock the kiosk app to the screen, enable " +
-                    "\"${getString(R.string.app_name)}\" in Accessibility Settings.\n\n" +
-                    "Tap Open Settings → Accessibility → Installed Services → " +
-                    "${getString(R.string.app_name)} → Enable."
-            )
-            .setPositiveButton("Open Settings") { _, _ ->
+            .setTitle(R.string.enable_accessibility_title)
+            .setMessage(getString(R.string.enable_accessibility_message, app))
+            .setPositiveButton(R.string.open_settings) { _, _ ->
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
-            .setNegativeButton("Later", null)
+            .setNegativeButton(R.string.later, null)
             .show()
     }
 
-    private fun disableKioskMode() {
+    /**
+     * @param syncPrefs If true, writes prefs synchronously (needed before [exitAppFully] kills the process).
+     */
+    private fun disableKioskMode(syncPrefs: Boolean = false) {
         isKioskModeActive = false
-        prefs.edit().putBoolean(PREF_KIOSK_ACTIVE, false).apply()
+        prefs.edit(commit = syncPrefs) { putBoolean(KioskPrefs.KEY_KIOSK_ACTIVE, false) }
         updateKioskModeStatusText()
         backCallback.isEnabled = false
         drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED)
     }
 
     /**
+     * Stops WebView/retry work, removes the task, then kills the process so a stuck or wedged
+     * kiosk session cannot survive in memory (same effect as force-stop in Settings).
+     *
      * Turning off kiosk in prefs stops [KioskAccessibilityService] from calling
-     * [KioskAccessibilityService.bringKioskToFront], which otherwise immediately
-     * reopens this activity after [finishAndRemoveTask].
+     * [KioskAccessibilityService.bringKioskToFront] on the next launch.
+     * [KioskPrefs.KEY_LAUNCH_ON_BOOT] is cleared so [BootReceiver] does not auto-start the app after reboot.
+     */
+    private fun exitAppFully() {
+        isKioskModeActive = false
+        updateKioskModeStatusText()
+        backCallback.isEnabled = false
+        drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_UNLOCKED)
+        prefs.edit(commit = true) {
+            putBoolean(KioskPrefs.KEY_KIOSK_ACTIVE, false)
+            putBoolean(KioskPrefs.KEY_LAUNCH_ON_BOOT, false)
+        }
+        kioskWebView.stopRetry()
+        finishAndRemoveTask()
+        Process.killProcess(Process.myPid())
+    }
+
+    /**
+     * Sidebar exit: full process termination for recovery without rebooting the device.
      */
     private fun showExitAppDialog() {
         AlertDialog.Builder(this)
-            .setTitle("Exit app")
-            .setMessage(
-                "Kiosk lock will be turned off for this session so the app does not pull you back.\n\n" +
-                    "To leave completely: disable the \"${getString(R.string.app_name)}\" " +
-                    "accessibility service (otherwise Android may still treat this app as a kiosk helper). " +
-                    "If this app is your default Home app, choose another launcher in Home settings " +
-                    "so Home does not reopen it."
-            )
-            .setPositiveButton("Exit") { _, _ ->
-                disableKioskMode()
-                finishAndRemoveTask()
+            .setTitle(R.string.exit_app_title)
+            .setMessage(getString(R.string.exit_app_message, getString(R.string.app_name)))
+            .setPositiveButton(R.string.exit_app_confirm) { _, _ ->
+                exitAppFully()
             }
-            .setNeutralButton("Accessibility") { _, _ ->
+            .setNeutralButton(R.string.exit_app_accessibility) { _, _ ->
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
-            .setNegativeButton("Home app") { _, _ ->
+            .setNegativeButton(R.string.exit_app_home_settings) { _, _ ->
                 startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
             }
             .setCancelable(true)
             .show()
+    }
+
+    private fun showFirstRunPinSetupDialog() {
+        val newPinInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = getString(R.string.first_run_pin_hint_new)
+        }
+        val confirmInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = getString(R.string.first_run_pin_hint_confirm)
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val padding = (20 * resources.displayMetrics.density).toInt()
+            setPadding(padding, padding, padding, 0)
+            addView(newPinInput)
+            addView(confirmInput)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.first_run_pin_title)
+            .setMessage(R.string.first_run_pin_message)
+            .setView(container)
+            .setCancelable(false)
+            .setPositiveButton(R.string.first_run_pin_save, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val newPin = newPinInput.text.toString()
+                val confirm = confirmInput.text.toString()
+                when {
+                    newPin.length < 4 ->
+                        Toast.makeText(this, R.string.pin_too_short, Toast.LENGTH_SHORT).show()
+                    newPin != confirm ->
+                        Toast.makeText(this, R.string.pin_mismatch, Toast.LENGTH_SHORT).show()
+                    else -> {
+                        pinPrefs.edit(commit = true) { putString(PinPreferences.PREF_PIN_KEY, newPin) }
+                        dialog.dismiss()
+                        finishKioskStartup()
+                    }
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun showPinDialog() {
@@ -306,72 +449,93 @@ class MainActivity : AppCompatActivity() {
             setPadding(padding, padding, padding, 0)
         }
         val helper = TextView(this).apply {
-            text = "Enter admin PIN to disable kiosk mode."
+            text = getString(R.string.admin_pin_enter_helper)
             textSize = 13f
             setTextColor(ContextCompat.getColor(this@MainActivity, android.R.color.darker_gray))
             setPadding(0, 0, 0, (8 * resources.displayMetrics.density).toInt())
         }
         val input = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            hint = "Enter PIN"
+            hint = getString(R.string.enter_pin_hint)
             transformationMethod = PasswordTransformationMethod.getInstance()
-            setSingleLine(true)
+            isSingleLine = true
         }
         container.addView(helper)
         container.addView(input)
 
         AlertDialog.Builder(this)
-            .setTitle("Admin Access")
+            .setTitle(R.string.admin_access_title)
             .setView(container)
-            .setPositiveButton("Confirm") { _, _ ->
+            .setPositiveButton(R.string.confirm) { _, _ ->
                 val entered = input.text.toString()
-                val stored = prefs.getString(PREF_PIN, DEFAULT_PIN) ?: DEFAULT_PIN
+                val stored = pinPrefs.getString(PinPreferences.PREF_PIN_KEY, null)
+                if (stored == null) {
+                    Toast.makeText(this, R.string.pin_not_configured, Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
                 if (entered.isBlank()) {
-                    Toast.makeText(this, "PIN is required", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, R.string.pin_required, Toast.LENGTH_SHORT).show()
                 } else if (entered == stored) {
                     disableKioskMode()
                 } else {
-                    Toast.makeText(this, "Incorrect PIN", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, R.string.pin_incorrect, Toast.LENGTH_SHORT).show()
                 }
             }
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton(R.string.cancel, null)
             .show()
     }
 
     private fun showChangePinDialog() {
+        val stored = pinPrefs.getString(PinPreferences.PREF_PIN_KEY, null)
+        if (stored == null) {
+            Toast.makeText(this, R.string.pin_not_configured, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val currentInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = getString(R.string.change_pin_hint_current)
+            transformationMethod = PasswordTransformationMethod.getInstance()
+            isSingleLine = true
+        }
         val newPinInput = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            hint = "New PIN"
+            hint = getString(R.string.change_pin_hint_new)
         }
         val confirmInput = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            hint = "Confirm new PIN"
+            hint = getString(R.string.change_pin_hint_confirm)
         }
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val padding = (20 * resources.displayMetrics.density).toInt()
             setPadding(padding, padding, padding, 0)
+            addView(currentInput)
             addView(newPinInput)
             addView(confirmInput)
         }
         AlertDialog.Builder(this)
-            .setTitle("Change PIN")
+            .setTitle(R.string.change_pin_title)
             .setView(container)
-            .setPositiveButton("Save") { _, _ ->
+            .setPositiveButton(R.string.save) { _, _ ->
+                val current = currentInput.text.toString()
                 val newPin = newPinInput.text.toString()
                 val confirm = confirmInput.text.toString()
                 when {
+                    current.isBlank() ->
+                        Toast.makeText(this, R.string.pin_required, Toast.LENGTH_SHORT).show()
+                    current != stored ->
+                        Toast.makeText(this, R.string.pin_incorrect, Toast.LENGTH_SHORT).show()
                     newPin.length < 4 ->
-                        Toast.makeText(this, "PIN must be at least 4 digits", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, R.string.pin_too_short, Toast.LENGTH_SHORT).show()
                     newPin != confirm ->
-                        Toast.makeText(this, "PINs do not match", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, R.string.pin_mismatch, Toast.LENGTH_SHORT).show()
                     else -> {
-                        prefs.edit().putString(PREF_PIN, newPin).apply()
-                        Toast.makeText(this, "PIN updated", Toast.LENGTH_SHORT).show()
+                        pinPrefs.edit { putString(PinPreferences.PREF_PIN_KEY, newPin) }
+                        Toast.makeText(this, R.string.pin_updated, Toast.LENGTH_SHORT).show()
                     }
                 }
             }
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton(R.string.cancel, null)
             .show()
     }
 
@@ -427,28 +591,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyInitialPowerState() {
-        val batteryIntent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val batteryIntent = ContextCompat.registerReceiver(
+            this,
+            null,
+            IntentFilter(Intent.ACTION_BATTERY_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
         val plugged = batteryIntent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
         if (plugged != 0) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun onPowerConnected() {
-        releaseWakeLock()
-        // ACQUIRE_CAUSES_WAKEUP wakes the screen immediately — ACTION_SCREEN_ON then fires
-        // and handles the reload, so no explicit reload is needed here.
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
-            WAKE_LOCK_TAG
-        ).also { it.acquire(10_000L) }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setTurnScreenOn(true)
     }
 
     private fun onPowerDisconnected() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        releaseWakeLock()
+        setTurnScreenOn(false)
         if (devicePolicyManager.isAdminActive(adminComponent)) {
             devicePolicyManager.lockNow()
         }
@@ -460,25 +622,17 @@ class MainActivity : AppCompatActivity() {
             putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
             putExtra(
                 DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                "Allows the kiosk to turn the screen off immediately when the power cord is unplugged."
+                getString(R.string.device_admin_explanation)
             )
         }
         startActivity(intent)
-    }
-
-    private fun releaseWakeLock() {
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
     }
 
     // endregion
 
     companion object {
         private const val KIOSK_URL = "https://smart-shoe-care-machine.onrender.com/kiosk"
-        private const val WAKE_LOCK_TAG = "KioskApp:PowerConnectedWakeLock"
-        private const val PREFS_NAME = "kiosk_prefs"
-        private const val PREF_KIOSK_ACTIVE = "kiosk_mode_active"
-        private const val PREF_PIN = "kiosk_pin"
-        const val DEFAULT_PIN = "1234"
+        /** Minimum time between full reloads on [Intent.ACTION_SCREEN_ON] to avoid resetting WebSockets on every wake. */
+        private const val SCREEN_ON_RELOAD_MIN_INTERVAL_MS = 300_000L
     }
 }

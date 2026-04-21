@@ -10,13 +10,13 @@ import android.view.accessibility.AccessibilityEvent
 class KioskAccessibilityService : AccessibilityService() {
 
     private val prefs by lazy {
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        getSharedPreferences(KioskPrefs.FILE_NAME, Context.MODE_PRIVATE)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
 
-        val isKioskActive = prefs.getBoolean(PREF_KIOSK_ACTIVE, true)
+        val isKioskActive = prefs.getBoolean(KioskPrefs.KEY_KIOSK_ACTIVE, true)
         if (!isKioskActive) return
 
         val foreground = event.packageName?.toString() ?: return
@@ -63,9 +63,6 @@ class KioskAccessibilityService : AccessibilityService() {
     }
 
     companion object {
-        private const val PREFS_NAME = "kiosk_prefs"
-        private const val PREF_KIOSK_ACTIVE = "kiosk_mode_active"
-
         private val ALLOWED_SYSTEM_PACKAGES = setOf(
             "android",
             "com.android.settings",

@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     alias(libs.plugins.android.application)
 }
@@ -12,7 +14,7 @@ android {
 
     defaultConfig {
         applicationId = "com.example.application"
-        minSdk = 26
+        minSdk = 27
         targetSdk = 36
         versionCode = 3
         versionName = "1.2.0"
@@ -22,7 +24,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -35,7 +38,15 @@ android {
     }
 }
 
+// AGP 9+ built-in Kotlin — do not apply org.jetbrains.kotlin.android (conflicts with kotlin extension).
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_11)
+    }
+}
+
 dependencies {
+    implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.appcompat)

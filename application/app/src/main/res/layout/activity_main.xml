@@ -86,7 +86,7 @@
                 android:layout_width="24dp"
                 android:layout_height="24dp"
                 android:src="@drawable/ic_drawer_home"
-                android:contentDescription="Goto start URL" />
+                android:contentDescription="@string/menu_goto_start_url_a11y" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -98,7 +98,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Goto Start URL"
+                    android:text="@string/menu_goto_start_url"
                     android:textColor="#FFFFFF"
                     android:textSize="15sp"
                     android:textStyle="bold" />
@@ -107,7 +107,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="Reload start URL now"
+                    android:text="@string/menu_goto_start_url_subtitle"
                     android:textColor="#8888AA"
                     android:textSize="12sp" />
 
@@ -138,7 +138,7 @@
                 android:layout_width="24dp"
                 android:layout_height="24dp"
                 android:src="@drawable/ic_drawer_lock"
-                android:contentDescription="Toggle kiosk mode" />
+                android:contentDescription="@string/menu_kiosk_mode_a11y" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -150,7 +150,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Kiosk Mode"
+                    android:text="@string/menu_kiosk_mode"
                     android:textColor="#FFFFFF"
                     android:textSize="15sp"
                     android:textStyle="bold" />
@@ -160,7 +160,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="Configure screen lock mode"
+                    android:text="@string/menu_kiosk_mode_subtitle"
                     android:textColor="#8888AA"
                     android:textSize="12sp" />
 
@@ -191,7 +191,7 @@
                 android:layout_width="24dp"
                 android:layout_height="24dp"
                 android:src="@drawable/ic_drawer_pin"
-                android:contentDescription="Change PIN" />
+                android:contentDescription="@string/menu_change_pin_a11y" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -203,7 +203,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Change PIN"
+                    android:text="@string/menu_change_pin"
                     android:textColor="#FFFFFF"
                     android:textSize="15sp"
                     android:textStyle="bold" />
@@ -212,7 +212,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="Change admin access PIN"
+                    android:text="@string/menu_change_pin_subtitle"
                     android:textColor="#8888AA"
                     android:textSize="12sp" />
 
@@ -243,7 +243,7 @@
                 android:layout_width="24dp"
                 android:layout_height="24dp"
                 android:src="@drawable/ic_drawer_clear"
-                android:contentDescription="Clear cache" />
+                android:contentDescription="@string/menu_clear_cache_a11y" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -255,7 +255,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Clear Cache"
+                    android:text="@string/menu_clear_cache"
                     android:textColor="#FFFFFF"
                     android:textSize="15sp"
                     android:textStyle="bold" />
@@ -264,7 +264,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="Clear web cache and reload"
+                    android:text="@string/menu_clear_cache_subtitle"
                     android:textColor="#8888AA"
                     android:textSize="12sp" />
 
@@ -295,7 +295,7 @@
                 android:layout_width="24dp"
                 android:layout_height="24dp"
                 android:src="@drawable/ic_drawer_exit"
-                android:contentDescription="Exit app" />
+                android:contentDescription="@string/menu_exit_app_a11y" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -307,7 +307,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Exit App"
+                    android:text="@string/menu_exit_app"
                     android:textColor="#FFFFFF"
                     android:textSize="15sp"
                     android:textStyle="bold" />
@@ -316,7 +316,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="Close the application"
+                    android:text="@string/menu_exit_app_subtitle"
                     android:textColor="#8888AA"
                     android:textSize="12sp" />
 

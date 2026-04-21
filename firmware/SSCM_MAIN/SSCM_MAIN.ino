@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.16"
+#define FIRMWARE_VERSION "1.0.17"
 #define BOARD_NAME "SSCM-MAIN"
 
 /**

@@ -33,6 +33,8 @@ const DEVICE_ID_KEY    = 'kiosk_device_id'
 const GROUP_TOKEN_KEY  = 'kiosk_group_token'
 const MAX_RECONNECT_DELAY_MS = 10000
 const RECONNECT_DELAY_MS = 3000
+/** Debounce visibility-driven reconnects (some WebViews fire visibilitychange often). */
+const VISIBILITY_RECONNECT_DEBOUNCE_MS = 400
 
 export function KioskWebSocketProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected] = useState(false)
@@ -49,6 +51,7 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
   const intentionalCloseRef = useRef<boolean>(false)
   const messageHandlersRef = useRef<Set<(message: WebSocketMessage) => void>>(new Set())
   const prevIsPairedRef = useRef<boolean | null>(null)
+  const visibilityReconnectDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const connectWebSocket = useCallback((devId: string) => {
     // Prevent duplicate connections
@@ -222,6 +225,78 @@ export function KioskWebSocketProvider({ children }: { children: React.ReactNode
       }, delay)
     }
   }, [])
+
+  /**
+   * When the OS / WebView restores network without a full page reload (e.g. Android
+   * `evaluateJavascript` dispatches `online` + `kiosk-network-restored`), the old socket
+   * may be dead while React state still looks "connected". Force a clean reconnect.
+   */
+  const reconnectIfSocketNotOpen = useCallback((source: string) => {
+    const devId = localStorage.getItem(DEVICE_ID_KEY)
+    if (!devId) return
+    const ws = wsRef.current
+    if (ws) {
+      if (ws.readyState === WebSocket.OPEN) {
+        debug.log(`[WebSocket] ${source}: already open, skip`)
+        return
+      }
+      if (ws.readyState === WebSocket.CONNECTING) {
+        debug.log(`[WebSocket] ${source}: still connecting, skip`)
+        return
+      }
+    }
+    debug.log(`[WebSocket] ${source}: reconnect (readyState=${ws?.readyState ?? 'null'})`)
+    intentionalCloseRef.current = true
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+    if (connectTimeoutRef.current) {
+      clearTimeout(connectTimeoutRef.current)
+      connectTimeoutRef.current = null
+    }
+    if (ws) {
+      ws.onclose = null
+      ws.onerror = null
+      try {
+        ws.close()
+      } catch {
+        /* ignore */
+      }
+    }
+    wsRef.current = null
+    connectionStateRef.current = ConnectionState.DISCONNECTED
+    intentionalCloseRef.current = false
+    reconnectAttemptsRef.current = 0
+    connectWebSocket(devId)
+  }, [connectWebSocket])
+
+  useEffect(() => {
+    const onOnline = () => reconnectIfSocketNotOpen('window.online')
+    const onKioskNetwork = () => reconnectIfSocketNotOpen('kiosk-network-restored')
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      if (visibilityReconnectDebounceRef.current !== null) {
+        clearTimeout(visibilityReconnectDebounceRef.current)
+      }
+      visibilityReconnectDebounceRef.current = setTimeout(() => {
+        visibilityReconnectDebounceRef.current = null
+        reconnectIfSocketNotOpen('visibilitychange')
+      }, VISIBILITY_RECONNECT_DEBOUNCE_MS)
+    }
+    window.addEventListener('online', onOnline)
+    window.addEventListener('kiosk-network-restored', onKioskNetwork)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('kiosk-network-restored', onKioskNetwork)
+      document.removeEventListener('visibilitychange', onVisibility)
+      if (visibilityReconnectDebounceRef.current !== null) {
+        clearTimeout(visibilityReconnectDebounceRef.current)
+        visibilityReconnectDebounceRef.current = null
+      }
+    }
+  }, [reconnectIfSocketNotOpen])
 
   // Initial setup
   useEffect(() => {
