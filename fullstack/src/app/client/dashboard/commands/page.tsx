@@ -435,6 +435,32 @@ export default function CommandsPage() {
     addLog('sent', `→ ${command}`)
   }, [isConnected, selectedDevice, sendMessage, addLog])
 
+  const resetPairing = useCallback(async () => {
+    if (!selectedDevice) {
+      toast.error('No device selected')
+      return
+    }
+
+    try {
+      const response = await fetch(`/api/device/${encodeURIComponent(selectedDevice)}/pair`, {
+        method: 'DELETE',
+      })
+      const body = await response.json().catch(() => ({}))
+
+      if (!response.ok || !body?.success) {
+        throw new Error(String(body?.error ?? `HTTP ${response.status}`))
+      }
+
+      addLog('system', 'Pairing reset requested via API (DB unpaired + restart)')
+      toast.success('Pairing reset sent — device will restart and require re-pairing.')
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'unknown error'
+      addLog('warn', `API pairing reset failed (${reason}); falling back to firmware command`)
+      send('RESET_PAIRING')
+      toast.warning('API reset failed; sent direct firmware reset instead.')
+    }
+  }, [selectedDevice, addLog, send])
+
   const runTestClassify = useCallback(() => {
     if (!isConnected || !selectedDevice) {
       toast.error('Not connected to device')
@@ -1786,7 +1812,7 @@ export default function CommandsPage() {
                       </AlertDialogHeader>
                       <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { send('RESET_PAIRING'); toast.info('Command sent — device is restarting. This may take 10–30 seconds.') }}>
+                        <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { void resetPairing() }}>
                           Reset Pairing
                         </AlertDialogAction>
                       </AlertDialogFooter>

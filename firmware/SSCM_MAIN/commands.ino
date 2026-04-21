@@ -41,10 +41,18 @@ void handleSerialCommand(String cmd) {
     delay(1000);
     ESP.restart();
   } else if (cmd == "RESET_PAIRING") {
-    // Clear paired state and generate a new 6-digit pairing code, then restart.
+    // Clear local pairing + CAM pairing metadata, then restart in an unpaired state.
     prefs.putBool("paired", false);
+    prefs.remove("camDeviceId");
+    prefs.remove("camIp");
+    prefs.remove("camMac");
     isPaired = false;
+    camMacPaired = false;
+    pairedCamDeviceId = "";
+    pairedCamIp = "";
+    memset(camMacAddress, 0, sizeof(camMacAddress));
     pairingCode = generatePairingCode();
+    wsLog("warn", "Pairing reset requested — restarting as unpaired device");
     delay(1000);
     ESP.restart();
   } else if (cmd == "RESET_MONEY") {
