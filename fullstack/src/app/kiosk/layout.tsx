@@ -1,6 +1,12 @@
+import type { Metadata } from 'next'
 import './kiosk.css'
 import PairingWrapper from '@/components/kiosk/PairingWrapper'
 import { KioskWebSocketProvider } from '@/contexts/KioskWebSocketContext'
+
+export const metadata: Metadata = {
+  title: 'SSCM Kiosk',
+  description: 'Self-service shoe care kiosk',
+}
 
 const isDebug = process.env.NEXT_PUBLIC_DEBUG === 'true'
 

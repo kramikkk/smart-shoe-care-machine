@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth-middleware'
+import { recordedRevenue } from '@/lib/transaction-revenue'
 
 export async function GET(req: NextRequest) {
   try {
@@ -76,7 +77,7 @@ export async function GET(req: NextRequest) {
         }
       }
       acc[key].service += 1
-      acc[key].revenue += tx.amount
+      acc[key].revenue += recordedRevenue(tx)
       return acc
     }, {} as Record<string, { type: string; service: number; revenue: number }>)
 
@@ -91,7 +92,7 @@ export async function GET(req: NextRequest) {
       serviceData,
       total: {
         transactions: transactions.length,
-        revenue: transactions.reduce((sum, tx) => sum + tx.amount, 0),
+        revenue: transactions.reduce((sum, tx) => sum + recordedRevenue(tx), 0),
       },
     })
   } catch (error) {

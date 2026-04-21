@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth-middleware'
+import { recordedRevenue } from '@/lib/transaction-revenue'
 
 const PHT_OFFSET_MS = 8 * 60 * 60 * 1000
 
@@ -80,7 +81,7 @@ export async function GET(req: NextRequest) {
     const grouped = transactions.reduce((acc, tx) => {
       const key = getGroupKey(new Date(tx.dateTime), granularity)
       if (!acc[key]) acc[key] = { date: key, revenue: 0, transactions: 0 }
-      acc[key].revenue += tx.amount
+      acc[key].revenue += recordedRevenue(tx)
       acc[key].transactions += 1
       return acc
     }, {} as Record<string, { date: string; revenue: number; transactions: number }>)

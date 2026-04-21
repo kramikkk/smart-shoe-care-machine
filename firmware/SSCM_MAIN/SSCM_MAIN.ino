@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.15"
+#define FIRMWARE_VERSION "1.0.16"
 #define BOARD_NAME "SSCM-MAIN"
 
 /**
@@ -374,9 +374,9 @@ static unsigned long wifiPostConnectAt = 0;
 // Leaving it as 1 points the device at a local IP that will not be reachable in the field.
 #define USE_LOCAL_BACKEND 0
 #if USE_LOCAL_BACKEND
-#define BACKEND_HOST_STR "192.168.43.147"
+#define BACKEND_HOST_STR "192.168.43.160"
 #define BACKEND_PORT_NUM 3000
-#define BACKEND_URL_STR "http://192.168.43.147:3000"
+#define BACKEND_URL_STR "http://192.168.43.160:3000"
 #else
 #define BACKEND_HOST_STR "smart-shoe-care-machine.onrender.com"
 #define BACKEND_PORT_NUM 443

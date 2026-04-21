@@ -45,7 +45,9 @@ export const columns: ColumnDef<Transaction>[] = [
     cell: ({ row }) => {
       const amount = row.getValue<number>("amount")
       const amountPaid = row.original.amountPaid
-      const excess = amountPaid != null && amountPaid > amount ? amountPaid - amount : 0
+      const isCash = row.original.paymentMethod === "Cash"
+      const excess =
+        isCash && amountPaid != null && amountPaid > amount ? amountPaid - amount : 0
 
       const fmt = (v: number) =>
         new Intl.NumberFormat("en-US", { style: "currency", currency: "PHP" }).format(v)

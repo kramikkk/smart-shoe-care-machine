@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import prisma from '@/lib/prisma'
 import { requireAuth } from '@/lib/auth-middleware'
+import { recordedRevenue } from '@/lib/transaction-revenue'
 
 const PHT_OFFSET_MS = 8 * 60 * 60 * 1000
 
@@ -90,9 +91,9 @@ export async function GET(req: NextRequest) {
     if (timeRange === 'all') {
       const allTxs = await prisma.transaction.findMany({
         where: deviceWhere,
-        select: { amount: true },
+        select: { amount: true, amountPaid: true, paymentMethod: true },
       })
-      const totalRevenue = allTxs.reduce((sum, tx) => sum + tx.amount, 0)
+      const totalRevenue = allTxs.reduce((sum, tx) => sum + recordedRevenue(tx), 0)
       const totalCount = allTxs.length
 
       return NextResponse.json({
@@ -121,7 +122,7 @@ export async function GET(req: NextRequest) {
     // Fetch only the two comparison periods — no all-time scan needed
     const periodTxs = await prisma.transaction.findMany({
       where: { ...deviceWhere, dateTime: { gte: previousStart, lte: now } },
-      select: { dateTime: true, amount: true },
+      select: { dateTime: true, amount: true, amountPaid: true, paymentMethod: true },
     })
 
     const currentTxs = periodTxs.filter(
@@ -131,9 +132,9 @@ export async function GET(req: NextRequest) {
       (tx) => new Date(tx.dateTime) >= previousStart && new Date(tx.dateTime) < previousEnd
     )
 
-    const currentRevenue = currentTxs.reduce((sum, tx) => sum + tx.amount, 0)
+    const currentRevenue = currentTxs.reduce((sum, tx) => sum + recordedRevenue(tx), 0)
     const currentCount = currentTxs.length
-    const previousRevenue = previousTxs.reduce((sum, tx) => sum + tx.amount, 0)
+    const previousRevenue = previousTxs.reduce((sum, tx) => sum + recordedRevenue(tx), 0)
     const previousCount = previousTxs.length
 
     // Trend: current period vs previous period.
