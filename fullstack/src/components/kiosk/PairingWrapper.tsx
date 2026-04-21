@@ -95,7 +95,7 @@ export default function PairingWrapper({ children }: PairingWrapperProps) {
   if (isPaired === false) {
     const origin = typeof window !== 'undefined' ? window.location.origin : ''
     const qrUrl = pairingCode
-      ? `${origin}/client/dashboard/settings?pair=${deviceId}&code=${pairingCode}`
+      ? `${origin}/client/dashboard/pairing?pair=${encodeURIComponent(deviceId)}&code=${encodeURIComponent(pairingCode)}`
       : ''
 
     return (
