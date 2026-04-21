@@ -6,7 +6,7 @@ import {
   parseServiceStatusProgress,
   tryParseServiceStatusRemainingSeconds,
 } from '@/lib/service-status-fields'
-import { useDeviceFilter, SELECTED_DEVICE_KEY } from './DeviceFilterContext'
+import { useDeviceFilter } from './DeviceFilterContext'
 
 // Re-export deriveAlerts so SystemAlertCard can use the same logic
 export type AlertSeverity = 'critical' | 'warning' | 'info'
@@ -173,12 +173,7 @@ const DEFAULT_SENSOR_DATA: SensorData = {
 }
 
 export function DashboardWebSocketProvider({ children }: { children: React.ReactNode }) {
-  // Read selectedDevice directly — DeviceFilterContext propagates the same
-  // localStorage value but only after a render cycle. Reading it here lets
-  // the WS connect on the very first render without waiting for context.
-  const { selectedDevice: contextDevice } = useDeviceFilter()
-  const selectedDevice = contextDevice ||
-    (typeof window !== 'undefined' ? (localStorage.getItem(SELECTED_DEVICE_KEY) ?? '') : '')
+  const { selectedDevice } = useDeviceFilter()
 
   // Keep a ref to the latest sensor data so cleanup can read it without stale closures
   const sensorDataRef = useRef<SensorData>(DEFAULT_SENSOR_DATA)
@@ -262,7 +257,10 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
     // REST check (kept for robust offline checking)
     fetch(`/api/device/${encodeURIComponent(selectedDevice)}/status`, { cache: 'no-store' })
       .then(r => r.ok ? r.json() : null)
-      .then((data: { online?: boolean } | null) => { if (data?.online) setIsConnected(true) })
+      .then((data: { online?: boolean; paired?: boolean } | null) => {
+        // Treat unpaired devices as offline in the dashboard monitoring/commands UI.
+        setIsConnected(Boolean(data?.online && data?.paired))
+      })
       .catch(() => {})
 
     let ws: WebSocket
@@ -387,10 +385,30 @@ export function DashboardWebSocketProvider({ children }: { children: React.React
               if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current)
               dataTimeoutRef.current = setTimeout(() => setIsLoadingData(false), 10000)
             }
-            setIsConnected(true)
+            const paired = message.paired !== false
+            setIsConnected(paired)
             if (message.camSynced !== undefined) {
               setSensorData(prev => ({ ...prev, camSynced: message.camSynced }))
             }
+          }
+
+          if (message.type === 'device-update') {
+            const paired = Boolean((message.data as { paired?: boolean } | undefined)?.paired)
+            if (!paired) {
+              setIsConnected(false)
+              setIsLoadingData(false)
+              if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
+              setSensorData(DEFAULT_SENSOR_DATA)
+              sensorDataRef.current = DEFAULT_SENSOR_DATA
+            }
+          }
+
+          if (message.type === 'status-ack' && message.paired === false) {
+            setIsConnected(false)
+            setIsLoadingData(false)
+            if (dataTimeoutRef.current) { clearTimeout(dataTimeoutRef.current); dataTimeoutRef.current = null }
+            setSensorData(DEFAULT_SENSOR_DATA)
+            sensorDataRef.current = DEFAULT_SENSOR_DATA
           }
 
           if (message.type === 'device-offline') {

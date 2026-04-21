@@ -28,7 +28,11 @@ export function DeviceFilterProvider({ children }: { children: React.ReactNode }
   const setSelectedDevice = (deviceId: string) => {
     setSelectedDeviceState(deviceId)
     if (typeof window !== 'undefined') {
-      localStorage.setItem(SELECTED_DEVICE_KEY, deviceId)
+      if (deviceId) {
+        localStorage.setItem(SELECTED_DEVICE_KEY, deviceId)
+      } else {
+        localStorage.removeItem(SELECTED_DEVICE_KEY)
+      }
     }
   }
 
@@ -51,6 +55,9 @@ export function DeviceFilterProvider({ children }: { children: React.ReactNode }
         const cachedStillValid = deviceList.some((d: { deviceId: string }) => d.deviceId === selectedDevice)
         if (deviceList.length > 0 && !cachedStillValid) {
           setSelectedDevice(deviceList[0].deviceId)
+        } else if (deviceList.length === 0 && selectedDevice) {
+          // No paired devices remain — clear stale selection immediately.
+          setSelectedDevice('')
         }
       }
     } catch (error) {

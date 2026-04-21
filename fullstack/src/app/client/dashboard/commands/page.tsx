@@ -241,17 +241,14 @@ export default function CommandsPage() {
     return () => clearInterval(id)
   }, [commandsTab, isConnected, isDeviceReady])
 
-  // Log connection events and sync isDeviceReady with isConnected.
-  // isDeviceReady must be set true here (not just from incoming messages) so
-  // that commands are enabled immediately when the user navigates to this page
-  // while the device is already online — not waiting for the next sensor tick.
+  // Log transport connectivity and clear readiness on disconnect.
+  // Readiness itself is derived from device-scoped WS messages.
   useEffect(() => {
     if (isConnected) {
       if (!wsConnectedPrevRef.current) {
         addLog('system', 'Connected to device')
       }
       wsConnectedPrevRef.current = true
-      setIsDeviceReady(true)
     } else {
       if (wsConnectedPrevRef.current) {
         addLog('system', 'Disconnected from device')
@@ -272,6 +269,22 @@ export default function CommandsPage() {
       const readinessTypes = ['device-online', 'firmware-log', 'sensor-data', 'distance-data']
       if (readinessTypes.includes(msg.type as string) && (!mid || mid === selectedDevice)) {
         setIsDeviceReady(true)
+      }
+
+      if (msg.type === 'device-offline' && (!mid || mid === selectedDevice)) {
+        setIsDeviceReady(false)
+      }
+
+      if (msg.type === 'device-update' && (!mid || mid === selectedDevice)) {
+        const paired = Boolean((msg.data as { paired?: boolean } | undefined)?.paired)
+        if (!paired) {
+          setIsDeviceReady(false)
+          addLog('system', 'Device unpaired — controls disabled until paired again')
+        }
+      }
+
+      if (msg.type === 'status-ack' && (!mid || mid === selectedDevice) && msg.paired === false) {
+        setIsDeviceReady(false)
       }
 
       // High-frequency telemetry — throttle to 1 log entry per 15 s so the log stays readable.
