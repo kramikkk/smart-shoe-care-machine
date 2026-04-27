@@ -33,6 +33,11 @@ void sendDHTDataViaWebSocket(bool invalid) {
     payload += "\"temperature\":" + String(currentTemperature, 1) + ",";
     payload += "\"humidity\":" + String(currentHumidity, 1);
   }
+  // Align with status-update / cam-sync-status so dashboards and throttled DB sync see CAM state on each telemetry tick.
+  payload += ",\"camSynced\":" + String(camIsReady ? "true" : "false");
+  if (pairedCamDeviceId.length() > 0) {
+    payload += ",\"camDeviceId\":\"" + pairedCamDeviceId + "\"";
+  }
   payload += "}";
 
   webSocket.sendTXT(payload);

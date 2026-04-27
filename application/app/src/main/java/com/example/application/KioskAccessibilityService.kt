@@ -1,10 +1,10 @@
 package com.example.application
 
 import android.accessibilityservice.AccessibilityService
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.os.PowerManager
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 
 class KioskAccessibilityService : AccessibilityService() {
@@ -13,25 +13,30 @@ class KioskAccessibilityService : AccessibilityService() {
         getSharedPreferences(KioskPrefs.FILE_NAME, Context.MODE_PRIVATE)
     }
 
+    /** Last time we sent BACK to dismiss the shade (avoid event storms). */
+    private var lastShadeDismissUptimeMs = 0L
+
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
 
         val isKioskActive = prefs.getBoolean(KioskPrefs.KEY_KIOSK_ACTIVE, true)
         if (!isKioskActive) return
 
-        val foreground = event.packageName?.toString() ?: return
-
-        // Our own app — nothing to do
-        if (foreground == packageName) return
-
         // Don't act while the screen is off (lock screen handles that)
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!pm.isInteractive) return
 
-        when {
-            // Status bar / notification shade opened — collapse it immediately
-            foreground == "com.android.systemui" -> collapseStatusBar()
+        val foreground = event.packageName?.toString() ?: return
 
+        // Prefer class names: some builds leave packageName as the foreground app while the shade is up.
+        if (isNotificationShadeOrStatusUi(foreground, event)) {
+            dismissNotificationShade()
+            return
+        }
+
+        if (foreground == packageName) return
+
+        when {
             // Allowed system packages (Device Admin dialog, etc.) — let them show
             foreground in ALLOWED_SYSTEM_PACKAGES -> return
 
@@ -42,13 +47,29 @@ class KioskAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { }
 
-    @SuppressLint("WrongConstant")
-    private fun collapseStatusBar() {
-        try {
-            val statusBarService = getSystemService("statusbar")
-            val statusBarManager = Class.forName("android.app.StatusBarManager")
-            statusBarManager.getMethod("collapsePanels").invoke(statusBarService)
-        } catch (_: Exception) { }
+    /**
+     * Third-party apps cannot obtain [android.app.StatusBarManager] (service is null), so reflection
+     * on collapsePanels never worked. GLOBAL_ACTION_BACK is the supported way for an
+     * AccessibilityService to close the notification shade / status bar expansion.
+     */
+    private fun dismissNotificationShade() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastShadeDismissUptimeMs < SHADE_DISMISS_DEBOUNCE_MS) return
+        lastShadeDismissUptimeMs = now
+        performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    private fun isNotificationShadeOrStatusUi(foreground: String, event: AccessibilityEvent): Boolean {
+        val className = event.className?.toString().orEmpty()
+        if (className.contains("StatusBar", ignoreCase = true) ||
+            className.contains("NotificationShade", ignoreCase = true) ||
+            className.contains("ExpandedNotification", ignoreCase = true)
+        ) {
+            return true
+        }
+        if (foreground == "com.android.systemui") return true
+        if (foreground in SYSTEM_UI_PACKAGES) return true
+        return false
     }
 
     private fun bringKioskToFront() {
@@ -63,10 +84,17 @@ class KioskAccessibilityService : AccessibilityService() {
     }
 
     companion object {
+        private const val SHADE_DISMISS_DEBOUNCE_MS = 350L
+
         private val ALLOWED_SYSTEM_PACKAGES = setOf(
             "android",
             "com.android.settings",
             "com.google.android.packageinstaller"
+        )
+
+        /** OEM / variant packages that host the status bar or shade (non-exhaustive). */
+        private val SYSTEM_UI_PACKAGES = setOf(
+            "com.google.android.systemui"
         )
     }
 }

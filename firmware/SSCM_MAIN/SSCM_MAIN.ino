@@ -590,7 +590,14 @@ void loop() {
         break;
       case ESPNOW_CLASSIFY_LOG:
         LOG("[CAM->MAIN] " + String(entry.message));
-        if (wsConnected) wsLog("warn", "Classification status: " + String(entry.message));
+        if (wsConnected) {
+          wsLog("warn", "Classification status: " + String(entry.message));
+          // Kiosk listens for type classification-busy (not firmware-log).
+          if (strcmp(entry.message, "CAM_BUSY") == 0) {
+            String busy = "{\"type\":\"classification-busy\",\"deviceId\":\"" + deviceId + "\"}";
+            webSocket.sendTXT(busy);
+          }
+        }
         break;
       default:
         break;

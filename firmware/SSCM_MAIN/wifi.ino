@@ -175,7 +175,11 @@ void connectWiFi() {
   String pass = prefs.getString("pass", "");
 
   if (ssid.length() == 0) {
-    LOG("[WIFI] No SSID stored - starting soft AP for setup");
+    // connectWiFi() is retried from loop() every ~5s while STA is down; only log when we
+    // actually bring the AP up — startSoftAP() no-ops if softAPStarted is already true.
+    if (!softAPStarted) {
+      LOG("[WIFI] No SSID stored - starting soft AP for setup");
+    }
     startSoftAP();
     return;
   }
