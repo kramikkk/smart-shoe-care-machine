@@ -103,6 +103,24 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     // after a main board firmware update (e.g. switching USE_LOCAL_BACKEND from 1→0).
     // sendPairingBroadcast sends unicast to the paired CAM MAC when camMacPaired=true.
     if (camMacPaired) sendPairingBroadcast();
+
+    // Notify backend of a power-cut interrupted service so the kiosk can offer resume.
+    // Only send if we have a valid transaction ID — avoids alerting for very old checkpoints
+    // that predate the transaction tracking feature.
+    if (pendingServiceResume && resumeSvcTxId.length() > 0) {
+      String ckpt = "{\"type\":\"service-interrupted\",\"deviceId\":\"" + deviceId + "\",";
+      ckpt += "\"checkpoint\":{";
+      ckpt += "\"serviceType\":\"" + resumeSvcType + "\",";
+      ckpt += "\"shoeType\":\"" + resumeSvcShoe + "\",";
+      ckpt += "\"careType\":\"" + resumeSvcCare + "\",";
+      ckpt += "\"remainingMs\":" + String(resumeSvcRemMs) + ",";
+      ckpt += "\"phase\":" + String(resumeSvcPhase) + ",";
+      ckpt += "\"cyclesCompleted\":" + String(resumeSvcCycle) + ",";
+      ckpt += "\"transactionId\":\"" + resumeSvcTxId + "\"";
+      ckpt += "}}";
+      webSocket.sendTXT(ckpt);
+      LOG("[WS] Sent service-interrupted (txid:" + resumeSvcTxId + " rem:" + String(resumeSvcRemMs / 1000) + "s)");
+    }
     break;
   }
 
@@ -244,7 +262,28 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         customDryingTempSetpoint = message.substring(start, end).toFloat();
       }
 
+      // transactionId: backend transaction record created by kiosk before this command
+      int txIdIndex = message.indexOf("\"transactionId\":\"");
+      if (txIdIndex != -1) {
+        int txStart = txIdIndex + 17;
+        int txEnd   = message.indexOf("\"", txStart);
+        currentServiceTxId = (txEnd != -1) ? message.substring(txStart, txEnd) : "";
+      } else {
+        currentServiceTxId = "";
+      }
+
       if (serviceType == "cleaning" || serviceType == "drying" || serviceType == "sterilizing") {
+        // Clear any stale resume checkpoint so a reconnect during this new service
+        // does not re-broadcast the old transaction's service-interrupted event.
+        if (pendingServiceResume) {
+          pendingServiceResume = false;
+          resumeSvcType = "";
+          resumeSvcShoe = "";
+          resumeSvcCare = "";
+          resumeSvcTxId = "";
+          clearServiceCheckpoint();
+          LOG("[SERVICE] Cleared stale resume checkpoint — fresh service started");
+        }
         startService(shoeType, serviceType, careType, customDuration, customCleaningDistanceMm, customMotorSpeedPwm, customDryingTempSetpoint);
         wsLog("info", "Service started: " + serviceType + " | shoe: " + shoeType);
       }
@@ -261,6 +300,74 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
         abortPurgeIfActive();
       }
       wsLog("info", "Stop service (WS)");
+
+    } else if (message.indexOf("\"type\":\"resume-service\"") != -1) {
+      // Backend grants resume — start the remaining service duration from checkpoint.
+      unsigned long remainingMs = 0;
+      int rmIdx = message.indexOf("\"remainingMs\":");
+      if (rmIdx != -1) {
+        int s = rmIdx + 14, e = message.indexOf(",", s);
+        if (e == -1) e = message.indexOf("}", s);
+        remainingMs = (unsigned long)message.substring(s, e).toInt();
+      }
+      int fromCycle = 0;
+      int fcIdx = message.indexOf("\"resumeFromCycle\":");
+      if (fcIdx != -1) {
+        int s = fcIdx + 18, e = message.indexOf(",", s);
+        if (e == -1) e = message.indexOf("}", s);
+        fromCycle = message.substring(s, e).toInt();
+      }
+      long cleaningDistanceMm = -1;
+      int distIdx = message.indexOf("\"cleaningDistanceMm\":");
+      if (distIdx != -1) {
+        int s = distIdx + 21, e = message.indexOf(",", s);
+        if (e == -1) e = message.indexOf("}", s);
+        cleaningDistanceMm = message.substring(s, e).toInt();
+      }
+      int motorSpeedPwm = -1;
+      int mspIdx = message.indexOf("\"motorSpeedPwm\":");
+      if (mspIdx != -1) {
+        int s = mspIdx + 16, e = message.indexOf(",", s);
+        if (e == -1) e = message.indexOf("}", s);
+        motorSpeedPwm = message.substring(s, e).toInt();
+      }
+      float dryingTempSetpoint_ = -1.0;
+      int dtIdx = message.indexOf("\"dryingTempSetpoint\":");
+      if (dtIdx != -1) {
+        int s = dtIdx + 21, e = message.indexOf(",", s);
+        if (e == -1) e = message.indexOf("}", s);
+        dryingTempSetpoint_ = message.substring(s, e).toFloat();
+      }
+      // Guard: if backend calculated too little remaining time, discard the checkpoint
+      const unsigned long MIN_VIABLE_RESUME_MS = 5000;
+      if (remainingMs < MIN_VIABLE_RESUME_MS) {
+        LOG("[WS] resume-service skipped — remaining " + String(remainingMs) + "ms < 5s minimum");
+        pendingServiceResume = false;
+        clearServiceCheckpoint();
+        currentServiceTxId = "";
+        String ack = "{\"type\":\"checkpoint-cleared\",\"deviceId\":\"" + deviceId + "\"}";
+        webSocket.sendTXT(ack);
+        wsLog("warn", "Resume skipped: remaining < 5s");
+      } else {
+        // Restore the transaction ID from the boot checkpoint before starting
+        currentServiceTxId  = resumeSvcTxId;
+        pendingServiceResume = false;
+        LOG("[WS] Resuming " + resumeSvcType + " remaining:" + String(remainingMs) + "ms fromCycle:" + String(fromCycle));
+        startServiceResume(resumeSvcShoe, resumeSvcType, resumeSvcCare,
+                           remainingMs, fromCycle,
+                           cleaningDistanceMm, motorSpeedPwm, dryingTempSetpoint_);
+        wsLog("info", "Service resumed from checkpoint");
+      }
+
+    } else if (message.indexOf("\"type\":\"skip-resume\"") != -1) {
+      // Backend rejects checkpoint (too old, transaction unknown, or customer chose new service).
+      pendingServiceResume = false;
+      clearServiceCheckpoint();
+      currentServiceTxId = "";
+      LOG("[WS] skip-resume: checkpoint cleared");
+      String ack = "{\"type\":\"checkpoint-cleared\",\"deviceId\":\"" + deviceId + "\"}";
+      webSocket.sendTXT(ack);
+      wsLog("info", "Checkpoint cleared (skip-resume)");
 
     } else if (message.indexOf("\"type\":\"start-classification\"") != -1) {
       if (camIsReady && camMacPaired) sendClassifyRequest();

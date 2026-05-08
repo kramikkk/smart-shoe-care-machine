@@ -87,11 +87,15 @@ model Transaction {
   updatedAt         DateTime @updatedAt
   deviceId          String?
   paymongoPaymentId String?  @unique
+  status            TransactionStatus @default(COMPLETED)
+  interruptedAt     DateTime?
+  serviceCheckpoint Json?
   device            Device?  @relation(fields: [deviceId], references: [deviceId], onDelete: SetNull)
 
   @@index([dateTime])
   @@index([paymentMethod])
   @@index([deviceId])
+  @@index([status])
   @@map("transaction")
 }
 
@@ -254,6 +258,15 @@ model DeviceAlert {
   @@index([deviceId, resolvedAt])
   @@index([deviceId, alertKey, resolvedAt])
   @@map("device_alert")
+}
+
+enum TransactionStatus {
+  ACTIVE
+  COMPLETED
+  INTERRUPTED
+  ABANDONED
+
+  @@map("transaction_status")
 }
 
 enum UserRole {

@@ -35,6 +35,8 @@ declare global {
   var _deviceCachedPairedStatus: Map<string, boolean> | undefined
   // eslint-disable-next-line no-var
   var _devicePendingOfflineTimers: Map<string, NodeJS.Timeout> | undefined
+  // eslint-disable-next-line no-var
+  var _resumeGuardTimers: Map<string, NodeJS.Timeout> | undefined
 }
 const deviceConnections: Map<string, Set<WebSocket>> =
   global._deviceConnections ?? (global._deviceConnections = new Map())
@@ -59,10 +61,24 @@ const deviceCachedPairedStatus: Map<string, boolean> =
 const devicePendingOfflineTimers: Map<string, NodeJS.Timeout> =
   global._devicePendingOfflineTimers ?? (global._devicePendingOfflineTimers = new Map())
 
+// Cancellable staleness-guard timers keyed by transaction ID.
+// Stored globally so a second reconnect can cancel the guard armed by the first.
+const resumeGuardTimers: Map<string, NodeJS.Timeout> =
+  global._resumeGuardTimers ?? (global._resumeGuardTimers = new Map())
+
 // Offline timeout for ungraceful disconnects (power cut/network loss).
 // ESP32 sends status every 5s; 15s = 3 missed cycles, enough margin to avoid
 // false-offline flaps from brief stalls (OTA handle, DHT read, TLS re-handshake).
 const DEVICE_STATUS_TIMEOUT_MS = 15_000
+
+// How long to wait for a kiosk to respond to a service-interrupted broadcast before
+// automatically sending skip-resume. 10 min covers the case where the tablet reboots
+// slowly or the customer walks away briefly.
+const STALE_RESUME_GUARD_MS = 10 * 60 * 1000
+
+// Minimum remaining duration worth resuming. If the checkpoint has less than this left
+// (after subtracting time elapsed since the interruption), skip-resume is sent instead.
+const MIN_VIABLE_RESUME_MS = 5_000
 
 // Token validation — requires WS_AUTH_TOKEN (enforced at startup in server.ts)
 function validateWebSocketToken(token: string | null): boolean {
@@ -666,6 +682,11 @@ export function createWebSocketServer(server: Server) {
             type: 'stop-service',
             deviceId: stopDeviceId,
           })
+          // Mark the ACTIVE transaction for this device as ABANDONED (customer stopped early)
+          prisma.transaction.updateMany({
+            where: { deviceId: stopDeviceId, status: 'ACTIVE' },
+            data: { status: 'ABANDONED' },
+          }).catch(e => console.error('[WebSocket] Failed to mark transaction ABANDONED:', e))
         }
 
         // Handle service status updates from ESP32
@@ -685,8 +706,240 @@ export function createWebSocketServer(server: Server) {
         else if (message.type === 'service-complete' && message.deviceId) {
           const completeDeviceId = message.deviceId as string
           console.log(`[WebSocket] Service complete on ${completeDeviceId}: ${message.serviceType}`)
+          // Mark ACTIVE transaction as COMPLETED. Prefer matching by transactionId when the
+          // firmware includes it (new firmware); fall back to deviceId match for old firmware.
+          const txId = typeof message.transactionId === 'string' ? message.transactionId : null
+          if (txId) {
+            prisma.transaction.updateMany({
+              where: { id: txId, status: 'ACTIVE' },
+              data: { status: 'COMPLETED' },
+            }).catch(e => console.error('[WebSocket] Failed to mark transaction COMPLETED:', e))
+          } else {
+            prisma.transaction.updateMany({
+              where: { deviceId: completeDeviceId, status: 'ACTIVE' },
+              data: { status: 'COMPLETED' },
+            }).catch(e => console.error('[WebSocket] Failed to mark transaction COMPLETED:', e))
+          }
           // Broadcast to all clients subscribed to this device
           broadcastToDevice(completeDeviceId, message)
+        }
+
+        // Handle power-cut interruption report from ESP32 on reconnect
+        else if (message.type === 'service-interrupted' && message.deviceId) {
+          const intDeviceId = message.deviceId as string
+          const rawCheckpoint = message.checkpoint
+          const isValidCheckpoint = (
+            rawCheckpoint !== null &&
+            typeof rawCheckpoint === 'object' &&
+            typeof (rawCheckpoint as Record<string, unknown>).transactionId === 'string'
+          )
+          if (!isValidCheckpoint) {
+            broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
+          } else {
+            const checkpoint = rawCheckpoint as Record<string, unknown>
+            const txId = checkpoint.transactionId as string
+            console.log(`[WebSocket] Service interrupted on ${intDeviceId}: txid=${txId}`)
+            ;(async () => {
+              try {
+                const tx = await prisma.transaction.findFirst({
+                  where: { id: txId, deviceId: intDeviceId },
+                })
+                if (!tx) {
+                  broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
+                  return
+                }
+                // Device reconnected while the kiosk banner was already showing — refresh it
+                // with time adjusted for how long the banner has been waiting.
+                if (tx.status === 'INTERRUPTED') {
+                  const storedCkpt = tx.serviceCheckpoint as Record<string, unknown> | null
+                  if (!storedCkpt) {
+                    broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
+                    return
+                  }
+                  const origRemMs = Math.max(0, Number(storedCkpt.remainingMs) || 0)
+                  const elapsedSinceInterrupt = tx.interruptedAt ? Date.now() - tx.interruptedAt.getTime() : 0
+                  const adjustedRemMs = Math.max(0, origRemMs - elapsedSinceInterrupt)
+                  if (adjustedRemMs < MIN_VIABLE_RESUME_MS) {
+                    await prisma.transaction.update({ where: { id: tx.id }, data: { status: 'ABANDONED' } })
+                    broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
+                    return
+                  }
+                  // Do NOT reset interruptedAt — keep the original timestamp so resume-confirmed
+                  // calculates total elapsed since the first interruption, not just since this reconnect.
+                  broadcastToDevice(intDeviceId, {
+                    type: 'service-interrupted',
+                    deviceId: intDeviceId,
+                    transactionId: tx.id,
+                    checkpoint: storedCkpt,
+                    remainingMs: adjustedRemMs,
+                  })
+                  return
+                }
+                if (tx.status !== 'ACTIVE') {
+                  broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
+                  return
+                }
+                await prisma.transaction.update({
+                  where: { id: tx.id },
+                  data: {
+                    status: 'INTERRUPTED',
+                    interruptedAt: new Date(),
+                    serviceCheckpoint: checkpoint as object,
+                  },
+                })
+                const remainingMs = Math.max(0, Number(checkpoint.remainingMs) || 0)
+                broadcastToDevice(intDeviceId, {
+                  type: 'service-interrupted',
+                  deviceId: intDeviceId,
+                  transactionId: tx.id,
+                  checkpoint,
+                  remainingMs,
+                })
+
+                // Staleness guard: auto skip-resume if kiosk does not respond within 10 min.
+                // Cancel any prior guard for this transaction (e.g. from a previous reconnect).
+                const existingGuard = resumeGuardTimers.get(tx.id)
+                if (existingGuard) clearTimeout(existingGuard)
+                const guard = setTimeout(async () => {
+                  resumeGuardTimers.delete(tx.id)
+                  try {
+                    // Conditional update: only wins if the tx is still INTERRUPTED.
+                    // Prevents overwriting ACTIVE (set by resume-confirmed) with ABANDONED.
+                    const result = await prisma.transaction.updateMany({
+                      where: { id: tx.id, status: 'INTERRUPTED' },
+                      data: { status: 'ABANDONED' },
+                    })
+                    if (result.count > 0) {
+                      console.log(`[WebSocket] Staleness guard: auto skip-resume for ${intDeviceId} txid=${tx.id}`)
+                      broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
+                    }
+                  } catch { /* device may have reconnected and resumed already */ }
+                }, STALE_RESUME_GUARD_MS)
+                resumeGuardTimers.set(tx.id, guard)
+              } catch (e) {
+                console.error('[WebSocket] service-interrupted handler error:', e)
+                broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
+              }
+            })()
+          }
+        }
+
+        // Kiosk sends resume-confirmed when customer taps "Resume Service"
+        else if (message.type === 'resume-confirmed' && message.deviceId && message.transactionId) {
+          const resumeDeviceId = message.deviceId as string
+          const resumeTxId = message.transactionId as string
+          console.log(`[WebSocket] Resume confirmed for ${resumeDeviceId} txid=${resumeTxId}`)
+
+          ;(async () => {
+            try {
+              // Cancel staleness guard — customer responded, no need for auto skip-resume
+              const guard = resumeGuardTimers.get(resumeTxId)
+              if (guard) {
+                clearTimeout(guard)
+                resumeGuardTimers.delete(resumeTxId)
+              }
+
+              const tx = await prisma.transaction.findUnique({ where: { id: resumeTxId } })
+              // Only proceed if the transaction is still waiting for a resume decision.
+              // If the staleness guard already set it to ABANDONED, or it was completed/cancelled
+              // by another path, bail out so we don't resurrect a dead transaction.
+              if (!tx || !tx.serviceCheckpoint || tx.status !== 'INTERRUPTED') {
+                broadcastToDevice(resumeDeviceId, { type: 'skip-resume', deviceId: resumeDeviceId })
+                return
+              }
+              const ckpt = tx.serviceCheckpoint as Record<string, unknown>
+              const checkpointRemMs = Math.max(0, Number(ckpt.remainingMs) || 0)
+              // Subtract time elapsed since the power cut so firmware gets an accurate duration
+              const elapsedSinceInterrupt = tx.interruptedAt ? Date.now() - tx.interruptedAt.getTime() : 0
+              const remainingMs = Math.max(0, checkpointRemMs - elapsedSinceInterrupt)
+              const careType = (ckpt.careType as string) || ''
+              const serviceType = (ckpt.serviceType as string) || ''
+
+              // Nothing meaningful left to resume — abandon instead
+              if (remainingMs < MIN_VIABLE_RESUME_MS) {
+                await prisma.transaction.update({
+                  where: { id: resumeTxId },
+                  data: { status: 'ABANDONED' },
+                })
+                broadcastToDevice(resumeDeviceId, { type: 'skip-resume', deviceId: resumeDeviceId })
+                return
+              }
+
+              // Conditional update: only wins if tx is still INTERRUPTED.
+              // Guards against the staleness guard firing between our findUnique and this update.
+              const activated = await prisma.transaction.updateMany({
+                where: { id: resumeTxId, status: 'INTERRUPTED' },
+                data: { status: 'ACTIVE' },
+              })
+              if (activated.count === 0) {
+                // Lost the race — staleness guard already abandoned this tx
+                broadcastToDevice(resumeDeviceId, { type: 'skip-resume', deviceId: resumeDeviceId })
+                return
+              }
+
+              // Fetch DB settings (same enrichment as start-service)
+              let enriched: Record<string, unknown> = {
+                type: 'resume-service',
+                deviceId: resumeDeviceId,
+                serviceType,
+                shoeType: ckpt.shoeType,
+                careType,
+                remainingMs,
+                resumeFromCycle: Number(ckpt.cyclesCompleted) || 0,
+              }
+              if (serviceType === 'drying') {
+                const tempEntry = await prisma.dryingTemp.findFirst({ where: { careType, deviceId: resumeDeviceId } })
+                  .then(r => r ?? prisma.dryingTemp.findFirst({ where: { careType, deviceId: null } }))
+                if (tempEntry) enriched = { ...enriched, dryingTempSetpoint: tempEntry.tempC }
+              }
+              if (serviceType === 'cleaning') {
+                const [distEntry, speedEntry] = await Promise.all([
+                  prisma.cleaningDistance.findFirst({ where: { careType, deviceId: resumeDeviceId } })
+                    .then(r => r ?? prisma.cleaningDistance.findFirst({ where: { careType, deviceId: null } })),
+                  prisma.motorSpeed.findFirst({ where: { careType, deviceId: resumeDeviceId } })
+                    .then(r => r ?? prisma.motorSpeed.findFirst({ where: { careType, deviceId: null } })),
+                ])
+                if (distEntry) enriched = { ...enriched, cleaningDistanceMm: distEntry.distanceMm }
+                if (speedEntry) enriched = { ...enriched, motorSpeedPwm: speedEntry.speedPwm }
+              }
+              broadcastToDevice(resumeDeviceId, enriched)
+            } catch (e) {
+              console.error('[WebSocket] resume-confirmed handler error:', e)
+              // skip-resume is broadcast below — it reaches both the firmware (clears NVS checkpoint)
+              // and the kiosk (closes banner). With the checkpoint gone there is nothing left to
+              // resume, so ABANDONED is the correct final state, not INTERRUPTED.
+              try {
+                await prisma.transaction.update({
+                  where: { id: resumeTxId },
+                  data: { status: 'ABANDONED' },
+                })
+              } catch { /* ignore secondary failure */ }
+              broadcastToDevice(resumeDeviceId, { type: 'skip-resume', deviceId: resumeDeviceId })
+            }
+          })()
+        }
+
+        // Kiosk sends resume-declined when customer taps "Start New Service"
+        else if (message.type === 'resume-declined' && message.deviceId && message.transactionId) {
+          const declineDeviceId = message.deviceId as string
+          const declineTxId = message.transactionId as string
+          console.log(`[WebSocket] Resume declined for ${declineDeviceId} txid=${declineTxId}`)
+          // Cancel staleness guard — customer already decided, no need for auto skip-resume
+          const declineGuard = resumeGuardTimers.get(declineTxId)
+          if (declineGuard) {
+            clearTimeout(declineGuard)
+            resumeGuardTimers.delete(declineTxId)
+          }
+          prisma.transaction.update({
+            where: { id: declineTxId },
+            data: { status: 'ABANDONED' },
+          }).catch(e => console.error('[WebSocket] Failed to mark tx ABANDONED on decline:', e))
+          broadcastToDevice(declineDeviceId, { type: 'skip-resume', deviceId: declineDeviceId })
+        }
+
+        // Device cleared its checkpoint after skip-resume — log only
+        else if (message.type === 'checkpoint-cleared' && message.deviceId) {
+          console.log(`[WebSocket] Checkpoint cleared on ${message.deviceId as string}`)
         }
 
         // ===================== ESP32-CAM MESSAGES =====================

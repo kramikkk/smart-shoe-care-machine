@@ -83,6 +83,7 @@ export async function POST(req: NextRequest) {
         amount,
         amountPaid: amountPaid ?? null,
         deviceId,
+        status: 'ACTIVE',
       },
     })
 

@@ -36,7 +36,6 @@ export default function TransactionsPage() {
   const [serviceFilter, setServiceFilter] = useState<string>("all")
   const [shoeTypeFilter, setShoeTypeFilter] = useState<string>("all")
   const [careTypeFilter, setCareTypeFilter] = useState<string>("all")
-  // statusFilter kept for UI but not sent to API (no status field on Transaction)
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [dateFrom, setDateFrom] = useState<Date | undefined>(undefined)
   const [dateTo, setDateTo] = useState<Date | undefined>(undefined)
@@ -51,6 +50,7 @@ export default function TransactionsPage() {
         params.set('deviceId', selectedDevice || '')
         params.set('limit', '500')
         if (paymentFilter !== 'all') params.set('paymentMethod', paymentFilter)
+        if (statusFilter !== 'all') params.set('status', statusFilter)
         if (dateFrom) params.set('startDate', dateFrom.toISOString())
         if (dateTo) {
           const end = new Date(dateTo)
@@ -85,7 +85,7 @@ export default function TransactionsPage() {
     fetchTransactions()
 
     return () => controller.abort()
-  }, [selectedDevice, paymentFilter, dateFrom, dateTo])
+  }, [selectedDevice, paymentFilter, statusFilter, dateFrom, dateTo])
 
   const filteredData = useMemo(() => {
     return transactions.filter((tx) => {
@@ -277,7 +277,7 @@ export default function TransactionsPage() {
                   {[
                     { label: "Payment", value: paymentFilter, setter: setPaymentFilter, options: ["Cash", "Online"], placeholder: "Payment" },
                     { label: "Service", value: serviceFilter, setter: setServiceFilter, options: ["Cleaning", "Drying", "Sterilizing", "Package"], placeholder: "Service" },
-                    { label: "Status", value: statusFilter, setter: setStatusFilter, options: ["Success", "Pending", "Failed"], placeholder: "Status" },
+                    { label: "Status", value: statusFilter, setter: setStatusFilter, options: ["ACTIVE", "COMPLETED", "INTERRUPTED", "ABANDONED"], placeholder: "Status" },
                     { label: "Shoe", value: shoeTypeFilter, setter: setShoeTypeFilter, options: ["Canvas", "Rubber", "Mesh"], placeholder: "Shoe" },
                     { label: "Care", value: careTypeFilter, setter: setCareTypeFilter, options: ["Gentle", "Normal", "Strong", "Auto"], placeholder: "Care" }
                   ].map((filter) => (

@@ -362,6 +362,29 @@ bool isPaired = false;
 bool camSynced = false;
 String camDeviceId = "";
 
+/* ===================== SERVICE CHECKPOINT (NVS) ===================== */
+// Written at every cleaning phase boundary + 30s periodic tick while serviceActive.
+// On boot: svc_act == true means power was cut mid-service — hold until WS reconnects,
+// then send service-interrupted to backend and wait for resume-service / skip-resume.
+String   currentServiceTxId  = "";  // Backend transaction ID for the active service
+bool     pendingServiceResume = false; // True while a boot-time checkpoint awaits resume/skip
+
+// Fields loaded from NVS on boot (only valid when pendingServiceResume == true)
+String   resumeSvcType  = "";
+String   resumeSvcShoe  = "";
+String   resumeSvcCare  = "";
+uint32_t resumeSvcRemMs = 0;  // remaining ms at the last checkpoint save
+uint8_t  resumeSvcPhase = 0;
+uint8_t  resumeSvcCycle = 0;
+String   resumeSvcTxId  = "";
+
+// Phase fast-forward for resumed cleaning: applied at phase 3→4 transition.
+// Allows brushCurrentCycle to start from the already-completed count.
+int serviceResumeFromCycle = 0;
+
+unsigned long lastCheckpointSave = 0;
+const unsigned long CHECKPOINT_SAVE_INTERVAL = 30000; // ms — periodic NVS save during service
+
 /* ===================== WIFI POST-CONNECT STABILISATION ===================== */
 // Non-blocking 3s stabilisation window after WiFi connects.
 // delay() in loop() would freeze stepper homing — use millis() instead.
@@ -404,6 +427,20 @@ void setup() {
 
   currentStepper1Position = prefs.getLong("s1pos", 0);
   currentStepper2Position = prefs.getLong("s2pos", 0);
+
+  // Service checkpoint detection — if svc_act is true a service was active during power cut.
+  pendingServiceResume = prefs.getBool("svc_act", false);
+  if (pendingServiceResume) {
+    resumeSvcType  = prefs.getString("svc_type", "");
+    resumeSvcShoe  = prefs.getString("svc_shoe", "");
+    resumeSvcCare  = prefs.getString("svc_care", "");
+    resumeSvcRemMs = prefs.getUInt("svc_rem", 0);
+    resumeSvcPhase = (uint8_t)prefs.getUChar("svc_phase", 0);
+    resumeSvcCycle = (uint8_t)prefs.getUChar("svc_cycle", 0);
+    resumeSvcTxId  = prefs.getString("svc_txid", "");
+    LOG("[BOOT] Service checkpoint found — type:" + resumeSvcType +
+        " rem:" + String(resumeSvcRemMs / 1000) + "s txid:" + resumeSvcTxId);
+  }
 
   // Physical failsafe: hold BOOT during power-on to wipe configuration.
   pinMode(0, INPUT_PULLUP);
@@ -796,6 +833,11 @@ void loop() {
       readFoamLevel();
       sendUltrasonicDataViaWebSocket();
     }
+  }
+
+  // Periodic NVS checkpoint — keep elapsed time current every 30s while a service runs.
+  if (serviceActive && millis() - lastCheckpointSave >= CHECKPOINT_SAVE_INTERVAL) {
+    saveServiceCheckpoint();
   }
 
   handleService();

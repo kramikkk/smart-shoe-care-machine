@@ -1,6 +1,7 @@
 "use client"
 
 import { ColumnDef } from "@tanstack/react-table"
+import { getStatusBadge } from "@/lib/transactionStatus"
 
 export type Transaction = {
   id: string
@@ -12,7 +13,9 @@ export type Transaction = {
   amount: number
   amountPaid?: number | null
   deviceId?: string | null
+  status?: string | null
 }
+
 
 export const columns: ColumnDef<Transaction>[] = [
   {
@@ -38,6 +41,18 @@ export const columns: ColumnDef<Transaction>[] = [
   {
     accessorKey: "careType",
     header: "Care Type",
+  },
+  {
+    accessorKey: "status",
+    header: "Status",
+    cell: ({ row }) => {
+      const badge = getStatusBadge(row.getValue<string | null>("status"))
+      return (
+        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${badge.className}`}>
+          {badge.label}
+        </span>
+      )
+    },
   },
   {
     accessorKey: "amount",

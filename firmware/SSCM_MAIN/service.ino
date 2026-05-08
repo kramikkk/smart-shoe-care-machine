@@ -49,13 +49,53 @@ static unsigned long defaultServiceDurationMs(const String &svc,
   return 360000UL;
 }
 
+/* ===================== NVS CHECKPOINT ===================== */
+
+/**
+ * Write all service state to NVS flash.
+ * Atomic pattern: data keys first, svc_act commit flag last.
+ * A power cut during the write leaves svc_act == false — no partial checkpoint.
+ */
+void saveServiceCheckpoint() {
+  if (!serviceActive) return;
+  unsigned long ela = millis() - serviceStartTime;
+  uint32_t rem = (serviceDuration > ela) ? (uint32_t)(serviceDuration - ela) : 0;
+  prefs.putString("svc_type",  currentServiceType);
+  prefs.putString("svc_shoe",  currentShoeType);
+  prefs.putString("svc_care",  currentCareType);
+  prefs.putUInt("svc_rem",     rem);
+  prefs.putUChar("svc_phase",  (uint8_t)cleaningPhase);
+  prefs.putUChar("svc_cycle",  (uint8_t)brushCurrentCycle);
+  prefs.putString("svc_txid",  currentServiceTxId);
+  prefs.putBool("svc_act", true); // commit flag written LAST
+  lastCheckpointSave = millis();
+}
+
+/**
+ * Invalidate the NVS checkpoint.
+ * svc_act cleared first so a power cut mid-clear leaves no stale checkpoint.
+ */
+void clearServiceCheckpoint() {
+  prefs.putBool("svc_act", false); // invalidate FIRST
+  prefs.remove("svc_type");
+  prefs.remove("svc_shoe");
+  prefs.remove("svc_care");
+  prefs.remove("svc_rem");
+  prefs.remove("svc_phase");
+  prefs.remove("svc_cycle");
+  prefs.remove("svc_txid");
+}
+
 static void sendServiceCompleteMessage(const String &svcType, const String &shoe,
                                        const String &care) {
   if (!wsConnected || !isPaired)
     return;
   String msg = "{\"type\":\"service-complete\",\"deviceId\":\"" + deviceId +
                "\",\"serviceType\":\"" + svcType + "\",\"shoeType\":\"" + shoe +
-               "\",\"careType\":\"" + care + "\"}";
+               "\",\"careType\":\"" + care + "\"";
+  if (currentServiceTxId.length() > 0)
+    msg += ",\"transactionId\":\"" + currentServiceTxId + "\"";
+  msg += "}";
   webSocket.sendTXT(msg);
   wsLog("info", "service-complete: " + svcType + " | shoe: " + shoe +
                     " | care: " + care);
@@ -142,6 +182,7 @@ void startService(String shoeType, String service, String care,
   currentCareType     = care;
   serviceStartTime        = millis();
   lastServiceStatusUpdate = millis();
+  serviceResumeFromCycle  = 0; // Reset; startServiceResume() sets this before calling us
 
   // customDurationSeconds > 0 is a dashboard override; 0 means use care-tier default.
   serviceDuration = (customDurationSeconds > 0)
@@ -189,6 +230,7 @@ void startService(String shoeType, String service, String care,
   }
 
   sendServiceStatusUpdate("started"); // Notify backend; kiosk displays active service UI
+  saveServiceCheckpoint();            // Persist initial state — protects against power cut at start
 }
 
 /* ===================== STOP SERVICE ===================== */
@@ -212,6 +254,10 @@ void stopService(String reason) {
   LOG("[SERVICE] Service stopped: " + reason);
   String endedServiceType = currentServiceType;
   serviceActive = false;
+
+  clearServiceCheckpoint();    // Invalidate NVS — service is done, no resume needed
+  currentServiceTxId    = "";
+  pendingServiceResume  = false;
 
   allRelaysOff();
   motorsCoast();
@@ -366,6 +412,7 @@ void handleService() {
         LOG("[CLEANING] Top at 0 — reversing 0→480 steps (pump still ON); side still moving");
         cleaningPhase = 2;
         stepper1MoveTo(CLEANING_MAX_POSITION); // Reverse: return top brush to park
+        saveServiceCheckpoint();
       }
 
     } else if (cleaningPhase == 2) {
@@ -375,16 +422,19 @@ void handleService() {
         LOG("[CLEANING] Top at 480 steps — pump OFF; waiting for side to reach depth");
         setRelay(5, false); // Diaphragm pump OFF
         cleaningPhase = 3;
+        saveServiceCheckpoint();
       }
 
     } else if (cleaningPhase == 3) {
       if (!stepper2Moving) {
         // Side brush reached its cleaning depth — begin CW brush rotation and servo sweep.
+        // On resume, serviceResumeFromCycle fast-forwards brushCurrentCycle past completed pairs.
         // The servo sweep interval is calculated dynamically from the remaining service time
         // so the sweep completes in the same time as the brush cycles.
         LOG("[CLEANING] Side at depth — start brush + servo sweep");
         cleaningPhase     = 4;
-        brushCurrentCycle = 1;
+        brushCurrentCycle = (serviceResumeFromCycle > 0) ? serviceResumeFromCycle : 1;
+        serviceResumeFromCycle = 0; // consumed — clear so next non-resume service starts from 1
         brushPhaseStartTime = millis();
         setMotorsOppositeSpeed(brushMotorSpeed); // Left CW / right CCW
 
@@ -398,6 +448,7 @@ void handleService() {
         if (dynInterval < 1) dynInterval = 1;
         setServoPositions(180, false); // Start sweep toward 180°
         servoStepInterval = dynInterval;
+        saveServiceCheckpoint();
       }
 
     } else if (cleaningPhase == 4) {
@@ -408,6 +459,7 @@ void handleService() {
         cleaningPhase   = 6;   // Enter coast gap
         brushNextPhase  = 5;   // Next active phase is CCW
         brushPhaseStartTime = millis();
+        saveServiceCheckpoint();
       }
 
     } else if (cleaningPhase == 5) {
@@ -428,6 +480,7 @@ void handleService() {
         cleaningPhase   = 6;   // Enter coast gap
         brushNextPhase  = 4;   // Next active phase is CW
         brushPhaseStartTime = millis();
+        saveServiceCheckpoint();
       }
 
     } else if (cleaningPhase == 6) {
@@ -493,6 +546,29 @@ void sendServiceStatusUpdate(String status) {
   msg += "}";
 
   webSocket.sendTXT(msg);
+}
+
+/**
+ * Resume a previously interrupted service using backend-supplied parameters.
+ * Called from the websocket handler when a resume-service command is received.
+ *
+ * remainingMs: backend-calculated remaining duration (checkpoint.durationMs - checkpoint.elapsedMs).
+ * fromCycle:   completed CW+CCW cycle count from the checkpoint — applied at phase 3→4.
+ *
+ * Mechanical safety: cleaning always runs phases 1–3 (spray pass + side advance) before
+ * the brush cycles, so the shoe is re-wetted and the top brush is safely parked first.
+ * Only the cycle counter is fast-forwarded via serviceResumeFromCycle.
+ */
+void startServiceResume(const String &shoeType, const String &serviceType, const String &careType,
+                        unsigned long remainingMs, int fromCycle,
+                        long cleaningDistanceMm, int motorSpeedPwm,
+                        float dryingTempSetpoint_) {
+  serviceResumeFromCycle = fromCycle; // applied at phase 3→4 in handleService()
+  startService(shoeType, serviceType, careType,
+               (remainingMs + 999UL) / 1000UL,  // round up: preserve sub-second precision across resumes
+               cleaningDistanceMm,
+               motorSpeedPwm,
+               dryingTempSetpoint_);
 }
 
 /**

@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/table"
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ArrowRight, ArrowLeftRight, Loader2 } from "lucide-react"
+import { getStatusBadge } from "@/lib/transactionStatus"
 import Link from "next/link"
 import { useEffect, useState } from "react"
 import { useDeviceFilter } from "@/contexts/DeviceFilterContext"
@@ -22,7 +23,9 @@ type Transaction = {
   shoeType: string
   careType: string
   amount: number
+  status?: string | null
 }
+
 
 const RecentTransactionTable = () => {
   const { selectedDevice } = useDeviceFilter()
@@ -112,11 +115,14 @@ const RecentTransactionTable = () => {
                           <TableHead className="whitespace-nowrap">Service</TableHead>
                           <TableHead className="whitespace-nowrap hidden lg:table-cell">Shoe Type</TableHead>
                           <TableHead className="whitespace-nowrap hidden xl:table-cell">Care Type</TableHead>
+                          <TableHead className="whitespace-nowrap hidden md:table-cell">Status</TableHead>
                           <TableHead className="whitespace-nowrap">Amount</TableHead>
                           </TableRow>
                       </TableHeader>
                       <TableBody>
-                          {recentTransactions.map((transaction) => (
+                          {recentTransactions.map((transaction) => {
+                            const badge = getStatusBadge(transaction.status)
+                            return (
                             <TableRow key={transaction.id}>
                               <TableCell className="font-medium font-mono text-xs max-w-[80px] sm:max-w-[120px] truncate">{transaction.id}</TableCell>
                               <TableCell className="whitespace-nowrap text-sm hidden sm:table-cell">{transaction.dateTime}</TableCell>
@@ -124,6 +130,11 @@ const RecentTransactionTable = () => {
                               <TableCell className="whitespace-nowrap">{transaction.serviceType}</TableCell>
                               <TableCell className="whitespace-nowrap hidden lg:table-cell">{transaction.shoeType}</TableCell>
                               <TableCell className="whitespace-nowrap hidden xl:table-cell">{transaction.careType}</TableCell>
+                              <TableCell className="whitespace-nowrap hidden md:table-cell">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold ${badge.className}`}>
+                                  {badge.label}
+                                </span>
+                              </TableCell>
                               <TableCell className="whitespace-nowrap">
                                 {new Intl.NumberFormat("en-US", {
                                   style: "currency",
@@ -131,7 +142,8 @@ const RecentTransactionTable = () => {
                                 }).format(transaction.amount)}
                               </TableCell>
                             </TableRow>
-                          ))}
+                            )
+                          })}
                       </TableBody>
                   </Table>
                 </div>
