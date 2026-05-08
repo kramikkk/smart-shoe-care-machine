@@ -74,7 +74,7 @@ const DEVICE_STATUS_TIMEOUT_MS = 15_000
 // How long to wait for a kiosk to respond to a service-interrupted broadcast before
 // automatically sending skip-resume. 10 min covers the case where the tablet reboots
 // slowly or the customer walks away briefly.
-const STALE_RESUME_GUARD_MS = 10 * 60 * 1000
+const STALE_RESUME_GUARD_MS = 30 * 60 * 1000
 
 // Minimum remaining duration worth resuming. If the checkpoint has less than this left
 // (after subtracting time elapsed since the interruption), skip-resume is sent instead.
@@ -271,7 +271,7 @@ export function createWebSocketServer(server: Server) {
           if (device && ws.readyState === WebSocket.OPEN) {
             // Warmup the in-memory cache with the value from DB
             deviceCachedPairedStatus.set(deviceId, device.paired)
-            
+
             ws.send(JSON.stringify({
               type: 'device-update',
               deviceId: deviceId,
@@ -287,6 +287,65 @@ export function createWebSocketServer(server: Server) {
             }))
           } else if (!device) {
              wsVerbose(`[WebSocket] New device identified (not in DB): ${deviceId}`)
+          }
+
+          // Re-deliver service-interrupted to late-joining kiosk clients.
+          // Race condition: the firmware boots and sends service-interrupted before the kiosk
+          // (Android WebView) finishes loading. The broadcast hits an empty subscriber set.
+          // On subscribe we check the DB and re-push directly to this connection.
+          try {
+            const interruptedTx = await prisma.transaction.findFirst({
+              where: { deviceId: deviceId as string, status: 'INTERRUPTED' },
+              orderBy: { interruptedAt: 'desc' },
+            })
+            if (interruptedTx?.serviceCheckpoint && ws.readyState === WebSocket.OPEN) {
+              const ckpt = interruptedTx.serviceCheckpoint as Record<string, unknown>
+              const origRemMs = Math.max(0, Number(ckpt.remainingMs) || 0)
+              const elapsedSinceInterrupt = interruptedTx.interruptedAt
+                ? Date.now() - interruptedTx.interruptedAt.getTime()
+                : 0
+              const adjustedRemMs = Math.max(0, origRemMs - elapsedSinceInterrupt)
+              if (adjustedRemMs < MIN_VIABLE_RESUME_MS) {
+                await prisma.transaction.update({
+                  where: { id: interruptedTx.id },
+                  data: { status: 'ABANDONED' },
+                })
+                ws.send(JSON.stringify({ type: 'skip-resume', deviceId: deviceId as string }))
+              } else {
+                const subscribeGuardExpiresAtMs = interruptedTx.interruptedAt
+                  ? interruptedTx.interruptedAt.getTime() + STALE_RESUME_GUARD_MS
+                  : Date.now() + STALE_RESUME_GUARD_MS
+                ws.send(JSON.stringify({
+                  type: 'service-interrupted',
+                  deviceId: deviceId as string,
+                  transactionId: interruptedTx.id,
+                  checkpoint: ckpt,
+                  remainingMs: adjustedRemMs,
+                  guardExpiresAtMs: subscribeGuardExpiresAtMs,
+                }))
+                // Ensure the staleness guard is running (may be missing if server also restarted).
+                if (!resumeGuardTimers.has(interruptedTx.id)) {
+                  const txId = interruptedTx.id
+                  const devId = deviceId as string
+                  const guard = setTimeout(async () => {
+                    resumeGuardTimers.delete(txId)
+                    try {
+                      const result = await prisma.transaction.updateMany({
+                        where: { id: txId, status: 'INTERRUPTED' },
+                        data: { status: 'ABANDONED' },
+                      })
+                      if (result.count > 0) {
+                        console.log(`[WebSocket] Staleness guard (subscribe): auto skip-resume for ${devId} txid=${txId}`)
+                        broadcastToDevice(devId, { type: 'skip-resume', deviceId: devId })
+                      }
+                    } catch { /* device may have resumed already */ }
+                  }, STALE_RESUME_GUARD_MS)
+                  resumeGuardTimers.set(txId, guard)
+                }
+              }
+            }
+          } catch (txErr) {
+            console.warn(`[WebSocket] Interrupted tx check failed for ${deviceId as string}: ${txErr}`)
           }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : 'Unknown error'
@@ -772,6 +831,9 @@ export function createWebSocketServer(server: Server) {
                     transactionId: tx.id,
                     checkpoint: storedCkpt,
                     remainingMs: adjustedRemMs,
+                    guardExpiresAtMs: tx.interruptedAt
+                      ? tx.interruptedAt.getTime() + STALE_RESUME_GUARD_MS
+                      : Date.now() + STALE_RESUME_GUARD_MS,
                   })
                   return
                 }
@@ -788,12 +850,14 @@ export function createWebSocketServer(server: Server) {
                   },
                 })
                 const remainingMs = Math.max(0, Number(checkpoint.remainingMs) || 0)
+                const guardExpiresAtMs = Date.now() + STALE_RESUME_GUARD_MS
                 broadcastToDevice(intDeviceId, {
                   type: 'service-interrupted',
                   deviceId: intDeviceId,
                   transactionId: tx.id,
                   checkpoint,
                   remainingMs,
+                  guardExpiresAtMs,
                 })
 
                 // Staleness guard: auto skip-resume if kiosk does not respond within 10 min.
