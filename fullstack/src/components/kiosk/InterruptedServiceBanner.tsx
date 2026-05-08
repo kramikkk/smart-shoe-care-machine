@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState, useRef } from 'react'
+import { useRouter } from 'next/navigation'
 import { AlertTriangle, Clock } from 'lucide-react'
 import { useKioskWebSocket } from '@/contexts/KioskWebSocketContext'
 
@@ -11,6 +12,7 @@ interface InterruptedCheckpoint {
   remainingMs: number
   cyclesCompleted: number
   transactionId: string
+  transactionServiceType?: string
 }
 
 interface InterruptedState {
@@ -41,6 +43,7 @@ function capitalize(s: string) {
 
 export function InterruptedServiceBanner() {
   const { onMessage, sendMessage, deviceId } = useKioskWebSocket()
+  const router = useRouter()
   const [interrupted, setInterrupted] = useState<InterruptedState | null>(null)
   const [isPending, setIsPending] = useState(false)
   const [isDeclinePending, setIsDeclinePending] = useState(false)
@@ -111,6 +114,15 @@ export function InterruptedServiceBanner() {
     if (isPending || isDeclinePending) return
     setIsPending(true)
     sendMessage({ type: 'resume-confirmed', deviceId: targetDeviceId, transactionId })
+
+    const isAutoMode = checkpoint.transactionServiceType?.toLowerCase() === 'package'
+    const shoe = encodeURIComponent(checkpoint.shoeType)
+    const txId = encodeURIComponent(transactionId)
+    const remMs = Math.round(remainingMs)
+    const progressUrl = isAutoMode
+      ? `/kiosk/mode/auto?shoe=${shoe}&transactionId=${txId}&resumed=true`
+      : `/kiosk/mode/custom/progress?shoe=${shoe}&service=${encodeURIComponent(checkpoint.serviceType)}&care=${encodeURIComponent(checkpoint.careType)}&transactionId=${txId}&resumed=true&remainingMs=${remMs}`
+    router.push(progressUrl)
   }
 
   const handleStartNew = () => {

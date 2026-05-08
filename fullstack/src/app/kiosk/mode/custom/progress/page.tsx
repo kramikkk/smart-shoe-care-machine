@@ -24,19 +24,23 @@ const CustomProgress = () => {
   const service       = searchParams.get('service')        || 'cleaning'
   const care          = searchParams.get('care')           || 'normal'
   const transactionId = searchParams.get('transactionId') || ''
+  const isResumed     = searchParams.get('resumed') === 'true'
+  const resumeRemMs   = isResumed ? (Number(searchParams.get('remainingMs')) || 0) : 0
   const router        = useRouter()
 
   const { isConnected, deviceId, sendMessage, onMessage } = useKioskWebSocket()
 
   const fallbackDuration = DEFAULT_DURATIONS[service.toLowerCase()]?.[care.toLowerCase()] ?? 120
+  const resumeRemSec = resumeRemMs > 0 ? Math.ceil(resumeRemMs / 1000) : null
   const [totalTime, setTotalTime] = useState(fallbackDuration)
   const [resolvedDuration, setResolvedDuration] = useState<number | null>(null)
   /** Seconds left — set directly from firmware service-status; freezes when firmware is offline. */
-  const [displayRemaining, setDisplayRemaining] = useState(fallbackDuration)
+  const [displayRemaining, setDisplayRemaining] = useState(resumeRemSec ?? fallbackDuration)
   /** When set, progress bar uses firmware `progress` field. */
   const [firmwareProgress, setFirmwareProgress] = useState<number | null>(null)
 
-  const serviceStartedRef = useRef(false)
+  // On resume, treat service as already started to skip start-service and allow completion redirect
+  const serviceStartedRef = useRef(isResumed)
 
   // Refs for stop-service on unmount
   const sendMessageRef = useRef(sendMessage)

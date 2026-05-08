@@ -300,6 +300,9 @@ export function createWebSocketServer(server: Server) {
             })
             if (interruptedTx?.serviceCheckpoint && ws.readyState === WebSocket.OPEN) {
               const ckpt = interruptedTx.serviceCheckpoint as Record<string, unknown>
+              const enrichedCkpt = ckpt.transactionServiceType
+                ? ckpt
+                : { ...ckpt, transactionServiceType: interruptedTx.serviceType }
               const checkpointRemMs = Math.max(0, Number(ckpt.remainingMs) || 0)
               if (checkpointRemMs < MIN_VIABLE_RESUME_MS) {
                 await prisma.transaction.update({
@@ -315,7 +318,7 @@ export function createWebSocketServer(server: Server) {
                   type: 'service-interrupted',
                   deviceId: deviceId as string,
                   transactionId: interruptedTx.id,
-                  checkpoint: ckpt,
+                  checkpoint: enrichedCkpt,
                   remainingMs: checkpointRemMs,
                   guardExpiresAtMs: subscribeGuardExpiresAtMs,
                 }))
@@ -810,6 +813,9 @@ export function createWebSocketServer(server: Server) {
                     broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
                     return
                   }
+                  const enrichedStoredCkpt = storedCkpt.transactionServiceType
+                    ? storedCkpt
+                    : { ...storedCkpt, transactionServiceType: tx.serviceType }
                   // Use the raw checkpoint remaining time — the machine was OFF so no service
                   // elapsed during the gap; the customer is owed the full remaining duration.
                   const checkpointRemMs = Math.max(0, Number(storedCkpt.remainingMs) || 0)
@@ -822,7 +828,7 @@ export function createWebSocketServer(server: Server) {
                     type: 'service-interrupted',
                     deviceId: intDeviceId,
                     transactionId: tx.id,
-                    checkpoint: storedCkpt,
+                    checkpoint: enrichedStoredCkpt,
                     remainingMs: checkpointRemMs,
                     guardExpiresAtMs: tx.interruptedAt
                       ? tx.interruptedAt.getTime() + STALE_RESUME_GUARD_MS
@@ -834,12 +840,13 @@ export function createWebSocketServer(server: Server) {
                   broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
                   return
                 }
+                const enrichedCheckpoint = { ...checkpoint, transactionServiceType: tx.serviceType }
                 await prisma.transaction.update({
                   where: { id: tx.id },
                   data: {
                     status: 'INTERRUPTED',
                     interruptedAt: new Date(),
-                    serviceCheckpoint: checkpoint as object,
+                    serviceCheckpoint: enrichedCheckpoint as object,
                   },
                 })
                 const remainingMs = Math.max(0, Number(checkpoint.remainingMs) || 0)
@@ -848,7 +855,7 @@ export function createWebSocketServer(server: Server) {
                   type: 'service-interrupted',
                   deviceId: intDeviceId,
                   transactionId: tx.id,
-                  checkpoint,
+                  checkpoint: enrichedCheckpoint,
                   remainingMs,
                   guardExpiresAtMs,
                 })

@@ -46,6 +46,7 @@ const Auto = () => {
   const searchParams = useSearchParams()
   const shoe          = searchParams.get('shoe')           || 'mesh'
   const transactionId = searchParams.get('transactionId') || ''
+  const isResumed     = searchParams.get('resumed') === 'true'
   const router        = useRouter()
 
   // Get recommended care types for this shoe type
@@ -114,6 +115,8 @@ const Auto = () => {
   // Set to true when emergency stop is initiated so incoming service-complete
   // messages don't advance to the next stage while the component is still mounted.
   const emergencyStoppedRef = useRef(false)
+  // On resume, false until the first service-status syncs lastSentStageRef to the firmware's current stage.
+  const resumeInitializedRef = useRef(!isResumed)
 
   // Keep refs in sync with current values
   useEffect(() => {
@@ -135,6 +138,13 @@ const Auto = () => {
         if (st) setCurrentStage(st)
         const rem = tryParseServiceStatusRemainingSeconds(m)
         if (st && rem !== null) {
+          // On first message after resume: pin lastSentStageRef to the firmware's current stage
+          // so the stage-change effect does not re-send start-service for a stage already running.
+          if (!resumeInitializedRef.current) {
+            lastSentStageRef.current = st
+            resumeInitializedRef.current = true
+            setServiceStarted(true)
+          }
           const pkg = packageRemainingSecondsForAuto(st, rem, stageDurationsRef.current)
           setPackageRemainingDisplay(pkg)
           setDeviceSynced(true)
@@ -165,6 +175,8 @@ const Auto = () => {
   // Send initial cleaning command when connected
   useEffect(() => {
     if (!isConnected || !deviceId || serviceStarted || !isDurationsLoaded) return
+    // On resume the server sends resume-service to firmware; don't send start-service here.
+    if (isResumed) return
 
     const cleaningCareType = recommendations.cleaning
     sendMessage({
@@ -182,6 +194,7 @@ const Auto = () => {
   }, [
     isConnected,
     deviceId,
+    isResumed,
     serviceStarted,
     recommendations.cleaning,
     shoe,
