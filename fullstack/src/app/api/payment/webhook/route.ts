@@ -26,16 +26,22 @@ export async function POST(request: NextRequest) {
     const eventType = body.data.attributes.type
 
     if (eventType === 'payment.paid') {
-      const metadata = paymentData.metadata as Record<string, string> | undefined
+      const webhookMeta = paymentData.metadata as Record<string, string> | null | undefined
 
       const mappedIntent = paymentIntentId
         ? await prisma.paymentIntentMap.findUnique({
             where: { paymentIntentId },
-            select: { deviceId: true, clientId: true },
+            select: { deviceId: true, clientId: true, serviceMetadata: true },
           })
         : null
 
-      const resolvedDeviceId = metadata?.deviceId ?? mappedIntent?.deviceId
+      // PayMongo's payment.paid webhook delivers a Payment resource whose metadata
+      // is separate from the PaymentIntent's metadata — for QRPH it is typically null.
+      // Always prefer the authoritative copy we stored in PaymentIntentMap at creation.
+      type StoredMeta = { shoeType?: string; careType?: string; serviceType?: string; baseAmount?: string; paymentFee?: string; totalAmount?: string; paymentMethod?: string }
+      const storedMeta = mappedIntent?.serviceMetadata as StoredMeta | null | undefined
+
+      const resolvedDeviceId = webhookMeta?.deviceId ?? mappedIntent?.deviceId
       if (!resolvedDeviceId) {
         console.error('[Webhook] payment.paid missing deviceId in metadata')
         return NextResponse.json({ received: true })
@@ -46,11 +52,22 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ received: true })
       }
 
-      const metadataSafe = metadata ?? {}
-      const { shoeType, careType, serviceType, amount, baseAmount, paymentFee, totalAmount, paymentMethod } = metadataSafe
-      const parsedBaseAmount = parseFloat(baseAmount || amount || '0')
-      const parsedPaymentFee = parseFloat(paymentFee || '0')
-      const parsedTotalAmount = parseFloat(totalAmount || amount || '0')
+      const shoeType = webhookMeta?.shoeType ?? storedMeta?.shoeType
+      const careType = webhookMeta?.careType ?? storedMeta?.careType
+      const serviceType = webhookMeta?.serviceType ?? storedMeta?.serviceType ?? 'Package'
+      const paymentMethod = webhookMeta?.paymentMethod ?? storedMeta?.paymentMethod ?? 'Online'
+      const baseAmountStr = webhookMeta?.baseAmount ?? webhookMeta?.amount ?? storedMeta?.baseAmount ?? '0'
+      const paymentFeeStr = webhookMeta?.paymentFee ?? storedMeta?.paymentFee ?? '0'
+      const totalAmountStr = webhookMeta?.totalAmount ?? webhookMeta?.amount ?? storedMeta?.totalAmount ?? '0'
+
+      if (!shoeType || !careType) {
+        console.error('[Webhook] payment.paid missing required service fields (shoeType/careType) — skipping')
+        return NextResponse.json({ received: true })
+      }
+
+      const parsedBaseAmount = parseFloat(baseAmountStr)
+      const parsedPaymentFee = parseFloat(paymentFeeStr)
+      const parsedTotalAmount = parseFloat(totalAmountStr)
       const normalizedTotalAmount = Number.isFinite(parsedTotalAmount)
         ? parsedTotalAmount
         : parsedBaseAmount + (Number.isFinite(parsedPaymentFee) ? parsedPaymentFee : 0)
@@ -60,8 +77,8 @@ export async function POST(request: NextRequest) {
         transaction = await prisma.transaction.create({
           data: {
             dateTime: new Date(),
-            paymentMethod: paymentMethod || 'Online',
-            serviceType: serviceType || 'Package',
+            paymentMethod,
+            serviceType,
             shoeType,
             careType,
             amount: parsedBaseAmount,

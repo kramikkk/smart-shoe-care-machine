@@ -9,7 +9,7 @@ const TransactionSchema = z.object({
   shoeType: z.enum(['Canvas', 'Rubber', 'Mesh']),
   careType: z.enum(['Gentle', 'Normal', 'Strong', 'Auto']),
   deviceId: z.string().regex(/^SSCM-[A-F0-9]{6}$/, 'Device ID must be in format SSCM-XXXXXX'),
-  amountPaid: z.number().positive().optional(),
+  amountPaid: z.number().nonnegative().optional(),
 })
 
 /**
@@ -56,17 +56,19 @@ export async function POST(req: NextRequest) {
     // Fetch device-specific pricing, fall back to global.
     // If device-specific row exists but price is null (use hardware default),
     // fall through to global pricing which should have a configured price.
+    const serviceTypeLower = serviceType.toLowerCase()
+    const careTypeLower = careType.toLowerCase()
     let pricing = await prisma.servicePricing.findFirst({
-      where: { deviceId, serviceType: serviceType.toLowerCase() },
+      where: { deviceId, serviceType: serviceTypeLower, careType: careTypeLower },
     })
     if (!pricing || pricing.price === null) {
       pricing = await prisma.servicePricing.findFirst({
-        where: { deviceId: null, serviceType: serviceType.toLowerCase() },
+        where: { deviceId: null, serviceType: serviceTypeLower, careType: careTypeLower },
       })
     }
     if (!pricing || pricing.price === null) {
       return NextResponse.json(
-        { success: false, error: `No pricing configured for service type: ${serviceType}` },
+        { success: false, error: `No pricing configured for ${serviceType} / ${careType}` },
         { status: 400 }
       )
     }

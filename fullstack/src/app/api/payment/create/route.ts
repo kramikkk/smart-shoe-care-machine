@@ -96,6 +96,16 @@ export async function POST(request: NextRequest) {
       throw new Error('No QR code image received from PayMongo')
     }
 
+    const serviceMetadata = {
+      shoeType,
+      careType,
+      serviceType,
+      baseAmount: String(baseAmount),
+      paymentFee: String(paymentFee),
+      totalAmount: String(totalAmount),
+      paymentMethod: 'Online',
+    }
+
     await prisma.paymentIntentMap.upsert({
       where: { paymentIntentId },
       create: {
@@ -105,10 +115,12 @@ export async function POST(request: NextRequest) {
         deviceId,
         clientId: resolvedContext.clientId,
         clientPaymentConfigId: resolvedContext.paymongo.configId,
+        serviceMetadata,
       },
       update: {
         status: attachResponse.data.attributes.status,
         clientPaymentConfigId: resolvedContext.paymongo.configId,
+        serviceMetadata,
       },
     })
 
