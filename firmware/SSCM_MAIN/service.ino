@@ -397,9 +397,12 @@ void handleService() {
 
   // Send a running heartbeat to the backend every SERVICE_STATUS_UPDATE_INTERVAL (1s).
   // This keeps the dashboard progress bar and timer display current.
+  // saveServiceCheckpoint() is also called here so NVS always has the current remaining time;
+  // without this, a power cut between phase transitions would leave a stale checkpoint.
   if (millis() - lastServiceStatusUpdate >= SERVICE_STATUS_UPDATE_INTERVAL) {
     lastServiceStatusUpdate = millis();
     sendServiceStatusUpdate("running");
+    saveServiceCheckpoint();
   }
 
   if (currentServiceType == "cleaning" && cleaningPhase > 0) {

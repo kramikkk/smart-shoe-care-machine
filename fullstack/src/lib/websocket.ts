@@ -300,12 +300,8 @@ export function createWebSocketServer(server: Server) {
             })
             if (interruptedTx?.serviceCheckpoint && ws.readyState === WebSocket.OPEN) {
               const ckpt = interruptedTx.serviceCheckpoint as Record<string, unknown>
-              const origRemMs = Math.max(0, Number(ckpt.remainingMs) || 0)
-              const elapsedSinceInterrupt = interruptedTx.interruptedAt
-                ? Date.now() - interruptedTx.interruptedAt.getTime()
-                : 0
-              const adjustedRemMs = Math.max(0, origRemMs - elapsedSinceInterrupt)
-              if (adjustedRemMs < MIN_VIABLE_RESUME_MS) {
+              const checkpointRemMs = Math.max(0, Number(ckpt.remainingMs) || 0)
+              if (checkpointRemMs < MIN_VIABLE_RESUME_MS) {
                 await prisma.transaction.update({
                   where: { id: interruptedTx.id },
                   data: { status: 'ABANDONED' },
@@ -320,7 +316,7 @@ export function createWebSocketServer(server: Server) {
                   deviceId: deviceId as string,
                   transactionId: interruptedTx.id,
                   checkpoint: ckpt,
-                  remainingMs: adjustedRemMs,
+                  remainingMs: checkpointRemMs,
                   guardExpiresAtMs: subscribeGuardExpiresAtMs,
                 }))
                 // Ensure the staleness guard is running (may be missing if server also restarted).
@@ -807,30 +803,27 @@ export function createWebSocketServer(server: Server) {
                   broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
                   return
                 }
-                // Device reconnected while the kiosk banner was already showing — refresh it
-                // with time adjusted for how long the banner has been waiting.
+                // Device reconnected while the kiosk banner was already showing — re-broadcast it.
                 if (tx.status === 'INTERRUPTED') {
                   const storedCkpt = tx.serviceCheckpoint as Record<string, unknown> | null
                   if (!storedCkpt) {
                     broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
                     return
                   }
-                  const origRemMs = Math.max(0, Number(storedCkpt.remainingMs) || 0)
-                  const elapsedSinceInterrupt = tx.interruptedAt ? Date.now() - tx.interruptedAt.getTime() : 0
-                  const adjustedRemMs = Math.max(0, origRemMs - elapsedSinceInterrupt)
-                  if (adjustedRemMs < MIN_VIABLE_RESUME_MS) {
+                  // Use the raw checkpoint remaining time — the machine was OFF so no service
+                  // elapsed during the gap; the customer is owed the full remaining duration.
+                  const checkpointRemMs = Math.max(0, Number(storedCkpt.remainingMs) || 0)
+                  if (checkpointRemMs < MIN_VIABLE_RESUME_MS) {
                     await prisma.transaction.update({ where: { id: tx.id }, data: { status: 'ABANDONED' } })
                     broadcastToDevice(intDeviceId, { type: 'skip-resume', deviceId: intDeviceId })
                     return
                   }
-                  // Do NOT reset interruptedAt — keep the original timestamp so resume-confirmed
-                  // calculates total elapsed since the first interruption, not just since this reconnect.
                   broadcastToDevice(intDeviceId, {
                     type: 'service-interrupted',
                     deviceId: intDeviceId,
                     transactionId: tx.id,
                     checkpoint: storedCkpt,
-                    remainingMs: adjustedRemMs,
+                    remainingMs: checkpointRemMs,
                     guardExpiresAtMs: tx.interruptedAt
                       ? tx.interruptedAt.getTime() + STALE_RESUME_GUARD_MS
                       : Date.now() + STALE_RESUME_GUARD_MS,
@@ -912,10 +905,7 @@ export function createWebSocketServer(server: Server) {
                 return
               }
               const ckpt = tx.serviceCheckpoint as Record<string, unknown>
-              const checkpointRemMs = Math.max(0, Number(ckpt.remainingMs) || 0)
-              // Subtract time elapsed since the power cut so firmware gets an accurate duration
-              const elapsedSinceInterrupt = tx.interruptedAt ? Date.now() - tx.interruptedAt.getTime() : 0
-              const remainingMs = Math.max(0, checkpointRemMs - elapsedSinceInterrupt)
+              const remainingMs = Math.max(0, Number(ckpt.remainingMs) || 0)
               const careType = (ckpt.careType as string) || ''
               const serviceType = (ckpt.serviceType as string) || ''
 
