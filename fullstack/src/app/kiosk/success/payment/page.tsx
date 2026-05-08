@@ -8,6 +8,7 @@ export default function PaymentSuccess() {
   const shoe = searchParams.get('shoe') || 'mesh';
   const service = searchParams.get('service');
   const care = searchParams.get('care');
+  const transactionId = searchParams.get('transactionId') || '';
   const router = useRouter();
   const [countdown, setCountdown] = useState(5);
 
@@ -27,11 +28,11 @@ export default function PaymentSuccess() {
 
   useEffect(() => {
     if (countdown === 0) {
-      // Redirect based on shoe, service and care
+      const txParam = transactionId ? `&transactionId=${transactionId}` : ''
       if (service === 'package') {
-        router.push(`/kiosk/mode/auto?shoe=${shoe}`);
+        router.push(`/kiosk/mode/auto?shoe=${shoe}${txParam}`);
       } else if (service) {
-        router.push(`/kiosk/mode/custom/progress?shoe=${shoe}&service=${service}&care=${care || 'normal'}`);
+        router.push(`/kiosk/mode/custom/progress?shoe=${shoe}&service=${service}&care=${care || 'normal'}${txParam}`);
       } else {
         router.push('/kiosk');
       }

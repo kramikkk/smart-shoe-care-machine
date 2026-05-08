@@ -44,8 +44,9 @@ const DEFAULT_RECOMMENDATIONS: ShoeRecommendations = {
 
 const Auto = () => {
   const searchParams = useSearchParams()
-  const shoe = searchParams.get('shoe') || 'mesh'
-  const router = useRouter()
+  const shoe          = searchParams.get('shoe')           || 'mesh'
+  const transactionId = searchParams.get('transactionId') || ''
+  const router        = useRouter()
 
   // Get recommended care types for this shoe type
   const recommendations = useMemo(() => {
@@ -88,13 +89,10 @@ const Auto = () => {
   const [currentStage, setCurrentStage] = useState<ServiceType>('cleaning')
   const [serviceStarted, setServiceStarted] = useState(false)
 
-  const packageAnchorRef = useRef({ remaining: 0, atMs: 0 })
   const stageDurationsRef = useRef(stageDurations)
   useEffect(() => {
     stageDurationsRef.current = stageDurations
   }, [stageDurations])
-
-  const prevConnectedRef = useRef(false)
 
   const displayRemaining = deviceSynced ? packageRemainingDisplay : totalTime
   const progress =
@@ -138,7 +136,6 @@ const Auto = () => {
         const rem = tryParseServiceStatusRemainingSeconds(m)
         if (st && rem !== null) {
           const pkg = packageRemainingSecondsForAuto(st, rem, stageDurationsRef.current)
-          packageAnchorRef.current = { remaining: pkg, atMs: Date.now() }
           setPackageRemainingDisplay(pkg)
           setDeviceSynced(true)
         }
@@ -156,7 +153,6 @@ const Auto = () => {
           // Service finished normally — don't send stop-service on unmount (would abort the
           // 15s post-sterilization exhaust purge the firmware runs automatically).
           skipUnmountStopRef.current = true
-          packageAnchorRef.current = { remaining: 0, atMs: Date.now() }
           setPackageRemainingDisplay(0)
           debug.log(`[Auto] All stages complete — redirecting to success (shoe: ${shoe})`)
           router.push(`/kiosk/success/service?shoe=${shoe}&service=package`)
@@ -178,6 +174,7 @@ const Auto = () => {
       serviceType: 'cleaning',
       careType: cleaningCareType,
       duration: stageDurations.cleaning,
+      ...(transactionId ? { transactionId } : {}),
     })
     debug.log(`[Auto] Service started — shoe: ${shoe}, stage: cleaning, care: ${cleaningCareType}`)
     lastSentStageRef.current = 'cleaning'
@@ -205,6 +202,7 @@ const Auto = () => {
       serviceType: currentStage,
       careType: stageCareType,
       duration: stageDurations[currentStage],
+      ...(transactionId ? { transactionId } : {}),
     })
     debug.log(`[Auto] Stage change → ${currentStage} (care: ${stageCareType})`)
     lastSentStageRef.current = currentStage
@@ -218,32 +216,6 @@ const Auto = () => {
     sendMessage,
     stageDurations,
   ])
-
-  // Smooth countdown between 1s firmware service-status ticks; freeze when disconnected.
-  useEffect(() => {
-    if (!isDurationsLoaded) return
-
-    const timer = setInterval(() => {
-      if (!isConnected) {
-        if (deviceSynced && prevConnectedRef.current) {
-          debug.log('[Auto] Countdown frozen — WebSocket disconnected')
-          prevConnectedRef.current = false
-        }
-        return
-      }
-      if (deviceSynced && !prevConnectedRef.current) {
-        debug.log('[Auto] Countdown resumed — WebSocket reconnected')
-        prevConnectedRef.current = true
-      }
-      if (!deviceSynced) return
-
-      const { remaining, atMs } = packageAnchorRef.current
-      const next = Math.max(0, remaining - Math.floor((Date.now() - atMs) / 1000))
-      setPackageRemainingDisplay(next)
-    }, 250)
-
-    return () => clearInterval(timer)
-  }, [isDurationsLoaded, isConnected, deviceSynced])
 
   // Send stop-service message on unmount (handles back-navigation)
   useEffect(() => {

@@ -56,21 +56,27 @@ const OnlinePayment = () => {
     feeRatePercent: 1.34,
   })
 
-  const redirectToSuccess = useCallback(() => {
+  const transactionIdRef = useRef<string>('')
+
+  const redirectToSuccess = useCallback((transactionId?: string) => {
     if (hasRedirectedRef.current) return
     hasRedirectedRef.current = true
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
     if (timeoutRef.current) clearTimeout(timeoutRef.current)
-    debug.log('[Payment] Redirecting to success page')
-    router.push(`/kiosk/success/payment?shoe=${selectedShoe}&service=${selectedService}&care=${selectedCare}`)
+    const txId = transactionId || transactionIdRef.current
+    const txParam = txId ? `&transactionId=${txId}` : ''
+    debug.log('[Payment] Redirecting to success page', txId ? `(txId: ${txId})` : '')
+    router.push(`/kiosk/success/payment?shoe=${selectedShoe}&service=${selectedService}&care=${selectedCare}${txParam}`)
   }, [router, selectedShoe, selectedService, selectedCare])
 
   // Listen for payment-success WebSocket event (webhook-driven)
   useEffect(() => {
     const unsubscribe = onMessage((message) => {
       if (message.type === 'payment-success') {
+        const txId = typeof message.transactionId === 'string' ? message.transactionId : ''
+        if (txId) transactionIdRef.current = txId
         debug.log('[Payment] WebSocket payment-success received:', message)
-        redirectToSuccess()
+        redirectToSuccess(txId)
       }
     })
     return unsubscribe

@@ -86,6 +86,7 @@ const Offline = () => {
     const deviceId = localStorage.getItem('kiosk_device_id')
     const groupToken = localStorage.getItem('kiosk_group_token')
 
+    let transactionId = ''
     if (deviceId && groupToken) {
       debug.log(`[Offline] Saving cash transaction — device: ${deviceId}, service: ${service}, shoe: ${shoe}`)
       try {
@@ -106,7 +107,8 @@ const Offline = () => {
         })
         const saveData = await res.json()
         if (saveData.success) {
-          debug.log(`[Offline] Transaction saved — id: ${saveData.transaction?.id}`)
+          transactionId = saveData.transaction?.id ?? ''
+          debug.log(`[Offline] Transaction saved — id: ${transactionId}`)
         } else {
           console.error(`[Offline] Transaction save failed (proceeding): ${saveData.error}`)
         }
@@ -119,7 +121,8 @@ const Offline = () => {
     }
 
     setIsSaving(false)
-    router.push(`/kiosk/success/payment?shoe=${shoe}&service=${service}&care=${care}`)
+    const txParam = transactionId ? `&transactionId=${transactionId}` : ''
+    router.push(`/kiosk/success/payment?shoe=${shoe}&service=${service}&care=${care}${txParam}`)
   }
 
   const handleBack = () => {

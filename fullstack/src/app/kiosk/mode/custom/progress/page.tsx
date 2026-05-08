@@ -20,22 +20,22 @@ const DEFAULT_DURATIONS: Record<string, Record<string, number>> = {
 
 const CustomProgress = () => {
   const searchParams = useSearchParams()
-  const shoe    = searchParams.get('shoe')    || 'mesh'
-  const service = searchParams.get('service') || 'cleaning'
-  const care    = searchParams.get('care')    || 'normal'
-  const router  = useRouter()
+  const shoe          = searchParams.get('shoe')           || 'mesh'
+  const service       = searchParams.get('service')        || 'cleaning'
+  const care          = searchParams.get('care')           || 'normal'
+  const transactionId = searchParams.get('transactionId') || ''
+  const router        = useRouter()
 
   const { isConnected, deviceId, sendMessage, onMessage } = useKioskWebSocket()
 
   const fallbackDuration = DEFAULT_DURATIONS[service.toLowerCase()]?.[care.toLowerCase()] ?? 120
   const [totalTime, setTotalTime] = useState(fallbackDuration)
   const [resolvedDuration, setResolvedDuration] = useState<number | null>(null)
-  /** Seconds left — interpolated from last firmware service-status (ESP32 source of truth). */
+  /** Seconds left — set directly from firmware service-status; freezes when firmware is offline. */
   const [displayRemaining, setDisplayRemaining] = useState(fallbackDuration)
   /** When set, progress bar uses firmware `progress` field. */
   const [firmwareProgress, setFirmwareProgress] = useState<number | null>(null)
 
-  const remainingAnchorRef = useRef({ value: fallbackDuration, atMs: Date.now() })
   const serviceStartedRef = useRef(false)
 
   // Refs for stop-service on unmount
@@ -77,7 +77,6 @@ const CustomProgress = () => {
           if (duration > 0) {
             setTotalTime(duration)
             setDisplayRemaining(duration)
-            remainingAnchorRef.current = { value: duration, atMs: Date.now() }
           }
           setResolvedDuration(duration > 0 ? duration : fallbackDuration)
         } else {
@@ -104,17 +103,17 @@ const CustomProgress = () => {
       serviceType: service,
       careType: care,
       duration: resolvedDuration,
+      ...(transactionId ? { transactionId } : {}),
     })
   }, [isConnected, deviceId, resolvedDuration, shoe, service, care, sendMessage])
 
-  // Firmware service-status: anchor remaining + progress; smooth ticks between 1s ESP updates.
+  // Firmware service-status: update remaining + progress directly from ESP32 (source of truth).
   useEffect(() => {
     const unsubscribe = onMessage((message) => {
       if (message.type === 'service-status') {
         const m = message as Record<string, unknown>
         const rem = tryParseServiceStatusRemainingSeconds(m)
         if (rem !== null) {
-          remainingAnchorRef.current = { value: rem, atMs: Date.now() }
           setDisplayRemaining(rem)
           setFirmwareProgress(parseServiceStatusProgress(m))
         }
@@ -123,23 +122,12 @@ const CustomProgress = () => {
           setTotalTime(duration)
         }
       } else if (message.type === 'service-complete') {
-        remainingAnchorRef.current = { value: 0, atMs: Date.now() }
         setDisplayRemaining(0)
         setFirmwareProgress(100)
       }
     })
     return unsubscribe
   }, [onMessage])
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (!isConnected) return
-      const { value, atMs } = remainingAnchorRef.current
-      const next = Math.max(0, value - Math.floor((Date.now() - atMs) / 1000))
-      setDisplayRemaining(next)
-    }, 250)
-    return () => clearInterval(id)
-  }, [isConnected])
 
   // Send stop-service on unmount (back-navigation guard)
   useEffect(() => {

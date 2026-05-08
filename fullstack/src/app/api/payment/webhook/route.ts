@@ -85,6 +85,7 @@ export async function POST(request: NextRequest) {
             amountPaid: normalizedTotalAmount,
             deviceId: resolvedDeviceId,
             paymongoPaymentId: paymentId,
+            status: 'ACTIVE',
           },
         })
       } catch (error) {
