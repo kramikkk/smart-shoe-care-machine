@@ -1,4 +1,4 @@
-#define FIRMWARE_VERSION "1.0.17"
+#define FIRMWARE_VERSION "1.0.18"
 #define BOARD_NAME "SSCM-MAIN"
 
 /**
@@ -235,22 +235,22 @@ bool dryingHeaterOn  = false;    // True when relays 4 + 6 (PTC heaters) are act
 bool dryingExhaustOn = false;    // True when relay 2 (bottom exhaust) is active for cooling
 
 /* ===================== CLEANING SERVICE STATE ===================== */
-// Cleaning uses a multi-phase state machine (cleaningPhase 1–6):
+// Cleaning uses a multi-phase state machine (cleaningPhase 1–4):
 //   1: top brush descending (pump ON + side moving simultaneously)
 //   2: top brush returning upward (pump still ON)
 //   3: waiting for side to reach depth
-//   4: CW brush segment
-//   5: CCW brush segment
-//   6: coast gap between CW/CCW transitions
+//   4: brush active — direction driven by servo angle (0–60°=CCW, 60–120°=CW, 120–180°=CCW)
+//      Phase 4 timing: 5s hold at 0° → sweep 0→180 → 5s hold at 180° → service timer ends
 const long CLEANING_MAX_POSITION = 4800; // Top brush parked position (steps = 480mm up)
-int cleaningPhase = 0;                   // 0 = idle, 1–6 = active phase (see above)
-const unsigned long BRUSH_DURATION_MS = 30000; // ms per CW or CCW brush segment (one direction = one segment)
-const unsigned long BRUSH_COAST_MS    = 500;   // ms coast pause between CW↔CCW direction reversals
-const int BRUSH_TOTAL_CYCLES   = 10;           // Total CW+CCW pairs before cleaning ends
-int brushMotorSpeed            = 255;          // PWM duty for brush motors during cleaning (set per care type from dashboard)
-int brushCurrentCycle      = 0;               // Completed CW+CCW cycle count
-unsigned long brushPhaseStartTime = 0;        // millis() at start of current phase
-int brushNextPhase         = 0;               // Phase to transition to after a coast gap
+int cleaningPhase = 0;                   // 0 = idle, 1–4 = active phase (see above)
+int brushMotorSpeed    = 255;            // PWM duty for brush motors during cleaning
+int brushLastMotorDir  = 0;             // Last applied direction: 1=CW, -1=CCW, 0=unset
+const unsigned long BRUSH_EDGE_PAUSE_MS = 10000; // Hold duration at 0° and 180° endpoints
+bool brushInStartPause            = false; // true while waiting the 10s hold at 0° before sweep
+unsigned long brushStartPauseTime = 0;    // millis() when the 0° hold began
+bool brushTopRepeatTriggered  = false;    // becomes true when servo first reaches 170° in phase 4
+bool brushTopRepeatDescending = false;    // top brush going down for repeat pass (pump ON)
+bool brushTopRepeatAscending  = false;    // top brush going back up after repeat (pump OFF)
 
 /* ===================== DHT11 SENSOR ===================== */
 #define DHT_PIN 9
@@ -378,9 +378,9 @@ uint8_t  resumeSvcPhase = 0;
 uint8_t  resumeSvcCycle = 0;
 String   resumeSvcTxId  = "";
 
-// Phase fast-forward for resumed cleaning: applied at phase 3→4 transition.
-// Allows brushCurrentCycle to start from the already-completed count.
-int serviceResumeFromCycle = 0;
+// Preset side brush depth for the current cleaning cycle (steps).
+// Set in startService() and used by handleService() to compute the servo-angle-based pull-back.
+long cleaningSideDepthSteps = 0;
 
 unsigned long lastCheckpointSave = 0;
 const unsigned long CHECKPOINT_SAVE_INTERVAL = 30000; // ms — periodic NVS save during service

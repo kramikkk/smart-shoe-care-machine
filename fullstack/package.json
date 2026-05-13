@@ -1,6 +1,6 @@
 {
   "name": "smart-shoe-care-system",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "private": true,
   "engines": {
     "node": ">=20"
@@ -13,6 +13,7 @@
     "test:payments": "node --import tsx --test src/lib/payments/*.test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.2",
     "@google/genai": "^1.44.0",
     "@prisma/adapter-pg": "^7.6.0",
     "@prisma/client": "^7.6.0",

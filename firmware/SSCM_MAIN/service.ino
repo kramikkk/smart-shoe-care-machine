@@ -7,9 +7,8 @@
  *   1 — Pump ON; top brush descends (0→480 steps) and side brush advances to cleaning depth simultaneously
  *   2 — Top brush reversing (0→480 steps) with pump still ON; waiting for top to reach park position
  *   3 — Top at park (480 steps); pump OFF; waiting for side to reach its cleaning depth
- *   4 — CW brush rotation active for BRUSH_DURATION_MS
- *   5 — CCW brush rotation active for BRUSH_DURATION_MS; increments brushCurrentCycle counter
- *   6 — Coast gap between CW and CCW segments for BRUSH_COAST_MS; brushNextPhase queues next phase
+ *   4 — Brush active; direction follows servo angle: 0–60°=CCW, 60–120°=CW, 120–180°=CCW
+ *        Servo sweeps 0→180 over the remaining service time; service ends by timer.
  */
 
 /**
@@ -65,7 +64,6 @@ void saveServiceCheckpoint() {
   prefs.putString("svc_care",  currentCareType);
   prefs.putUInt("svc_rem",     rem);
   prefs.putUChar("svc_phase",  (uint8_t)cleaningPhase);
-  prefs.putUChar("svc_cycle",  (uint8_t)brushCurrentCycle);
   prefs.putString("svc_txid",  currentServiceTxId);
   prefs.putBool("svc_act", true); // commit flag written LAST
   lastCheckpointSave = millis();
@@ -82,7 +80,6 @@ void clearServiceCheckpoint() {
   prefs.remove("svc_care");
   prefs.remove("svc_rem");
   prefs.remove("svc_phase");
-  prefs.remove("svc_cycle");
   prefs.remove("svc_txid");
 }
 
@@ -121,7 +118,6 @@ static void handoverEndPreviousService() {
   if (prevType == "cleaning") {
     setRelay(5, false); // Pump OFF
     cleaningPhase = 0;
-    brushCurrentCycle = 0;
     stepper1MoveTo(CLEANING_MAX_POSITION); // Park top brush at 48mm
     stepper2MoveTo(0);                     // Retract side brush
     setServoPositions(0, true);
@@ -182,8 +178,6 @@ void startService(String shoeType, String service, String care,
   currentCareType     = care;
   serviceStartTime        = millis();
   lastServiceStatusUpdate = millis();
-  serviceResumeFromCycle  = 0; // Reset; startServiceResume() sets this before calling us
-
   // customDurationSeconds > 0 is a dashboard override; 0 means use care-tier default.
   serviceDuration = (customDurationSeconds > 0)
       ? customDurationSeconds * 1000
@@ -197,15 +191,14 @@ void startService(String shoeType, String service, String care,
     //   - Stepper 1 (top brush) descends from park (480 steps) to 0.
     //   The top brush immediately reverses to 480 once it reaches 0 (phase 2 in handleService).
     //   The pump stays on through phases 1 and 2; it cuts off when the top returns to park.
-    cleaningPhase     = 1;
-    brushCurrentCycle = 0;
+    cleaningPhase = 1;
     long s2 = cleaningSideTargetSteps(care, customCleaningDistanceMm);
+    cleaningSideDepthSteps = s2; // Save preset depth for servo-angle pull-back in handleService()
     LOG("[SERVICE] Cleaning — pump ON; side→" + String(s2) +
         " steps + top 480→0→480 simultaneously (top reverses at 0, no side wait); then brush+servo");
     setRelay(5, true);      // Diaphragm pump ON — spray nozzle active during approach
     stepper2MoveTo(s2);     // Side brush advances to cleaning depth
     stepper1MoveTo(0);      // Top brush descends to bottom of stroke
-    brushPhaseStartTime = millis();
     rgbBlue();
 
   } else if (service == "drying") {
@@ -272,8 +265,11 @@ void stopService(String reason) {
 
   rgbOff();
 
-  cleaningPhase     = 0;
-  brushCurrentCycle = 0;
+  cleaningPhase            = 0;
+  brushInStartPause        = false;
+  brushTopRepeatTriggered  = false;
+  brushTopRepeatDescending = false;
+  brushTopRepeatAscending  = false;
 
   String endedShoe = currentShoeType;
   String endedCare = currentCareType;
@@ -378,11 +374,25 @@ void handleDryingTemperature() {
  * Cleaning phase transitions (cleaningPhase is set in startService and updated here):
  *   1 → 2: stepper1 reaches 0 (bottom)  — reverse top upward; pump still ON
  *   2 → 3: stepper1 reaches 480 (top)   — pump OFF; wait for side to reach depth
- *   3 → 4: stepper2 stops moving        — side at depth; start CW brush + servo sweep
- *   4 → 6: BRUSH_DURATION_MS elapsed    — CW done; coast; queue phase 5
- *   5 → 6: BRUSH_DURATION_MS elapsed    — CCW done; coast; queue phase 4 (or stop if cap hit)
- *   6 → 4/5: BRUSH_COAST_MS elapsed     — coast gap over; resume CW or CCW per brushNextPhase
+ *   3 → 4: stepper2 stops moving        — side at depth; start brush + servo sweep 0→180
+ *   4 → stop: serviceDuration elapsed   — service timer expires (handled at top of handleService)
  */
+
+// Start the servo sweep 0→180.
+// Reserves BRUSH_EDGE_PAUSE_MS for the hold at 180° so the sweep completes exactly that far
+// before the service timer expires. servoStepInterval counts 15ms ticks.
+void startBrushSweep() {
+  unsigned long elapsedSoFar = millis() - serviceStartTime;
+  unsigned long remainingMs  = (elapsedSoFar < serviceDuration)
+      ? (serviceDuration - elapsedSoFar) : 1UL;
+  unsigned long sweepMs = (remainingMs > BRUSH_EDGE_PAUSE_MS)
+      ? (remainingMs - BRUSH_EDGE_PAUSE_MS) : 1UL;
+  int dynInterval = (int)(sweepMs / (180UL * SERVO_UPDATE_INTERVAL));
+  if (dynInterval < 1) dynInterval = 1;
+  setServoPositions(180, false);
+  servoStepInterval = dynInterval;
+}
+
 void handleService() {
   if (!serviceActive)
     return;
@@ -409,10 +419,9 @@ void handleService() {
 
     if (cleaningPhase == 1) {
       if (!stepper1Moving) {
-        // Top brush reached 0 (bottom of stroke) — immediately reverse.
-        // Side brush is still moving to its cleaning depth independently.
-        // Pump stays ON through the return journey (phase 2).
-        LOG("[CLEANING] Top at 0 — reversing 0→480 steps (pump still ON); side still moving");
+        // Top brush reached 0 — pump OFF immediately, then reverse back to park.
+        LOG("[CLEANING] Top at 0 — pump OFF; reversing 0→480 steps");
+        setRelay(5, false); // Diaphragm pump OFF
         cleaningPhase = 2;
         stepper1MoveTo(CLEANING_MAX_POSITION); // Reverse: return top brush to park
         saveServiceCheckpoint();
@@ -420,84 +429,78 @@ void handleService() {
 
     } else if (cleaningPhase == 2) {
       if (!stepper1Moving) {
-        // Top brush returned to park (480 steps) — pump OFF.
-        // Side brush may still be advancing; phase 3 waits for it to stop.
-        LOG("[CLEANING] Top at 480 steps — pump OFF; waiting for side to reach depth");
-        setRelay(5, false); // Diaphragm pump OFF
+        // Top brush returned to park — side brush may still be advancing; phase 3 waits for it.
+        LOG("[CLEANING] Top at 480 steps — waiting for side to reach depth");
         cleaningPhase = 3;
         saveServiceCheckpoint();
       }
 
     } else if (cleaningPhase == 3) {
       if (!stepper2Moving) {
-        // Side brush reached its cleaning depth — begin CW brush rotation and servo sweep.
-        // On resume, serviceResumeFromCycle fast-forwards brushCurrentCycle past completed pairs.
-        // The servo sweep interval is calculated dynamically from the remaining service time
-        // so the sweep completes in the same time as the brush cycles.
-        LOG("[CLEANING] Side at depth — start brush + servo sweep");
-        cleaningPhase     = 4;
-        brushCurrentCycle = (serviceResumeFromCycle > 0) ? serviceResumeFromCycle : 1;
-        serviceResumeFromCycle = 0; // consumed — clear so next non-resume service starts from 1
-        brushPhaseStartTime = millis();
-        setMotorsOppositeSpeed(brushMotorSpeed); // Left CW / right CCW
-
-        // Dynamic servo interval: distribute remaining time evenly across 180 steps.
-        // dynInterval (ms/step) = remaining_ms / 15 cycles / 180 degrees.
-        // Minimum 1ms/step prevents division yielding 0.
-        unsigned long elapsedSoFar = millis() - serviceStartTime;
-        unsigned long remainingMs  = (elapsedSoFar < serviceDuration)
-            ? (serviceDuration - elapsedSoFar) : 1UL;
-        int dynInterval = (int)((remainingMs / 15UL) / 180UL);
-        if (dynInterval < 1) dynInterval = 1;
-        setServoPositions(180, false); // Start sweep toward 180°
-        servoStepInterval = dynInterval;
+        // Side brush reached depth — start motors and begin the 10s hold at 0° before sweeping.
+        LOG("[CLEANING] Side at depth — holding 0° for " + String(BRUSH_EDGE_PAUSE_MS / 1000) + "s then sweep");
+        cleaningPhase           = 4;
+        brushLastMotorDir       = 0;
+        brushInStartPause       = true;
+        brushStartPauseTime     = millis();
+        brushTopRepeatTriggered  = false;
+        brushTopRepeatDescending = false;
+        brushTopRepeatAscending  = false;
         saveServiceCheckpoint();
       }
 
     } else if (cleaningPhase == 4) {
-      if (millis() - brushPhaseStartTime >= BRUSH_DURATION_MS) {
-        // CW segment complete — coast before reversing to protect motor and gears.
-        LOG("[CLEANING] CW segment done — coast");
-        motorsCoast();
-        cleaningPhase   = 6;   // Enter coast gap
-        brushNextPhase  = 5;   // Next active phase is CCW
-        brushPhaseStartTime = millis();
-        saveServiceCheckpoint();
+      // Motor direction follows servo angle: 0–60°=CCW, 60–120°=CW, 120–180°=CCW
+      int desiredDir = (currentLeftPosition >= 60 && currentLeftPosition <= 120) ? 1 : -1;
+      if (desiredDir != brushLastMotorDir) {
+        brushLastMotorDir = desiredDir;
+        setMotorsOppositeSpeed(brushMotorSpeed * desiredDir);
+        LOG("[CLEANING] Dir → " + String(desiredDir == 1 ? "CW" : "CCW") +
+            " at angle " + String(currentLeftPosition) + "°");
       }
 
-    } else if (cleaningPhase == 5) {
-      if (millis() - brushPhaseStartTime >= BRUSH_DURATION_MS) {
-        brushCurrentCycle++;
-        if (brushCurrentCycle > BRUSH_TOTAL_CYCLES) {
-          // All CW+CCW pairs completed — stop service regardless of remaining time.
-          LOG("[CLEANING] Brush cycle cap (" + String(BRUSH_TOTAL_CYCLES) + ") reached — stopping");
-          motorsCoast();
-          cleaningPhase     = 0;
-          brushCurrentCycle = 0;
-          stopService("completed");
-          return;
-        }
-        // CCW segment complete — coast, then queue CW for the next cycle.
-        LOG("[CLEANING] CCW segment done — coast (cycle " + String(brushCurrentCycle) + "/" + String(BRUSH_TOTAL_CYCLES) + ")");
-        motorsCoast();
-        cleaningPhase   = 6;   // Enter coast gap
-        brushNextPhase  = 4;   // Next active phase is CW
-        brushPhaseStartTime = millis();
-        saveServiceCheckpoint();
+      // 10s hold at 0° — once elapsed, start the sweep (which reserves 10s for the 180° hold).
+      if (brushInStartPause && millis() - brushStartPauseTime >= BRUSH_EDGE_PAUSE_MS) {
+        brushInStartPause = false;
+        LOG("[CLEANING] 0° hold done — starting sweep");
+        startBrushSweep();
       }
 
-    } else if (cleaningPhase == 6) {
-      if (millis() - brushPhaseStartTime >= BRUSH_COAST_MS) {
-        // Coast gap elapsed — resume the next brush direction.
-        cleaningPhase = brushNextPhase;
-        brushPhaseStartTime = millis();
-        if (brushNextPhase == 5) {
-          LOG("[CLEANING] → CCW");
-          setMotorsOppositeSpeed(-brushMotorSpeed); // Left CCW / right CW
-        } else {
-          LOG("[CLEANING] → CW");
-          setMotorsOppositeSpeed(brushMotorSpeed); // Left CW / right CCW
-        }
+      // At 170°: trigger a repeat top-brush pass (pump ON descent, pump OFF ascent).
+      if (!brushInStartPause && !brushTopRepeatTriggered && currentLeftPosition >= 170) {
+        brushTopRepeatTriggered  = true;
+        brushTopRepeatDescending = true;
+        setRelay(5, true); // Pump ON
+        stepper1MoveTo(0); // Descend to bottom of stroke
+        LOG("[CLEANING] 170° — top repeat descent (pump ON)");
+      }
+
+      if (brushTopRepeatDescending && !stepper1Moving) {
+        brushTopRepeatDescending = false;
+        brushTopRepeatAscending  = true;
+        setRelay(5, false); // Pump OFF
+        stepper1MoveTo(CLEANING_MAX_POSITION); // Return to park
+        LOG("[CLEANING] Top repeat at 0 — pump OFF; ascending");
+      }
+
+      if (brushTopRepeatAscending && !stepper1Moving) {
+        brushTopRepeatAscending = false;
+        LOG("[CLEANING] Top repeat complete");
+      }
+      // Service ends by timer (handled above); servo naturally holds at 180° for remaining ~10s.
+    }
+
+    // Servo-angle side-linear pressure relief (phases 4–6 only).
+    // As the servo sweeps 0→90→180°, the side brush pulls back 10mm at 90° to avoid
+    // stalling the brush motor under combined clamp + brush pressure.
+    // Curve: depth = preset − 10mm × sin(angle°), yielding preset→(preset−10mm)→preset.
+    if (cleaningPhase >= 4 && cleaningSideDepthSteps > 0) {
+      static int lastAdjustedAngle = -1;
+      if (currentLeftPosition != lastAdjustedAngle) {
+        lastAdjustedAngle = currentLeftPosition;
+        double sinA = sin(currentLeftPosition * PI / 180.0);
+        long adjusted = cleaningSideDepthSteps - (long)(10.0 * STEPPER2_STEPS_PER_MM * sinA);
+        stepper2MoveTo(constrain(adjusted, 0, STEPPER2_MAX_POSITION));
       }
     }
   }
@@ -556,17 +559,16 @@ void sendServiceStatusUpdate(String status) {
  * Called from the websocket handler when a resume-service command is received.
  *
  * remainingMs: backend-calculated remaining duration (checkpoint.durationMs - checkpoint.elapsedMs).
- * fromCycle:   completed CW+CCW cycle count from the checkpoint — applied at phase 3→4.
+ * fromCycle:   unused (kept for websocket API compatibility).
  *
  * Mechanical safety: cleaning always runs phases 1–3 (spray pass + side advance) before
- * the brush cycles, so the shoe is re-wetted and the top brush is safely parked first.
- * Only the cycle counter is fast-forwarded via serviceResumeFromCycle.
+ * the brush phase, so the shoe is re-wetted and the top brush is safely parked first.
  */
 void startServiceResume(const String &shoeType, const String &serviceType, const String &careType,
                         unsigned long remainingMs, int fromCycle,
                         long cleaningDistanceMm, int motorSpeedPwm,
                         float dryingTempSetpoint_) {
-  serviceResumeFromCycle = fromCycle; // applied at phase 3→4 in handleService()
+  (void)fromCycle; // no longer used — direction is angle-based, no cycle state to restore
   startService(shoeType, serviceType, careType,
                (remainingMs + 999UL) / 1000UL,  // round up: preserve sub-second precision across resumes
                cleaningDistanceMm,
