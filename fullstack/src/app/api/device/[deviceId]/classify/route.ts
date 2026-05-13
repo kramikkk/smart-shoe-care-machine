@@ -8,6 +8,7 @@ import {
 import { rateLimit } from '@/lib/rate-limit'
 
 export const dynamic = 'force-dynamic'
+export const preferredRegion = 'iad1' // US East — Gemini API blocks SG/AP region IPs
 
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024 // 10MB
 
